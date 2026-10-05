@@ -22,8 +22,8 @@ monitors (turn off sleep).
 | --- | --- |
 | See logs | Docker Desktop > Containers > pop-monitor > gateway, or `docker compose logs -f gateway` |
 | Change cameras or settings | Edit `config.json`, then `docker compose restart gateway` |
-| Check config | `docker compose run --rm gateway --check` |
-| Test a camera's video | `docker compose exec gateway ffprobe -rtsp_transport tcp "rtsp://pop-monitor:PASSWORD@CAMERA-IP/axis-media/media.amp"` |
+| Check config and camera URLs | `docker compose run --rm gateway --check` (passwords masked) |
+| Test a camera's video | `docker compose exec gateway ffprobe -rtsp_transport tcp "rtsp://pop-monitor:PASSWORD@CAMERA-IP:RTSP-PORT/axis-media/media.amp"` |
 | Record 10 min for tuning | `docker compose exec gateway ffmpeg -rtsp_transport tcp -i "rtsp://pop-monitor:PASSWORD@CAMERA-IP/axis-media/media.amp?resolution=1280x720&fps=10" -t 600 -c copy /recordings/site1.mp4` (lands in `recordings\`) |
 | Replay a recording | `docker compose exec gateway popreplay /recordings/site1.mp4 --roi 0.2,0.2 0.8,0.2 0.8,0.8 0.2,0.8 --slots 6 --slot-ms 10000` |
 | Update after new code | `docker compose up -d --build` |

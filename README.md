@@ -108,6 +108,11 @@ docker exec -it <gateway-container> popreplay /var/lib/pop-gateway/board.mp4 --r
 | `snapshot.compression` | 15 | VAPIX JPEG compression (lower = higher quality) |
 | `snapshot.image_policy` | `every_play` | or `first_per_hour` (metadata every play, images hourly per creative) |
 | `ptz_check` | true | Alerts and pauses detection if a PTZ camera leaves its preset |
+| `host` | (required) | Camera IP or DNS name (no port) |
+| `http_port` / `rtsp_port` | 80 / 554 | Non-standard or port-forwarded ports for remote cameras |
+| `use_https` / `camera_tls_insecure` | false / false | VAPIX over HTTPS; accept the camera's self-signed certificate |
+| `rtsp_transport` | `tcp` | `http` tunnels the video over the web port, when only one port is forwarded |
+| `rtsp_url` / `vapix_url` | built | Full overrides, if a camera needs something unusual |
 
 Triggers derived from the rotation profile (N slots of S ms):
 

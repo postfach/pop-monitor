@@ -47,7 +47,8 @@ pop_stream *pop_stream_open(const char *url, const pop_stream_opts *o, char *err
     s->fmt->interrupt_callback.opaque = s;
     AVDictionary *opt = NULL;
     if (!s->is_file) {
-        av_dict_set(&opt, "rtsp_transport", "tcp", 0);
+        av_dict_set(&opt, "rtsp_transport",
+                    s->o.rtsp_transport && *s->o.rtsp_transport ? s->o.rtsp_transport : "tcp", 0);
         char us[32];
         snprintf(us, sizeof us, "%lld", (long long)s->o.timeout_s * 1000000LL);
         av_dict_set(&opt, "timeout", us, 0);

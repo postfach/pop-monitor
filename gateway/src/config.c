@@ -56,6 +56,25 @@ static void get_profile(const cJSON *o, pc_profile *p)
     get_int(o, "slot_ms", &p->slot_ms);
 }
 
+/* Percent-encode credentials for use inside an RTSP URL. */
+static void url_encode(const char *in, char *out, size_t n)
+{
+    static const char *hex = "0123456789ABCDEF";
+    size_t o = 0;
+    for (; *in && o + 4 < n; in++) {
+        unsigned char ch = (unsigned char)*in;
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+            ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            out[o++] = (char)ch;
+        } else {
+            out[o++] = '%';
+            out[o++] = hex[ch >> 4];
+            out[o++] = hex[ch & 15];
+        }
+    }
+    out[o] = 0;
+}
+
 static void camera_defaults(camera_cfg *c)
 {
     memset(c, 0, sizeof *c);
@@ -65,6 +84,8 @@ static void camera_defaults(camera_cfg *c)
     c->analysis_fps = 5;
     snprintf(c->operating_hours, sizeof c->operating_hours, "00:00-24:00");
     c->ptz_check = 1;
+    snprintf(c->rtsp_transport, sizeof c->rtsp_transport, "tcp");
+    snprintf(c->stream_params, sizeof c->stream_params, "resolution=1280x720&fps=10&videocodec=h264");
     c->ptz_tolerance = 1.0f;
     pc_detector_cfg_default(&c->det);
     pc_faults_cfg_default(&c->faults);
@@ -88,6 +109,12 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_str(o, "password", c->password, sizeof c->password);
     get_str(o, "rtsp_url", c->rtsp_url, sizeof c->rtsp_url);
     get_str(o, "vapix_url", c->vapix_url, sizeof c->vapix_url);
+    get_int(o, "http_port", &c->http_port);
+    get_int(o, "rtsp_port", &c->rtsp_port);
+    get_int(o, "use_https", &c->use_https);
+    get_int(o, "camera_tls_insecure", &c->camera_tls_insecure);
+    get_str(o, "rtsp_transport", c->rtsp_transport, sizeof c->rtsp_transport);
+    get_str(o, "stream_params", c->stream_params, sizeof c->stream_params);
     get_str(o, "operating_hours", c->operating_hours, sizeof c->operating_hours);
     get_float(o, "inset_pct", &c->inset_pct);
     get_int(o, "analysis_fps", &c->analysis_fps);
@@ -171,17 +198,34 @@ static int validate_camera(camera_cfg *c, int idx, char *err, size_t n)
         snprintf(err, n, "camera %s: host or rtsp_url is required", c->name);
         return -1;
     }
-    if (!*c->rtsp_url) {
-        /* Axis RTSP: dedicated low-rate stream for detection */
-        if (*c->username)
-            snprintf(c->rtsp_url, sizeof c->rtsp_url,
-                     "rtsp://%s:%s@%s/axis-media/media.amp?resolution=1280x720&fps=10&videocodec=h264",
-                     c->username, c->password, c->host);
-        else
-            snprintf(c->rtsp_url, sizeof c->rtsp_url,
-                     "rtsp://%s/axis-media/media.amp?resolution=1280x720&fps=10&videocodec=h264", c->host);
+    if (strcmp(c->rtsp_transport, "tcp") && strcmp(c->rtsp_transport, "http")) {
+        snprintf(err, n, "camera %s: rtsp_transport must be \"tcp\" or \"http\"", c->name);
+        return -1;
     }
-    if (!*c->vapix_url && *c->host) snprintf(c->vapix_url, sizeof c->vapix_url, "http://%s", c->host);
+    int web_port = c->http_port ? c->http_port : (c->use_https ? 443 : 80);
+    int default_web = c->use_https ? 443 : 80;
+    char webport[16] = "", rport[16] = "";
+    if (web_port != default_web) snprintf(webport, sizeof webport, ":%d", web_port);
+    if (!strcmp(c->rtsp_transport, "http")) {
+        /* RTSP tunnelled over HTTP: uses the camera's web port */
+        if (web_port != 80) snprintf(rport, sizeof rport, ":%d", web_port);
+    } else if (c->rtsp_port && c->rtsp_port != 554) {
+        snprintf(rport, sizeof rport, ":%d", c->rtsp_port);
+    }
+    if (!*c->rtsp_url) {
+        char cred[420] = "";
+        if (*c->username) {
+            char u[200], p[200];
+            url_encode(c->username, u, sizeof u);
+            url_encode(c->password, p, sizeof p);
+            snprintf(cred, sizeof cred, "%s:%s@", u, p);
+        }
+        snprintf(c->rtsp_url, sizeof c->rtsp_url, "rtsp://%s%s%s/axis-media/media.amp?%s",
+                 cred, c->host, rport, c->stream_params);
+    }
+    if (!*c->vapix_url && *c->host)
+        snprintf(c->vapix_url, sizeof c->vapix_url, "%s://%s%s", c->use_https ? "https" : "http",
+                 c->host, webport);
     if (c->analysis_fps < 1) c->analysis_fps = 1;
     if (c->analysis_fps > 15) c->analysis_fps = 15;
     if (c->snap.burst < 1) c->snap.burst = 1;

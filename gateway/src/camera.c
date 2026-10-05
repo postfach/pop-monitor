@@ -324,7 +324,7 @@ static void *snapshot_thread(void *arg)
     camera *cm = arg;
     vapix vx;
     if (vapix_init(&vx, cm->cfg->vapix_url, cm->cfg->username, cm->cfg->password,
-                   cm->app->cfg->tls_insecure) != 0) {
+                   cm->cfg->camera_tls_insecure || cm->app->cfg->tls_insecure) != 0) {
         LOGE(cm->cfg->name, "curl init failed");
         return NULL;
     }
@@ -398,7 +398,7 @@ static void *stream_thread(void *arg)
 
     while (cm->app->running) {
         char err[256] = "";
-        pop_stream_opts so = {c->realtime, c->loop, 10};
+        pop_stream_opts so = {c->realtime, c->loop, 15, c->rtsp_transport};
         pop_stream *s = pop_stream_open(c->rtsp_url, &so, err, sizeof err);
         if (!s) {
             int64_t now = util_mono_ms();

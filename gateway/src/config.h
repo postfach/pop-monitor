@@ -24,8 +24,14 @@ typedef struct {
 typedef struct {
     char site_id[64], name[64], model[32];
     char host[128], username[64], password[128];
-    char rtsp_url[512];         /* full URL; built from host if empty  */
+    char rtsp_url[1024];        /* full URL; built from host if empty  */
     char vapix_url[256];        /* base URL; http://host if empty      */
+    int   http_port;            /* camera web port (0 = 80, or 443 with https) */
+    int   rtsp_port;            /* camera RTSP port (0 = 554)          */
+    int   use_https;            /* VAPIX over HTTPS                    */
+    int   camera_tls_insecure;  /* accept the camera's self-signed cert */
+    char  rtsp_transport[8];    /* "tcp" (default) or "http" (RTSP tunnelled over the web port) */
+    char  stream_params[160];   /* Axis media.amp query string         */
     pc_point roi[4];
     float inset_pct;
     int   analysis_fps;

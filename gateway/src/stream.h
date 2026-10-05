@@ -10,6 +10,7 @@ typedef struct {
     int realtime;     /* files only: pace frames by their timestamps     */
     int loop;         /* files only: restart at end of file              */
     int timeout_s;    /* network read/open timeout (default 10)          */
+    const char *rtsp_transport;  /* "tcp" (default) or "http" tunnelling  */
 } pop_stream_opts;
 
 pop_stream *pop_stream_open(const char *url, const pop_stream_opts *o, char *err, size_t errlen);

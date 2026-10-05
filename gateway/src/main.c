@@ -58,6 +58,14 @@ int main(int argc, char **argv)
             camera_cfg *c = &cfg.cameras[i];
             printf("  %-24s site=%-20s profile=%dx%dms dayparts=%d hours=%s\n", c->name, c->site_id,
                    c->profile.slot_count, c->profile.slot_ms, c->n_dayparts, c->operating_hours);
+            /* show where we will connect, with the password masked */
+            char shown[1024];
+            snprintf(shown, sizeof shown, "%s", c->rtsp_url);
+            char *at = strchr(shown, '@'), *colon = strstr(shown, "://");
+            if (at && colon && (colon = strchr(colon + 3, ':')) && colon < at)
+                memmove(colon + 4, at, strlen(at) + 1), memcpy(colon, ":***", 4);
+            printf("  %-24s video=%s (transport %s)\n  %-24s snapshots=%s\n", "", shown, c->rtsp_transport,
+                   "", c->vapix_url);
         }
         config_free(&cfg);
         return 0;
