@@ -4,3 +4,7 @@ acap/app/popmonitor
 acap/app/package.conf*
 acap/app/param.conf
 __pycache__/
+
+# Vault pulls hold booking data: keep them out of git
+deploy/desktop/bookings/vault-bookings.json
+bookings/vault-bookings.json

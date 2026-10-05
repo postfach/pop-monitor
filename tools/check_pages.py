@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 
 base = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/")
 site = sys.argv[2] if len(sys.argv) > 2 else ""
-pages = ["/", "/sites", "/site", "/sites/import", "/health"]
+pages = ["/", "/sites", "/site", "/sites/import", "/health", "/bookings"]
 if site:
     pages += [f"/?site={site}", f"/site?site={site}", f"/site?copy={site}", f"/roi?site={site}"]
 failed = 0

@@ -140,7 +140,7 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 .toolbar{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}}
 .refresh{{display:flex;gap:8px;align-items:center}} .refresh select,.refresh button{{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}}
 .refresh button{{cursor:pointer}} #next{{min-width:110px;font-size:12px}}</style></head><body><main>
-<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="font-weight:600;text-decoration:none">Review</a><a href="/sites" style="color:var(--muted);text-decoration:none">Sites</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
+<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="font-weight:600;text-decoration:none">Review</a><a href="/sites" style="color:var(--muted);text-decoration:none">Sites</a><a href="/bookings" style="color:var(--muted);text-decoration:none">Bookings</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
 <div class="toolbar"><div><h1>PoP Monitor review</h1><p class="muted" style="margin:2px 0 0">{subtitle}</p></div>
 <div class="refresh"><label for="every" class="muted">Refresh</label>
 <select id="every"><option value="0">Off</option><option value="5">Every 5 s</option><option value="10">Every 10 s</option>
@@ -169,7 +169,7 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 .wrap{overflow-x:auto} table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top;white-space:nowrap}
 td.actions a{margin-right:12px} .note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:16px}
 </style></head><body><main>
-<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/health">Health</a></nav>
+<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/bookings">Bookings</a><a href="/health">Health</a></nav>
 <div class="head"><div><h1>Sites</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p></div>
 <div style="display:flex;gap:8px"><a class="btn" href="/sites/import">Import from CSV</a><a class="btn primary" href="/site">Add site</a></div></div>
 <div class="wrap"><table><thead><tr><th>Site</th><th>Model</th><th>Camera</th><th>Video</th><th>Rotation</th><th>Plays / hour</th><th>Faults</th><th></th></tr></thead>
@@ -270,14 +270,16 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff} b
 button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 #test img{max-width:100%;border-radius:8px;margin-top:10px;display:block}
 </style></head><body><main>
-<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/health">Health</a></nav>
+<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/bookings">Bookings</a><a href="/health">Health</a></nav>
 <h1 id="title">Add site</h1><p class="muted" id="sub">New camera</p>
 <form id="f" autocomplete="off">
 <fieldset><legend>Site</legend><div class="grid">
   <label class="f"><span>Site ID (required, unique)</span><input type="text" name="site_id" required placeholder="AKL-BRITOMART-01"></label>
   <label class="f"><span>Display name (optional)</span><input type="text" name="display_name" placeholder="Britomart north face"></label>
   <label class="f"><span>Camera model</span><input type="text" name="model" list="models" placeholder="M5525-E"></label>
+  <label class="f"><span>Vault screen name (for bookings)</span><input type="text" name="vault_screen" list="vscreens" placeholder="as in Vault, e.g. Parnell"></label>
 </div>
+<datalist id="vscreens"></datalist>
 <datalist id="models"><option>M5525-E</option><option>M5526-E</option><option>P3225-LVE Mk II</option><option>P3227-LVE</option><option>P3267-LV</option></datalist>
 </fieldset>
 
@@ -351,6 +353,9 @@ function sync() {
 f.addEventListener('change', sync);
 
 async function init() {
+  fetch('/bookings/screens').then(r => r.ok ? r.json() : []).then(list => {   // screen names from the latest Vault pull
+    $('vscreens').innerHTML = list.map(n => `<option value="${n.replace(/"/g, '&quot;')}">`).join('');
+  }).catch(() => {});
   const s = await fetch('/api/settings').then(r => r.ok ? r.json() : {}).catch(() => ({}));
   if (s.default_coverage_min_pct !== undefined) {
     f.elements.coverage_min_pct.placeholder = s.default_coverage_min_pct;
@@ -378,7 +383,7 @@ function fillFrom(c, copy) {
   if (!copy)
     $('sub').innerHTML = (current.connected ? '<span class="ok">Video connected</span>' : '<span class="bad">Video not connected</span>') +
       (current.active_faults.length ? ' &middot; <span class="bad">' + current.active_faults.join(', ') + '</span>' : '');
-  for (const k of copy ? ['model','username'] : ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override'])
+  for (const k of copy ? ['model','username'] : ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override','vault_screen'])
     setVal(k, current[k]);
   if (current.coverage_custom) { setVal('coverage_min_pct', current.coverage_min_pct); setVal('coverage_window_min', current.coverage_window_min); }
   setVal('http_port', current.http_port || ''); setVal('rtsp_port', current.rtsp_port || '');
@@ -399,6 +404,7 @@ function formData() {
   const e = f.elements, num = v => v === '' ? 0 : Number(v);
   const d = {
     site_id: e.site_id.value.trim(), display_name: e.display_name.value.trim(), model: e.model.value.trim(),
+    vault_screen: e.vault_screen.value.trim(),
     host: e.host.value.trim(), http_port: num(e.http_port.value), rtsp_port: num(e.rtsp_port.value),
     rtsp_transport: f.querySelector('input[name=rtsp_transport]:checked').value,
     use_https: e.use_https.checked, camera_tls_insecure: e.use_https.checked && e.camera_tls_insecure.checked,
@@ -472,7 +478,7 @@ input[type=number]{width:60px;font:inherit;padding:5px;border:1px solid var(--li
 #msg{min-height:20px} .ok{color:var(--ok)} .bad{color:var(--bad)}
 ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 </style></head><body><main>
-<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="color:var(--muted);text-decoration:none">Review</a><a href="/sites" style="font-weight:600;text-decoration:none">Sites</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
+<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="color:var(--muted);text-decoration:none">Review</a><a href="/sites" style="font-weight:600;text-decoration:none">Sites</a><a href="/bookings" style="color:var(--muted);text-decoration:none">Bookings</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
 <h1>Edit region: <span id="cam"></span></h1>
 <p class="muted" id="sub">Loading&hellip;</p>
 <div class="bar">
@@ -643,9 +649,9 @@ load();
 # Review-page auto refresh: interval chosen from the dropdown, remembered per
 # browser (and overridable with ?refresh=SECONDS). Pauses while the tab is hidden.
 IMPORT_TEMPLATE = (
-    "site_id,display_name,model,host,http_port,rtsp_port,video_transport,use_https,accept_self_signed,"
+    "site_id,display_name,vault_screen,model,host,http_port,rtsp_port,video_transport,use_https,accept_self_signed,"
     "username,password,slot_count,slot_seconds,takeover,hours,ptz_check,coverage_min_pct,coverage_window_min\r\n"
-    "AKL-EXAMPLE-01,Example Rd North,M5525-E,203.0.113.10,8080,8554,rtsp,no,no,,,6,10,no,05:00-01:00,yes,,\r\n"
+    "AKL-EXAMPLE-01,Example Rd North,Example Rd North,M5525-E,203.0.113.10,8080,8554,rtsp,no,no,,,6,10,no,05:00-01:00,yes,,\r\n"
 )
 
 IMPORT_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -667,7 +673,7 @@ th{white-space:nowrap} td.st{min-width:220px} code{font-size:12px}
 .drop{display:block;border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;cursor:pointer;margin-top:14px}
 .drop.over{border-color:var(--accent)}
 </style></head><body><main>
-<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/health">Health</a></nav>
+<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a><a href="/bookings">Bookings</a><a href="/health">Health</a></nav>
 <h1>Import sites from CSV</h1>
 <p class="muted" style="margin:2px 0 0">Add many sites at once. Nothing changes until you click Import.</p>
 <div class="panel"><ol>
@@ -678,6 +684,7 @@ th{white-space:nowrap} td.st{min-width:220px} code{font-size:12px}
 <details style="margin-top:8px"><summary>Column reference</summary><div class="wrap"><table style="margin-top:6px">
 <tr><td><code>site_id</code></td><td>Required, unique. Used in URLs and reports, e.g. AKL-BRITOMART-01</td></tr>
 <tr><td><code>display_name</code></td><td>What people see, e.g. Britomart North</td></tr>
+<tr><td><code>vault_screen</code></td><td>The screen's name in Vault, so bookings can be compared with what plays</td></tr>
 <tr><td><code>model</code></td><td>Camera model, e.g. M5525-E</td></tr>
 <tr><td><code>host</code></td><td>Camera IP or DNS name, no port</td></tr>
 <tr><td><code>http_port</code>, <code>rtsp_port</code></td><td>Blank = 80 (443 with HTTPS) and 554</td></tr>
@@ -736,7 +743,7 @@ function toSite(r, forUpdate) {
     if (!Number.isFinite(n) || n < lo || n > hi) problems.push(`${col} must be ${lo}-${hi}`); else put(k, Math.round(n));
   };
   const bool = (k, col) => { const t = v(col); if (t === '') return; if (yes(t)) put(k, true); else if (no(t)) put(k, false); else problems.push(`${col}: use yes or no`); };
-  for (const [k, col] of [['site_id','site_id'],['display_name','display_name'],['model','model'],['host','host'],['username','username']])
+  for (const [k, col] of [['site_id','site_id'],['display_name','display_name'],['vault_screen','vault_screen'],['model','model'],['host','host'],['username','username']])
     if (v(col) !== '' || (!forUpdate && k !== 'site_id')) put(k, v(col));
   if (v('password')) put('password', v('password'));
   int('http_port', 'http_port', 1, 65535); int('rtsp_port', 'rtsp_port', 1, 65535);
@@ -850,7 +857,7 @@ ul.w{margin:6px 0 0;padding-left:18px} ul.w li{color:var(--warn)} ul.w li.bad{co
 .wrap{overflow-x:auto} table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top;white-space:nowrap}
 td.wr{white-space:normal}
 </style></head><body><main>
-<nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/health" class="on">Health</a></nav>
+<nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings">Bookings</a><a href="/health" class="on">Health</a></nav>
 <h1>Gateway health</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
 <div id="gws"></div>
 </main><script>
@@ -897,6 +904,120 @@ async function load() {
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
 let $sub; load(); setInterval(load, 15000);
+</script></body></html>'''
+
+
+BOOKINGS_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bookings</title><style>
+:root{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32;--warn:#a15c00;--panel:#ececea;--accent:#d4237a}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f;--panel:#22221f;--warn:#e0a040}}
+*{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:1200px;margin:0 auto;padding:20px 16px 40px} h1{font-size:20px;margin:0} h2{font-size:17px;margin:0} h3{font-size:14px;margin:14px 0 6px} a{color:inherit}
+nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-decoration:none} nav a.on{color:var(--fg);font-weight:600}
+.muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)} .warn{color:var(--warn)}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.btn{display:inline-block;border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 11px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
+.site{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:14px 0}
+.top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px;margin:12px 0}
+.tile{background:var(--panel);border-radius:8px;padding:9px 11px} .tile .k{font-size:12px;color:var(--muted)} .tile .v{font-size:18px;font-weight:600} .tile .s{font-size:12px;color:var(--muted)}
+ul.w{margin:6px 0 0;padding-left:18px} ul.w li{color:var(--warn)}
+.wrap{overflow-x:auto} table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:middle}
+th{white-space:nowrap;font-weight:600} td.n{text-align:right;white-space:nowrap} th.n{text-align:right}
+.meter{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--line);vertical-align:middle;margin-right:6px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--ok)} .meter i.under{background:var(--warn)} .meter i.none{background:var(--bad)}
+.thumb{width:72px;height:40px;object-fit:contain;background:#000;border-radius:4px;display:block}
+select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);max-width:260px}
+.pill{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted);white-space:nowrap}
+.note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0}
+</style></head><body><main>
+<nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
+<h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
+<div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
+<span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull<input type="file" id="up" accept=".json,application/json" hidden></label></div>
+<div id="out"></div>
+<details class="note muted"><summary>How this is worked out</summary>
+<p>Vault lists, for each booked campaign, the screens it books with its weeks and plays per loop. For each site linked to a Vault screen, this page adds up that week's bookings and compares them with what the gateway saw.</p>
+<p><b>Per loop</b> figures are slots held per loop of the site's rotation. A creative on screen for two slots back to back counts as two; a longer run than that creative usually holds (a missed change, hold-over or freeze) only counts its usual length.</p>
+<p>Vault gives each booking's first and last week and how many weeks it books, but not which ones. A booking with gaps is only <b>certain</b> in its first and last week; in between it shows as <i>may be booked this week</i> and isn't counted in true coverage (it can still be matched to a creative). Week-by-week data from a Vault API would remove this.</p>
+<p>Creatives are matched to campaigns by their share of the loop. Matches marked <span class="pill">auto</span> are a best guess; pick the right campaign to confirm it, and confirmed links are kept for later weeks. Creatives that match no booking count as house or unbooked content.</p>
+<p><b>Delivery</b> is slots delivered per loop ÷ slots booked per loop, over the time the gateway was watching. <b>True coverage</b> is all booked slots delivered ÷ all booked slots. <b>Monitored</b> is the share of the week so far with verified plays.</p></details>
+</main><script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct = v => v == null ? '—' : Math.round(v * 100) + '%';
+const one = v => v == null ? '—' : (Math.round(v * 10) / 10).toString();
+const hrs = s => s == null ? '—' : s < 3600 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h';
+const params = new URLSearchParams(location.search);
+let week = params.get('week') || '';
+const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s || ''}</div></div>`;
+function meter(c) {
+  const d = c.delivery ?? 0, cls = c.status === 'not seen' ? 'none' : c.status === 'under' ? 'under' : '';
+  if (c.status === 'maybe') return '<span class="muted" title="Vault doesn\'t say which weeks of this booking are live">may be booked this week</span>';
+  if (c.status === 'seen') return `<span class="muted">seen, ${one(c.delivered)} / loop</span>`;
+  return `<span class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(d * 100))}%"></i></span>${c.status === 'not seen' ? '<span class="bad">not seen</span>' : pct(d)}`;
+}
+function site(s, rep) {
+  if (!s.vault_screen) return `<div class="site"><div class="top"><h2>${esc(s.name)}</h2></div>
+     <p class="muted" style="margin:6px 0 0">Not linked to a Vault screen. <a href="/site?site=${encodeURIComponent(s.site_id)}">Set its Vault screen name</a> to compare bookings.</p></div>`;
+  const camp = s.campaigns.map(c => `<tr${c.certain ? '' : ' style="opacity:.7"'}><td>${c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}<br><span class="muted">${esc(c.advertiser)} · ${esc(c.campaign_id)}</span></td>
+     <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
+     <td>${c.creatives.map(esc).join(', ') || '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
+  const opts = (sel) => `<option value="">Auto</option>` + s.campaigns.map(c => `<option value="${esc(c.campaign_id)}" ${sel === c.campaign_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') +
+     `<option value="house" ${sel === 'house' ? 'selected' : ''}>House / unbooked</option>`;
+  const cname = id => (s.campaigns.find(c => c.campaign_id === id) || {}).name;
+  const crs = s.creatives.map(cr => `<tr><td>${cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt=""></a>` : ''}</td>
+     <td><b>${esc(cr.creative_id)}</b>${cr.video ? ' <span class="pill">video</span>' : ''}${cr.blank ? ' <span class="pill">blank</span>' : ''}</td>
+     <td class="n">${cr.plays}</td><td class="n">${one(cr.share)}</td>
+     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link === 'confirmed' ? cr.campaign_id : '')}</select>
+       ${cr.link === 'auto' ? `<span class="pill">auto: ${esc(cr.campaign_id === 'house' ? 'house' : cname(cr.campaign_id) || cr.campaign_id)}</span>` : '<span class="pill ok">confirmed</span>'}`}</td></tr>`).join('');
+  const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
+  return `<div class="site"><div class="top"><h2><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></h2>
+     <span class="muted">Vault screen: ${esc(s.vault_screen)} · loop ${s.slot_count} × ${s.slot_s} s</span></div>
+     ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
+     <div class="tiles">
+       ${tile('True coverage', pct(tc), 'booked slots delivered', tcls)}
+       ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} maybe` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
+       ${tile('House / unbooked', one(s.house_per_loop), 'slots per loop')}
+       ${tile('Blank', one(s.blank_per_loop), 'slots per loop', s.blank_per_loop > 0.2 ? 'warn' : '')}
+       ${tile('Monitored', hrs(s.seen_s), `of ${hrs(s.elapsed_s)} this week so far · ${Math.floor(s.loops_seen || 0)} loops`)}
+     </div>
+     <h3>Booked campaigns</h3>
+     <div class="wrap"><table><thead><tr><th>Campaign</th><th class="n">Booked / loop</th><th>Slot type</th><th>Creatives</th><th class="n">Seen / loop</th><th>Delivery</th></tr></thead>
+     <tbody>${camp || '<tr><td colspan="6" class="muted">Nothing booked on this screen this week in the Vault pull.</td></tr>'}</tbody></table></div>
+     <h3>Creatives seen</h3>
+     <div class="wrap"><table><thead><tr><th></th><th>Creative</th><th class="n">Plays</th><th class="n">Slots / loop</th><th>Campaign</th></tr></thead>
+     <tbody>${crs || '<tr><td colspan="5" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></div>`;
+}
+async function load() {
+  const r = await fetch('/bookings.json' + (week ? '?week=' + week : ''));
+  const rep = await r.json();
+  week = rep.week;
+  document.getElementById('wk').textContent = 'Week of ' + new Date(rep.week + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
+  document.getElementById('sub').innerHTML = rep.pulled_at
+    ? `Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '')
+    : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>';
+  document.getElementById('out').innerHTML = !rep.gateway ? '<p class="bad">Cannot reach the gateway, so the sites are unknown.</p>'
+    : rep.sites.map(s => site(s, rep)).join('') || '<p class="muted">No sites.</p>';
+}
+function shift(days) { const d = new Date(week + 'T00:00'); d.setDate(d.getDate() + days); week = d.toISOString().slice(0, 10);
+  history.replaceState(null, '', '?week=' + week); load(); }
+document.getElementById('prev').onclick = () => shift(-7);
+document.getElementById('next').onclick = () => shift(7);
+document.getElementById('out').addEventListener('change', async e => {
+  const s = e.target.closest('select[data-cr]'); if (!s) return;
+  s.disabled = true;
+  await fetch('/bookings/link', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({site_id: s.dataset.site, creative_id: s.dataset.cr, campaign_id: s.value})});
+  load();
+});
+document.getElementById('up').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = await fetch('/bookings/upload', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: await f.text()});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || 'Upload failed'); else load();
+};
+load();
 </script></body></html>'''
 
 
@@ -1134,6 +1255,378 @@ def health_data():
     return out
 
 
+# ---- bookings: Vault schedule vs what actually played ----------------------
+#
+# The weekly Vault pull (vault-bookings.json) lists booked campaigns with the
+# screens they book: weeks and plays per loop. For each site linked to a Vault
+# screen we work out, per week, what the loop should hold and compare it with
+# the creatives the gateway saw: how many slots per loop each one held
+# (share-of-time aware), which booked campaign it most likely is, and how much
+# of each booking was delivered.
+
+from datetime import timedelta
+import math
+
+BOOKINGS_LOCK = threading.Lock()
+BOOKINGS = {"mtime": None, "data": None, "path": None}
+RECS = {"size": 0, "inode": None, "by_site": {}}     # incremental index of PoP records
+
+
+def bookings_paths():
+    paths = [os.path.join(ARGS.out, "vault-bookings.json")]
+    extra = os.environ.get("BOOKINGS_FILE", "/bookings/vault-bookings.json")
+    if extra:
+        paths.insert(0, extra)
+    return paths
+
+
+def load_bookings():
+    """Newest Vault pull among the mounted folder and uploads (cached by mtime)."""
+    best = None
+    for p in bookings_paths():
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if best is None or m > best[1]:
+            best = (p, m)
+    with BOOKINGS_LOCK:
+        if best is None:
+            BOOKINGS.update(mtime=None, data=None, path=None)
+            return None
+        if BOOKINGS["path"] == best[0] and BOOKINGS["mtime"] == best[1]:
+            return BOOKINGS["data"]
+        try:
+            with open(best[0], encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data.get("proposals"), list):
+                raise ValueError("no proposals list")
+        except (OSError, ValueError) as e:
+            print(f"bookings: cannot read {best[0]}: {e}", flush=True)
+            return BOOKINGS["data"]
+        BOOKINGS.update(mtime=best[1], data=data, path=best[0])
+        print(f"bookings: loaded {len(data['proposals'])} campaign(s) from {best[0]} "
+              f"(pulled {data.get('generated_at', '?')})", flush=True)
+        return data
+
+
+def screen_key(name):
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def monday(d):
+    return d - timedelta(days=d.weekday())
+
+
+def week_of(iso_date):
+    return monday(datetime.fromisoformat(iso_date[:10]).date())
+
+
+def booked_for(screen, week):
+    """Campaigns booked on a Vault screen in the week starting `week` (a date)."""
+    data = load_bookings()
+    if not data or not screen:
+        return []
+    want = screen_key(screen)
+    out = []
+    for p in data["proposals"]:
+        if p.get("status") not in (None, "Booked"):
+            continue
+        for sc in p.get("screens") or []:
+            if screen_key(sc.get("name")) != want:
+                continue
+            try:
+                a, b = week_of(sc["first_week"]), week_of(sc["last_week"])
+            except (KeyError, ValueError):
+                continue
+            if not (a <= week <= b):
+                continue
+            span = (b - a).days // 7 + 1
+            # Vault gives first week, last week and a count of weeks, not which
+            # weeks. A booking is certain this week if it has no gaps or this is
+            # its first or last week; otherwise it only may be on this week.
+            weeks = sc.get("weeks") or span
+            certain = weeks >= span or week in (a, b)
+            out.append({"certain": certain, "campaign_id": p.get("campaign_id") or f"P{p.get('id')}",
+                        "name": p.get("name", ""), "advertiser": (p.get("advertiser") or {}).get("name", ""),
+                        "url": p.get("url", ""), "plays_per_loop": int(sc.get("plays_per_loop") or 0),
+                        "slot_types": sc.get("slot_types") or [], "weeks": sc.get("weeks"),
+                        "gaps": bool(sc.get("weeks") and sc["weeks"] < span)})
+    out.sort(key=lambda c: (not c["certain"], -c["plays_per_loop"], c["name"].lower()))
+    return out
+
+
+def vault_screens():
+    data = load_bookings()
+    names = {}
+    for p in (data or {}).get("proposals", []):
+        for sc in p.get("screens") or []:
+            if sc.get("name"):
+                names.setdefault(screen_key(sc["name"]), sc["name"])
+    return sorted(names.values(), key=str.lower)
+
+
+def iso_to_ts(v):
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def index_records():
+    """PoP records per site, read incrementally: (t, creative, blank, video, event_id, has_roi)."""
+    path = os.path.join(ARGS.out, "records.jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    with LOCK:
+        if RECS["inode"] != st.st_ino or st.st_size < RECS["size"]:   # rewritten (delete/rename)
+            RECS.update(size=0, inode=st.st_ino, by_site={})
+        if st.st_size > RECS["size"]:
+            with open(path, "rb") as f:
+                f.seek(RECS["size"])
+                chunk = f.read()
+            end = chunk.rfind(b"\n") + 1
+            for line in chunk[:end].splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") != "creative_change":
+                    continue
+                t = iso_to_ts(r.get("play_started_at"))
+                if t is None:
+                    continue
+                RECS["by_site"].setdefault(r.get("site_id"), []).append(
+                    (t, r.get("local_creative_id"), bool(r.get("is_blank")), bool(r.get("video_creative")),
+                     r.get("event_id"), "roi_sha256" in r))
+            RECS["size"] += end
+            for v in RECS["by_site"].values():
+                v.sort(key=lambda x: x[0])
+        return RECS["by_site"]
+
+
+def runs_typical(plays, S, cap):
+    """Usual run length (slots) of each creative: mode of rounded durations."""
+    hist = {}
+    for i in range(len(plays) - 1):
+        r = min(cap, max(1, math.floor((plays[i + 1][0] - plays[i][0]) / S + 0.5)))
+        h = hist.setdefault(plays[i][1], {})
+        h[r] = h.get(r, 0) + 1
+    return {cid: min(h, key=lambda r: (-h[r], r)) for cid, h in hist.items()}
+
+
+def observed(site_id, t0, t1, S, N):
+    """What the screen showed in [t0, t1): per creative slots credited, plays, latest image."""
+    plays = [p for p in index_records().get(site_id, []) if t0 - N * S <= p[0] < t1]
+    cap = max(1, N - 1) if N > 1 else 1
+    typ = runs_typical(plays, S, cap)
+    out, seen_s = {}, 0.0
+    now = time.time()
+    for i, p in enumerate(plays):
+        s, e = p[0], plays[i + 1][0] if i + 1 < len(plays) else min(t1, now)
+        if e <= t0 or s >= t1 or e <= s:
+            continue
+        r = min(cap, max(1, math.floor((e - s) / S + 0.5)))
+        r = min(r, typ.get(p[1], 1))
+        frac = (min(e, t1) - max(s, t0)) / (e - s)
+        c = out.setdefault(p[1], {"creative_id": p[1], "slots": 0.0, "plays": 0, "blank": p[2], "video": p[3],
+                                  "image": None, "last": 0})
+        c["slots"] += r * frac
+        seen_s += r * frac * S
+        if s >= t0:
+            c["plays"] += 1
+        if p[5] and s > c["last"]:
+            c["image"], c["last"] = p[4], s
+    return list(out.values()), seen_s
+
+
+def load_links():
+    try:
+        with open(os.path.join(ARGS.out, "creative-links.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_link(site_id, creative_id, campaign_id):
+    with LOCK:
+        links = load_links()
+        site = links.setdefault(site_id, {})
+        if campaign_id:
+            site[creative_id] = campaign_id
+        else:
+            site.pop(creative_id, None)
+        tmp = os.path.join(ARGS.out, "creative-links.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(links, f, indent=1)
+        os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
+
+
+def match(creatives, campaigns, links):
+    """Assign creatives to campaigns. Confirmed links first; then each remaining
+    creative (largest share first) goes to the campaign whose unfilled booking
+    it fits best, so a campaign rotating several artworks can collect them.
+    Returns {creative_id: (campaign_id or "house", "confirmed" | "auto")}."""
+    left = {c["campaign_id"]: c["per_loop"] for c in campaigns}
+    out = {}
+    for cr in creatives:
+        cid = links.get(cr["creative_id"])
+        if cid and (cid == "house" or cid in left):
+            out[cr["creative_id"]] = (cid, "confirmed")
+            if cid in left:
+                left[cid] -= cr["share"]
+    for cr in sorted(creatives, key=lambda c: -c["share"]):
+        if cr["creative_id"] in out or cr["blank"]:
+            continue
+        best, gap = None, None
+        for cid, rem in left.items():
+            if cr["share"] <= rem + 0.5:
+                g = abs(rem - cr["share"])
+                if gap is None or g < gap - 1e-9:
+                    best, gap = cid, g
+        if best:
+            out[cr["creative_id"]] = (best, "auto")
+            left[best] -= cr["share"]
+        else:
+            out[cr["creative_id"]] = ("house", "auto")
+    return out
+
+
+def site_bookings(cam, week, links_all):
+    """Booked vs delivered for one site in the week starting `week` (date)."""
+    sid, S, N = cam.get("id"), (cam.get("slot_ms") or 0) / 1000.0, cam.get("slot_count") or 0
+    res = {"site_id": sid, "name": cam.get("name"), "vault_screen": cam.get("vault_screen") or "",
+           "slot_count": N, "slot_s": S, "campaigns": [], "creatives": [], "warnings": []}
+    if not res["vault_screen"]:
+        res["warnings"].append("No Vault screen set for this site (Settings).")
+    if not S or N < 1:
+        res["warnings"].append("No rotation (slot count and length) set, so plays can't be measured in slots.")
+        return res
+    start = datetime.combine(week, datetime.min.time(), LOCAL_TZ).timestamp()
+    end = start + 7 * 86400
+    now = time.time()
+    t1 = min(end, now)
+    campaigns = booked_for(res["vault_screen"], week)
+    loop_s = N * S
+    crs, seen_s = observed(sid, start, t1, S, N) if t1 > start else ([], 0)
+    loops = seen_s / loop_s if loop_s else 0
+    for c in crs:
+        c["share"] = c["slots"] / loops if loops else 0
+    for c in campaigns:
+        c["per_loop"] = c["plays_per_loop"]
+    # match certain bookings first, then ones that may be on this week
+    sure = [c for c in campaigns if c["certain"]]
+    m = match(crs, sure + [c for c in campaigns if not c["certain"]], links_all.get(sid, {}))
+    by_c = {c["campaign_id"]: c for c in campaigns}
+    for c in campaigns:
+        c.update(creatives=[], delivered=0.0)
+    house = 0.0
+    for cr in crs:
+        cid, how = m.get(cr["creative_id"], ("blank", "auto")) if not cr["blank"] else ("blank", "auto")
+        cr["campaign_id"], cr["link"] = cid, how
+        if cid in by_c:
+            by_c[cid]["creatives"].append(cr["creative_id"])
+            by_c[cid]["delivered"] += cr["share"]
+        elif cid == "house":
+            house += cr["share"]
+    booked = sum(c["plays_per_loop"] for c in sure)
+    delivered = 0.0
+    for c in campaigns:
+        c["delivery"] = c["delivered"] / c["plays_per_loop"] if c["plays_per_loop"] else None
+        if not c["certain"]:
+            c["status"] = "maybe" if not c["creatives"] else "seen"
+            continue
+        c["status"] = ("not seen" if not c["creatives"] else "ok" if (c["delivery"] or 0) >= 0.9
+                       else "under")
+        delivered += min(c["delivered"], c["plays_per_loop"])
+        if loops >= 1 and c["status"] == "not seen":
+            res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but hasn't been seen.")
+    if booked > N:
+        res["warnings"].append(f"Vault has {booked} plays per loop booked but the site's rotation has {N} slots: "
+                               "check the slot count, or the screen runs a longer loop.")
+    blank = sum(c["share"] for c in crs if c["blank"])
+    elapsed = max(0.0, t1 - start)
+    res.update(campaigns=campaigns, creatives=sorted(crs, key=lambda c: -c["share"]),
+               booked_per_loop=booked, unsold_per_loop=max(0, N - booked), house_per_loop=house,
+               blank_per_loop=blank, loops_seen=loops, monitored=(seen_s / elapsed) if elapsed else None,
+               seen_s=seen_s, elapsed_s=elapsed,
+               true_coverage=(delivered / booked) if booked and loops else None,
+               week=week.isoformat(), from_ts=start, to_ts=t1)
+    return res
+
+
+def bookings_report(week):
+    cams = gateway_cameras()
+    data = load_bookings()
+    links = load_links()
+    out = {"week": week.isoformat(), "pulled_at": local_time((data or {}).get("generated_at"), True),
+           "source": (data or {}).get("source", ""), "file": BOOKINGS["path"],
+           "campaigns": len((data or {}).get("proposals", [])), "gateway": cams is not None, "sites": []}
+    for cam in cams or []:
+        out["sites"].append(site_bookings(cam, week, links))
+    return out
+
+
+def campaign_for_record(r, cache):
+    """Campaign a PoP record's creative is linked to (for the review cards)."""
+    sid, cid = r.get("site_id"), r.get("local_creative_id")
+    t = iso_to_ts(r.get("play_started_at"))
+    if not sid or not cid or t is None or not load_bookings():
+        return None
+    week = monday(datetime.fromtimestamp(t, LOCAL_TZ).date())
+    key = (sid, week)
+    if key not in cache:
+        cams = cache.setdefault("_cams", gateway_cameras() or [])
+        cam = next((c for c in cams if c.get("id") == sid), None)
+        cache[key] = {}
+        if cam and cam.get("vault_screen"):
+            rep = site_bookings(cam, week, cache.setdefault("_links", load_links()))
+            names = {c["campaign_id"]: c for c in rep["campaigns"]}
+            for cr in rep["creatives"]:
+                if cr.get("campaign_id") in names:
+                    cache[key][cr["creative_id"]] = (names[cr["campaign_id"]], cr["link"])
+    return cache[key].get(cid)
+
+
+def sync_expectations():
+    """Tell the gateway how many distinct creatives each site's loop should hold
+    this week (booked campaigns), so share-of-time bookings don't raise
+    missing_creative. 0 = let the gateway work it out."""
+    cams = gateway_cameras()
+    if cams is None or not load_bookings():
+        return
+    week = monday(datetime.now(LOCAL_TZ).date())
+    for cam in cams:
+        n = len([c for c in booked_for(cam.get("vault_screen"), week) if c["certain"]]) if cam.get("vault_screen") else 0
+        if n == (cam.get("expected_creatives") or 0):
+            continue
+        url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + \
+            f"/api/cameras/{urllib.parse.quote(cam['id'], safe='')}/expectations"
+        try:
+            req = urllib.request.Request(url, data=json.dumps({"expected_creatives": n}).encode(), method="PUT",
+                                         headers={"Authorization": f"Bearer {ARGS.api_key}",
+                                                  "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5).read()
+            print(f"bookings: {cam['id']} expects {n} booked creative(s) this week", flush=True)
+        except Exception as e:
+            print(f"bookings: could not update {cam['id']}: {e}", flush=True)
+
+
+def bookings_loop():
+    while True:
+        try:
+            sync_expectations()
+        except Exception as e:  # never let the helper thread die
+            print(f"bookings: sync failed: {e}", flush=True)
+        time.sleep(300)
+
+
+
+GUESS_MARK = " <span class='muted'>(auto)</span>"
+
+
 def connected_cell(c):
     if c.get("stale"):
         return "<td class='muted' title='the gateway is offline; this is its last report'>unknown</td>"
@@ -1190,6 +1683,7 @@ def render_page(site):
         f"<a href='/site?site={urllib.parse.quote(k or '')}'>Settings</a></td></tr>"
         for k, c in sorted(hb.items()) if not site or k == site) or "<tr><td colspan=8 class='muted'>No heartbeat yet</td></tr>"
     cards = []
+    camp_cache = {}
     for r in pops:
         q = r.get("quality", {})
         img = (f"<div class='thumb'><img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''></div>"
@@ -1199,7 +1693,13 @@ def render_page(site):
         flags += " [video]" if r.get("video_creative") else ""
         verdict = "" if q.get("usable", True) else f"<br><span class='bad'>{esc(q.get('reason'))}</span>"
         more = "" if site else f"<br><a href='?site={urllib.parse.quote(r.get('site_id') or '')}'>All PoP from this site</a>"
-        cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}<br>"
+        cm = campaign_for_record(r, camp_cache)
+        camp = ""
+        if cm:
+            guess = cm[1] == "auto"
+            camp = (f"<br><span title='{esc(cm[0]['campaign_id'])}{' (best guess)' if guess else ''}'>"
+                    f"{esc(cm[0]['name'])}{GUESS_MARK if guess else ''}</span>")
+        cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}{camp}<br>"
                      f"<span class='muted'>{esc(local_time(r.get('play_started_at'), True))} &middot; after "
                      f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}{more}</div></div>")
     rows = "".join(f"<tr><td>{esc(local_time(a.get('at')))}</td><td>{esc(disp(a))}</td><td>{esc(a.get('fault'))}</td>"
@@ -1299,9 +1799,15 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, sorted(recorded_sites().values(), key=lambda e: e["site_id"] or ""))
         if path == "/health.json":
             return self.reply(200, health_data())
-        if path in ("/roi", "/sites", "/site", "/sites/import", "/health"):
+        if path == "/bookings.json":
+            m = re.search(r"(?:^|&)week=(\d{4}-\d\d-\d\d)", query)
+            wk = monday(datetime.fromisoformat(m.group(1)).date()) if m else monday(datetime.now(LOCAL_TZ).date())
+            return self.reply(200, bookings_report(wk))
+        if path == "/bookings/screens":
+            return self.reply(200, vault_screens())
+        if path in ("/roi", "/sites", "/site", "/sites/import", "/health", "/bookings"):
             body = {"/roi": ROI_PAGE, "/sites": SITES_PAGE, "/site": SITE_PAGE, "/sites/import": IMPORT_PAGE,
-                    "/health": HEALTH_PAGE}[path].encode()
+                    "/health": HEALTH_PAGE, "/bookings": BOOKINGS_PAGE}[path].encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
         elif path == "/sites/template.csv":
@@ -1342,6 +1848,31 @@ class H(BaseHTTPRequestHandler):
             if self.authorised():
                 self.proxy("POST")
             return
+        if self.path in ("/bookings/upload", "/bookings/link"):
+            if not self.authorised():
+                return
+            raw = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 64 << 20))
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                return self.reply(400, {"error": "not a JSON file"})
+            if self.path == "/bookings/link":
+                sid, cr = body.get("site_id"), body.get("creative_id")
+                if not sid or not cr:
+                    return self.reply(400, {"error": "site_id and creative_id required"})
+                save_link(sid, cr, body.get("campaign_id") or "")
+                return self.reply(200, {"status": "saved"})
+            if not isinstance(body, dict) or not isinstance(body.get("proposals"), list):
+                return self.reply(400, {"error": "not a Vault pull: expected an object with a proposals list"})
+            body.setdefault("generated_at", iso(time.time()))
+            body.setdefault("source", "uploaded")
+            tmp = os.path.join(ARGS.out, "vault-bookings.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(body, f)
+            os.replace(tmp, os.path.join(ARGS.out, "vault-bookings.json"))
+            load_bookings()
+            threading.Thread(target=sync_expectations, daemon=True).start()
+            return self.reply(200, {"status": "loaded", "campaigns": len(body["proposals"])})
         if self.path == "/records/delete":         # review page: remove a site's stored records
             if not self.authorised():
                 return
@@ -1436,6 +1967,7 @@ def main():
             continue
         note_heartbeat(hb, received=t)
     threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=bookings_loop, daemon=True).start()
     print(f"receiver on {ARGS.bind}:{ARGS.port}, storing in {ARGS.out}", flush=True)
     ThreadingHTTPServer((ARGS.bind, ARGS.port), H).serve_forever()
 

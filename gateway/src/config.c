@@ -123,6 +123,8 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_int(o, "ptz_check", &c->ptz_check);
     get_int(o, "coverage_min_pct", &c->coverage_min_pct);
     get_int(o, "coverage_window_min", &c->coverage_window_min);
+    get_str(o, "vault_screen", c->vault_screen, sizeof c->vault_screen);
+    get_int(o, "expected_creatives", &c->expected_creatives);
     get_float(o, "ptz_tolerance", &c->ptz_tolerance);
     get_int(o, "realtime", &c->realtime);
     get_int(o, "loop", &c->loop);

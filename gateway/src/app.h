@@ -5,6 +5,7 @@
 #include "config.h"
 #include "popcore.h"
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -21,6 +22,7 @@ typedef struct {
     int64_t  last_frame_wall, last_play_wall;
     uint64_t plays_total;
     int64_t  play_ring[PLAY_RING];   /* wall times of recent plays       */
+    int      play_ring_id[PLAY_RING];/* their creative IDs               */
     int      play_head;
     int      fault_active[PC_FAULT_COUNT];
     int      stream_lost, camera_moved;
@@ -34,6 +36,8 @@ typedef struct {
     int64_t  connected_since_wall;   /* 0 while disconnected               */
     int64_t  connected_ms;           /* total connected time before connected_since */
     int      reconnects;             /* stream (re)connections after the first */
+    int      expected_creatives;     /* from bookings (0 = work it out)  */
+    unsigned expect_version;         /* bumped when it changes            */
     int64_t  coverage_since_wall;    /* coverage data valid from (0 = not counting) */
     float    coverage_window_pct;    /* last check over the alert window, -1 = not yet */
 } cam_status;
@@ -92,6 +96,27 @@ static inline int status_plays_since(const cam_status *s, int64_t now_wall, int6
     for (int i = 0; i < PLAY_RING; i++)
         if (s->play_ring[i] && now_wall - s->play_ring[i] <= window_ms && s->play_ring[i] <= now_wall) n++;
     return n;
+}
+
+/* Slots credited over the last window_ms: share-of-time aware (see runs.c),
+ * so a booking holding several slots back to back counts in full, while a
+ * missed change, hold-over or freeze does not. Status mutex held. */
+static int play_ref_cmp(const void *a, const void *b)
+{
+    int64_t x = ((const pc_play_ref *)a)->t, y = ((const pc_play_ref *)b)->t;
+    return x < y ? -1 : x > y;
+}
+static inline double status_slots_credited(const cam_status *s, int64_t now_wall, int64_t window_ms)
+{
+    int S = s->profile.slot_ms, N = s->profile.slot_count;
+    if (S <= 0) return 0;
+    static __thread pc_play_ref p[PLAY_RING];
+    int n = 0;
+    for (int i = 0; i < PLAY_RING; i++)
+        if (s->play_ring[i] && s->play_ring[i] <= now_wall)
+            p[n++] = (pc_play_ref){s->play_ring[i], s->play_ring_id[i]};
+    qsort(p, (size_t)n, sizeof p[0], play_ref_cmp);
+    return pc_runs_credited(p, n, now_wall - window_ms, now_wall, S, N, NULL, NULL, 0);
 }
 
 /* plays in the last hour for a camera (call with status mutex held) */

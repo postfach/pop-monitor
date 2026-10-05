@@ -174,19 +174,62 @@ and their images from the receiver.
 
 ## Coverage alert
 
-Coverage is plays logged ÷ plays the rotation should produce (one per slot). The gateway
-raises `low_coverage` when coverage over the last **30 minutes** falls below **90%**, and
-clears it once it is 2 points above the threshold again. It is only measured while the site
-is in operating hours, the video is connected and a slot length is set (not for takeovers);
-the count restarts after a restart, a video outage, a region edit or a rotation change, and
-the first judgement waits for a full window, so restarts don't raise it. Set the threshold
-and window per site on the Settings page (0 = off), or for every site in `config.json`:
-`"defaults": {"coverage_min_pct": 90, "coverage_window_min": 30}`.
+Coverage is slot time accounted for ÷ slot time the rotation should produce. Bookings are
+share of time, so one campaign can hold two or more slots in a row and play as one long run
+(or back-to-back copies). Each play is credited with its length in slots, capped at that
+creative's usual run, so a booking that fills 2 slots counts as 2 slots delivered, not 1
+play. A creative that holds over past its usual run (a stuck player) isn't credited for the
+extra time.
+
+The gateway raises `low_coverage` when coverage over the last **30 minutes** falls below
+**90%**, and clears it once it is 2 points above the threshold again. It is only measured
+while the site is in operating hours, the video is connected and a slot length is set (not
+for takeovers); the count restarts after a restart, a video outage, a region edit or a
+rotation change, and the first judgement waits for a full window, so restarts don't raise
+it. Set the threshold and window per site on the Settings page (0 = off), or for every site
+in `config.json`: `"defaults": {"coverage_min_pct": 90, "coverage_window_min": 30}`.
 
 Low coverage usually means similar creatives back to back aren't being told apart, the region
 needs adjusting, or the slot length is wrong. Coverage far above 100% means the slot length is
 set too long, or animated creatives are being split into several plays. The review page shows
 hourly coverage, and "warming up" during a site's first hour of counting.
+
+The fault checks also allow for share of time:
+
+* **Loop changed** means completed plays stop fitting whole slots (more than 40% off the slot
+  grid over two loops, twice in a row), not that the order of creatives changed.
+* **Missing creative** compares the creatives seen in recent whole loops with how many the
+  loop should hold: the number of certain Vault bookings when the site is linked to a Vault
+  screen (see Bookings), otherwise slots minus the extra slots each creative takes up.
+* **Frozen** waits for the current creative's usual run plus one slot before raising.
+
+## Bookings vs delivery (Vault)
+
+The **Bookings** page compares what each site played this week with what Vault says is
+booked on its screen, and works out **true coverage**: booked slots delivered ÷ booked slots,
+leaving out house and unbooked fill.
+
+1. A weekly pull of booked campaigns is saved as `vault-bookings.json` in the bookings
+   folder (`deploy/desktop/bookings/`, or `POP_BOOKINGS_DIR` for Portainer), or uploaded with
+   **Upload Vault pull** on the Bookings page. The format and the scheduled task are in
+   `docs/vault-pull.md`.
+2. Set each site's **Vault screen** on its Settings page (the list is filled from the pull),
+   or in the `vault_screen` column of the CSV import.
+3. The page lists the campaigns booked on that screen this week with their plays per loop,
+   and the creatives seen with their share of the loop. Creatives are matched to campaigns
+   by share (Vault doesn't say which artwork belongs to which campaign). Check each match
+   and confirm it, or mark a creative as house; confirmed links are kept.
+
+Each card shows true coverage, booked vs available slots, house and blank slots, and how much
+of the week has been monitored, with warnings for booked campaigns not seen, under-delivery,
+and more plays booked than the loop has slots.
+
+Limits of the Vault data: it gives each booking's first week, last week and number of weeks,
+not which weeks, so a booking with gaps is shown as "may be booked this week" (and left out of
+true coverage) unless this is its first or last week. `plays_per_loop` is the most in any
+week. Vault or Doohly API access would remove both limits, and Doohly's playlist would also
+say which creative belongs to which campaign. The receiver also tells the gateway how many
+campaigns are certainly booked, which the missing-creative check uses.
 
 ## Adding many sites
 

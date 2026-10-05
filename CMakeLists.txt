@@ -14,7 +14,7 @@ option(POP_BUILD_TOOLS   "Build popreplay (needs FFmpeg)" ON)
 # ---- detection core (no dependencies) ----
 add_library(popcore STATIC
   core/src/warp.c core/src/features.c core/src/detector.c
-  core/src/faults.c core/src/score.c)
+  core/src/faults.c core/src/score.c core/src/runs.c)
 target_include_directories(popcore PUBLIC core/include)
 target_link_libraries(popcore PUBLIC m)
 

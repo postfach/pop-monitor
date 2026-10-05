@@ -43,12 +43,14 @@ services:
       POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
       GATEWAY_URL: http://gateway:8090
+      BOOKINGS_FILE: /bookings/vault-bookings.json
       REVIEW_USER: ${REVIEW_USER:-}
       REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
     ports:
       - "${POP_REVIEW_PORT:-8080}:8080"
     volumes:
       - pop-received:/data
+      - ./bookings:/bookings:ro      # weekly Vault pull (vault-bookings.json) lands here
 
 volumes:
   pop-queue:

@@ -309,6 +309,54 @@ static void test_faults(void)
     CHECK(any == 0, "healthy rotation raised %d faults", any);
 }
 
+/* Share of time: a 6-slot loop of 8 s where creative 1 holds two slots back to
+ * back and creative 2 holds two slots spread through the loop. */
+static void test_share_of_time(void)
+{
+    pc_profile prof = {6, 8000};
+    pc_faults fm;
+    int raised[PC_FAULT_COUNT], ev[128], ids[128];
+    seg loop[] = {{1, 0, 16, 0}, {2, 0, 8, 0}, {3, 0, 8, 0}, {4, 0, 8, 0}, {2, 0, 8, 0}};
+    seg s[64];
+    int n = 0;
+    for (int l = 0; l < 8; l++) for (int i = 0; i < 5; i++) s[n++] = loop[i];
+    s[n++] = (seg){1, 0, 4, 0};
+    memset(raised, 0, sizeof raised);
+    int nev = run_sequence(s, n, 5, &prof, ev, ids, 128, &fm, raised);
+    CHECK(nev >= 38 && nev <= 41, "share of time: expected ~40 changes, got %d", nev);
+    CHECK(raised[PC_FAULT_LOOP_CHANGED] == 0, "share of time must not raise loop_changed");
+    CHECK(raised[PC_FAULT_MISSING_CREATIVE] == 0, "share of time must not raise missing_creative");
+    CHECK(raised[PC_FAULT_FROZEN] == 0, "share of time must not raise frozen");
+
+    /* slots credited over loops 2-8 should be the full 7 x 6 = 42 */
+    pc_play_ref p[130];
+    int np = 0;
+    p[np++] = (pc_play_ref){0, -1};
+    for (int i = 0; i < nev; i++) p[np++] = (pc_play_ref){ev[i], ids[i]};
+    double got = pc_runs_credited(p, np, 48000, 384000, 8000, 6, NULL, NULL, 0);
+    CHECK(fabs(got - 42) <= 1.0, "share of time: credited %.1f slots of 42", got);
+
+    /* hold-over: from loop 6 creative 3 stops playing and 2 stays up instead */
+    n = 0;
+    for (int l = 0; l < 5; l++) for (int i = 0; i < 5; i++) s[n++] = loop[i];
+    seg bad[] = {{1, 0, 16, 0}, {2, 0, 16, 0}, {4, 0, 8, 0}, {2, 0, 8, 0}};
+    for (int l = 0; l < 3; l++) for (int i = 0; i < 4; i++) s[n++] = bad[i];
+    s[n++] = (seg){1, 0, 4, 0};
+    memset(raised, 0, sizeof raised);
+    nev = run_sequence(s, n, 5, &prof, ev, ids, 128, &fm, raised);
+    np = 0;
+    p[np++] = (pc_play_ref){0, -1};
+    for (int i = 0; i < nev; i++) p[np++] = (pc_play_ref){ev[i], ids[i]};
+    got = pc_runs_credited(p, np, 240000, 384000, 8000, 6, NULL, NULL, 0);
+    CHECK(got <= 16 && got >= 14, "hold-over: credited %.1f of 18 slots in loops 6-8 (expected about 15)", got);
+    CHECK(raised[PC_FAULT_MISSING_CREATIVE] == 1, "hold-over should raise missing_creative (%d)", raised[PC_FAULT_MISSING_CREATIVE]);
+
+    /* with the booked number of creatives given, the same hold-over is still caught */
+    pc_faults_init(&fm, NULL, NULL, &prof);
+    pc_faults_set_expected_creatives(&fm, 4);
+    CHECK(fm.expected_creatives == 4, "expected creatives set");
+}
+
 static void test_snapshot_score(void)
 {
     uint8_t *a = malloc((size_t)FW * FH * 3), *b = malloc((size_t)FW * FH * 3);
@@ -393,6 +441,7 @@ int main(void)
     test_video_creative();
     test_creative_ids_under_exposure_drift();
     test_faults();
+    test_share_of_time();
     test_snapshot_score();
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("all popcore tests passed\n");

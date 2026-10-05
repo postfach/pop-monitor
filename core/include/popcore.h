@@ -282,6 +282,8 @@ typedef struct {
     int             cell_dark_plays[PC_CELLS];  /* plays seen while dark */
     int64_t         last_play_ms, start_ms, last_loop_check_ms;
     int             loop_bad_checks;
+    int             expected_creatives;             /* 0 = work it out from the loop */
+    int             cur_run_slots;                  /* usual run of the creative on screen */
     struct { int64_t t; int id; int blank; } plays[PC_PLAY_HISTORY];
     int             play_head, play_count;
     struct { int id; float sharp; } sharp_ref[64];
@@ -297,12 +299,33 @@ void pc_faults_init(pc_faults *m, const pc_faults_cfg *cfg,
                     const pc_detector_cfg *dcfg, const pc_profile *p);
 void pc_faults_set_profile(pc_faults *m, const pc_profile *p);
 void pc_faults_set_operating(pc_faults *m, int operating, int64_t now_ms);
+/* Distinct creatives the loop should hold (e.g. booked campaigns); 0 = auto. */
+void pc_faults_set_expected_creatives(pc_faults *m, int n);
 /* Call for every frame; pass the detector event if one fired, else NULL.
  * Returns number of queued fault events (read with pc_faults_pop). */
 int  pc_faults_push(pc_faults *m, const pc_features *f, const pc_event *ev,
                     int64_t now_ms);
 int  pc_faults_pop(pc_faults *m, pc_fault_event *out);
 const char *pc_fault_name(pc_fault_type t);
+
+/* ------------------------------------------------------------------ */
+/* Share-of-time accounting (runs.c)                                   */
+/* ------------------------------------------------------------------ */
+
+typedef struct { int64_t t; int id; } pc_play_ref;   /* a play: start time, creative */
+#define PC_RUNS_MAX_IDS 256
+
+/* Usual run length (whole slots) of each creative in plays p[0..n) (oldest
+ * first): the most common rounded duration of its completed plays. Fills
+ * ids/typ, returns how many creatives. */
+int    pc_runs_typical(const pc_play_ref *p, int n, int slot_ms, int slot_count,
+                       int *ids, int *typ, int max_ids);
+/* Slots credited over [from, to): each play earns its duration in whole slots,
+ * capped at its creative's usual run length; plays crossing the window edges
+ * earn the overlapping share. The last play runs until `to`. Optionally adds
+ * each creative's share to slots_by_id[j] for ids_in[j]. */
+double pc_runs_credited(const pc_play_ref *p, int n, int64_t from, int64_t to,
+                        int slot_ms, int slot_count, double *slots_by_id, const int *ids_in, int nids_in);
 
 /* ------------------------------------------------------------------ */
 /* Snapshot quality scoring                                            */

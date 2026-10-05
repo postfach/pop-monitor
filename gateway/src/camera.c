@@ -99,8 +99,9 @@ static void coverage_check(camera *cm, int reset)
     if (reset || !eligible) st->coverage_since_wall = 0;
     if (eligible && !st->coverage_since_wall) st->coverage_since_wall = w;
     int ready = eligible && w - st->coverage_since_wall >= win;
-    int plays = ready ? status_plays_since(st, w, win) : 0;
-    float pct = ready ? 100.f * plays * slot_ms / (float)win : -1.f;
+    double slots = ready ? status_slots_credited(st, w, win) : 0;
+    int plays = (int)(slots + 0.5);
+    float pct = ready ? (float)(100.0 * slots * slot_ms / (double)win) : -1.f;
     st->coverage_window_pct = pct;
     int active = st->low_coverage;
     pthread_mutex_unlock(&st->mu);
@@ -112,7 +113,7 @@ static void coverage_check(camera *cm, int reset)
         alerts_send(cm->app, c, "low_coverage", "cleared", w, w,
                     "no longer measured (outside operating hours, video down or rotation changed)", NULL, 0);
     } else if (ready && !active && pct < c->coverage_min_pct) {
-        snprintf(d, sizeof d, "coverage %.0f%% over the last %d min: %d of %d expected plays (alert below %d%%)",
+        snprintf(d, sizeof d, "coverage %.0f%% over the last %d min: %d of %d slots seen (alert below %d%%)",
                  pct, c->coverage_window_min, plays, expected, c->coverage_min_pct);
         LOGW(c->name, "%s", d);
         status_fault(cm, "low_coverage", 1);
@@ -542,6 +543,7 @@ static void *stream_thread(void *arg)
     pc_point roi[4];
     float inset;
     unsigned roi_ver = status_get_roi(st, roi, &inset);
+    unsigned expect_ver = (unsigned)-1;
     uint8_t *py = NULL, *pu = NULL, *pv = NULL;
     int64_t lost_since = 0, last_housekeep = 0, last_analysed = 0;
     int backoff = 2000, frames_in_window = 0, cov_reset = 1, connects = 0;
@@ -611,6 +613,14 @@ static void *stream_thread(void *arg)
                 st->profile = prof;
                 st->expected_per_hour = tr.expected_per_hour;
                 pthread_mutex_unlock(&st->mu);
+                pthread_mutex_lock(&st->mu);
+                unsigned ev_ver = st->expect_version;
+                int expect = st->expected_creatives;
+                pthread_mutex_unlock(&st->mu);
+                if (ev_ver != expect_ver) {             /* booked creatives changed */
+                    pc_faults_set_expected_creatives(&fm, expect);
+                    expect_ver = ev_ver;
+                }
                 coverage_check(cm, prof_changed || cov_reset);
                 cov_reset = 0;
                 last_housekeep = now;
@@ -638,6 +648,7 @@ static void *stream_thread(void *arg)
                 pc_faults_init(&fm, &c->faults, &c->det, &prof);
                 pc_faults_set_operating(&fm, util_in_time_range(c->operating_hours, util_wall_ms()), now);
                 cov_reset = 1;
+                expect_ver = (unsigned)-1;
                 LOGI(c->name, "region updated: (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f), inset %.0f%%",
                      roi[0].x, roi[0].y, roi[1].x, roi[1].y, roi[2].x, roi[2].y, roi[3].x, roi[3].y, inset);
             }
@@ -666,6 +677,7 @@ static void *stream_thread(void *arg)
                 st->last_play_wall = w;
                 st->plays_total++;
                 st->play_ring[st->play_head] = w;
+                st->play_ring_id[st->play_head] = ev.creative_id;
                 st->play_head = (st->play_head + 1) % PLAY_RING;
                 pthread_mutex_unlock(&st->mu);
             }

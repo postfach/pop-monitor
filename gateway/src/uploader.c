@@ -259,7 +259,9 @@ static char *heartbeat_json(void)
         cJSON_AddNumberToObject(c, "plays_last_hour", ph);
         if (s->expected_per_hour > 0) {
             cJSON_AddNumberToObject(c, "expected_per_hour", s->expected_per_hour);
-            cJSON_AddNumberToObject(c, "coverage", (double)ph / s->expected_per_hour);
+            double sl = status_slots_credited(s, now, 3600000);
+            cJSON_AddNumberToObject(c, "slots_last_hour", (int)(sl + 0.5));
+            cJSON_AddNumberToObject(c, "coverage", sl / s->expected_per_hour);
         }
         if (s->coverage_since_wall)
             cJSON_AddNumberToObject(c, "coverage_data_min", (int)((now - s->coverage_since_wall) / 60000));
@@ -268,6 +270,7 @@ static char *heartbeat_json(void)
             cJSON_AddNumberToObject(c, "coverage_window_pct", (int)(s->coverage_window_pct + 0.5f));
         cJSON_AddNumberToObject(c, "uptime_pct", (int)(status_uptime(s, now) * 1000 + 0.5) / 10.0);
         cJSON_AddNumberToObject(c, "reconnects", s->reconnects);
+        if (*g->cameras[i].vault_screen) cJSON_AddStringToObject(c, "vault_screen", g->cameras[i].vault_screen);
         cJSON_AddNumberToObject(c, "slot_count", s->profile.slot_count);
         cJSON_AddNumberToObject(c, "slot_ms", s->profile.slot_ms);
         cJSON *f = cJSON_AddArrayToObject(c, "active_faults");

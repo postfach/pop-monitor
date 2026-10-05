@@ -116,6 +116,8 @@ static void status_init_from_cfg(int i)
 {
     cam_status *s = &A->status[i];
     status_reset(s);
+    s->expected_creatives = A->cfg->cameras[i].expected_creatives;
+    s->expect_version = 1;
     memcpy(s->roi, A->cfg->cameras[i].roi, sizeof s->roi);
     s->inset_pct = A->cfg->cameras[i].inset_pct;
 }
@@ -271,6 +273,8 @@ static cJSON *camera_json(int i)
     cJSON_AddNumberToObject(j, "dayparts", c->n_dayparts);
     cJSON_AddStringToObject(j, "operating_hours", c->operating_hours);
     cJSON_AddBoolToObject(j, "ptz_check", c->ptz_check);
+    cJSON_AddStringToObject(j, "vault_screen", c->vault_screen);
+    cJSON_AddNumberToObject(j, "expected_creatives", c->expected_creatives);
     cJSON_AddNumberToObject(j, "coverage_min_pct", c->coverage_min_pct);
     cJSON_AddNumberToObject(j, "coverage_window_min", c->coverage_window_min);
     cJSON_AddBoolToObject(j, "coverage_custom", cJSON_GetObjectItemCaseSensitive(o, "coverage_min_pct") ||
@@ -284,6 +288,11 @@ static cJSON *camera_json(int i)
     cJSON_AddStringToObject(j, "state", pc_state_name(s->state));
     cJSON_AddNumberToObject(j, "plays_last_hour", status_plays_last_hour(s, util_wall_ms()));
     cJSON_AddNumberToObject(j, "expected_per_hour", s->expected_per_hour);
+    if (s->expected_per_hour > 0) {
+        double sl = status_slots_credited(s, util_wall_ms(), 3600000);
+        cJSON_AddNumberToObject(j, "slots_last_hour", (int)(sl + 0.5));
+        cJSON_AddNumberToObject(j, "coverage", sl / s->expected_per_hour);
+    }
     if (s->last_play_wall) {
         char ts[64];
         util_iso8601(s->last_play_wall, ts, sizeof ts);
@@ -332,7 +341,7 @@ static void handle_settings(int fd)
 static void merge_form(cJSON *obj, const cJSON *in)
 {
     static const char *strs[] = {"site_id", "model", "host", "username", "rtsp_transport",
-                                 "operating_hours", NULL};
+                                 "operating_hours", "vault_screen", NULL};
     for (int k = 0; strs[k]; k++) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, strs[k]);
         if (!cJSON_IsString(v)) continue;
@@ -597,6 +606,40 @@ static void handle_set_roi(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+/* Booking-derived expectations, set by the receiver from Vault. Applied live:
+ * the camera is not restarted. Body: {"expected_creatives": n} (0 = auto). */
+static void handle_expectations(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body);
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, "expected_creatives");
+    if (!cJSON_IsNumber(v) || v->valueint < 0 || v->valueint > 200) {
+        cJSON_Delete(in);
+        respond_error(fd, 400, "expected_creatives must be 0-200");
+        return;
+    }
+    int n = v->valueint;
+    cJSON_Delete(in);
+    pthread_mutex_lock(&A->cams_mu);
+    camera_cfg *c = &A->cfg->cameras[idx];
+    int changed = c->expected_creatives != n;
+    c->expected_creatives = n;
+    if (n) set_item(A->cfg->cam_json[idx], "expected_creatives", cJSON_CreateNumber(n));
+    else cJSON_DeleteItemFromObjectCaseSensitive(A->cfg->cam_json[idx], "expected_creatives");
+    cam_status *s = &A->status[idx];
+    pthread_mutex_lock(&s->mu);
+    s->expected_creatives = n;
+    s->expect_version++;
+    pthread_mutex_unlock(&s->mu);
+    if (changed) {
+        save_all();
+        LOGI(c->name, "expecting %d distinct creatives per loop%s", n, n ? " (from bookings)" : " (worked out from the loop)");
+    }
+    pthread_mutex_unlock(&A->cams_mu);
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddNumberToObject(ok, "expected_creatives", n);
+    respond_json(fd, 200, ok);
+}
+
 static void handle(int fd)
 {
     struct timeval tv = {10, 0};
@@ -672,6 +715,7 @@ static void handle(int fd)
         else if (!strcmp(method, "GET") && !strcmp(action, "snapshot")) handle_snapshot(fd, idx);
         else if ((!strcmp(method, "PUT") || !strcmp(method, "POST")) && !strcmp(action, "roi"))
             handle_set_roi(fd, idx, body);
+        else if (!strcmp(method, "PUT") && !strcmp(action, "expectations")) handle_expectations(fd, idx, body);
         else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
         else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);
         else if (!*action && !strcmp(method, "GET")) {

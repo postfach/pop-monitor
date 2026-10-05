@@ -1,5 +1,6 @@
 /* Fault monitor: black, blank, frozen, blank slot, loop, partial, blur. */
 #include "popcore.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,6 +38,7 @@ void pc_faults_set_profile(pc_faults *m, const pc_profile *p)
     if (p) m->profile = *p; else memset(&m->profile, 0, sizeof m->profile);
     pc_profile_triggers(&m->profile, &m->trig);
     m->loop_bad_checks = 0;
+    m->cur_run_slots = m->profile.slot_count > 2 ? m->profile.slot_count - 1 : 1;
 }
 
 static void emit(pc_faults *m, pc_fault_type t, int raised, int one_shot,
@@ -84,6 +86,23 @@ void pc_faults_set_operating(pc_faults *m, int operating, int64_t now)
     m->operating = operating;
 }
 
+static int history(const pc_faults *m, pc_play_ref *out, int *blank);
+
+/* Usual run (slots) of the creative now on screen; a creative not seen
+ * completing a play yet may hold up to a loop less one slot. */
+static void current_run(pc_faults *m, int id)
+{
+    int N = m->profile.slot_count, S = m->profile.slot_ms;
+    int unknown = N > 2 ? N - 1 : 1;
+    m->cur_run_slots = unknown;
+    if (S <= 0 || N <= 1) return;
+    pc_play_ref p[PC_PLAY_HISTORY];
+    int n = history(m, p, NULL);
+    int ids[PC_RUNS_MAX_IDS], typ[PC_RUNS_MAX_IDS];
+    int k = pc_runs_typical(p, n, S, N, ids, typ, PC_RUNS_MAX_IDS);
+    for (int j = 0; j < k; j++) if (ids[j] == id) { m->cur_run_slots = typ[j]; return; }
+}
+
 static void record_play(pc_faults *m, const pc_event *ev, int64_t now)
 {
     m->plays[m->play_head].t = ev->change_start_ms;
@@ -92,6 +111,7 @@ static void record_play(pc_faults *m, const pc_event *ev, int64_t now)
     m->play_head = (m->play_head + 1) % PC_PLAY_HISTORY;
     if (m->play_count < PC_PLAY_HISTORY) m->play_count++;
     m->last_play_ms = now;
+    current_run(m, ev->creative_id);
     for (int i = 0; i < PC_CELLS; i++)
         if (m->cell_dark_since[i]) m->cell_dark_plays[i]++;
 
@@ -127,34 +147,96 @@ static void record_play(pc_faults *m, const pc_event *ev, int64_t now)
     }
 }
 
+void pc_faults_set_expected_creatives(pc_faults *m, int n)
+{
+    m->expected_creatives = n > 0 ? n : 0;
+}
+
+/* Plays in the history, oldest first. Returns count. */
+static int history(const pc_faults *m, pc_play_ref *out, int *blank)
+{
+    int n = 0;
+    for (int i = m->play_count - 1; i >= 0; i--) {
+        int k = (m->play_head - 1 - i + PC_PLAY_HISTORY) % PC_PLAY_HISTORY;
+        out[n].t = m->plays[k].t;
+        out[n].id = m->plays[k].id;
+        if (blank) blank[n] = m->plays[k].blank;
+        n++;
+    }
+    return n;
+}
+
+/* Every loop: is the slot length still right (loop_changed), and is every
+ * creative still there (missing_creative)? Both allow for bookings that take
+ * several slots, back to back or spread through the loop. */
 static void loop_check(pc_faults *m, int64_t now)
 {
-    int N = m->profile.slot_count, L = m->trig.loop_ms;
-    if (N <= 1 || L <= 0) return;
+    int N = m->profile.slot_count, L = m->trig.loop_ms, S = m->profile.slot_ms;
+    if (N <= 1 || L <= 0 || S <= 0) return;
     if (now - m->start_ms < 2LL * L) return;            /* need history     */
     if (now - m->last_loop_check_ms < L) return;
     m->last_loop_check_ms = now;
 
-    int count = 0, ids[PC_PLAY_HISTORY], nid = 0;
-    for (int i = 0; i < m->play_count; i++) {
-        int k = (m->play_head - 1 - i + PC_PLAY_HISTORY) % PC_PLAY_HISTORY;
-        if (now - m->plays[k].t > 2LL * L) break;
-        count++;
-        if (m->plays[k].blank) continue;
-        int seen = 0;
-        for (int j = 0; j < nid; j++) if (ids[j] == m->plays[k].id) { seen = 1; break; }
-        if (!seen) ids[nid++] = m->plays[k].id;
+    pc_play_ref p[PC_PLAY_HISTORY];
+    int blank[PC_PLAY_HISTORY];
+    int n = history(m, p, blank);
+    int64_t from = now - 2LL * L;
+
+    /* loop_changed: completed plays should last a whole number of slots */
+    int done = 0, off = 0;
+    for (int i = 0; i + 1 < n; i++) {
+        if (p[i].t < from) continue;
+        double f = (double)(p[i + 1].t - p[i].t) / S;
+        double frac = fabs(f - floor(f + 0.5));
+        if (f < 0.75 || (frac > 0.3 && f < N)) off++;
+        done++;
     }
     char d[160];
-    int loop_bad = count < 2 * N - 1 || count > 2 * N + 1;
-    snprintf(d, sizeof d, "%d plays in last 2 loops, expected %d (%d slots x %d ms)",
-             count, 2 * N, N, m->profile.slot_ms);
-    /* Require two consecutive bad checks; clear on the first good one. */
+    int loop_bad = done >= 3 && off * 10 > done * 4;
+    snprintf(d, sizeof d, "%d of %d plays in the last 2 loops don't fit %d ms slots", off, done, S);
     if (loop_bad) m->loop_bad_checks++; else m->loop_bad_checks = 0;
     track(m, PC_FAULT_LOOP_CHANGED, m->loop_bad_checks >= 2, 0, now, d);
 
-    snprintf(d, sizeof d, "%d distinct creatives in last 2 loops, expected %d", nid, N);
-    track(m, PC_FAULT_MISSING_CREATIVE, nid < N && !loop_bad, 0, now, d);
+    /* missing_creative: distinct non-blank creatives in the last 2 loops */
+    int ids[PC_PLAY_HISTORY], nid = 0;
+    for (int i = 0; i < n; i++) {
+        if (blank[i] || (i + 1 < n ? p[i + 1].t : now) <= from) continue;
+        int seen = 0;
+        for (int j = 0; j < nid; j++) if (ids[j] == p[i].id) { seen = 1; break; }
+        if (!seen) ids[nid++] = p[i].id;
+    }
+    int expected = m->expected_creatives;
+    const char *why = "booked";
+    if (!expected) {
+        /* Work it out from the whole history: each creative's slots per loop
+         * (capped at its usual run, so a hold-over doesn't count). A creative
+         * holding k slots per loop leaves room for k - 1 fewer creatives. */
+        why = "from the loop";
+        int64_t h0 = n ? p[0].t : now;
+        int whole = (int)((now - h0) / L);           /* whole loops of history */
+        double loops = whole;
+        h0 = now - (int64_t)whole * L;
+        expected = 0;                                   /* not enough history yet */
+        if (loops >= 2) {
+            expected = N;
+            int hid[PC_RUNS_MAX_IDS], nh = 0;
+            double share[PC_RUNS_MAX_IDS];
+            for (int i = 0; i < n && nh < PC_RUNS_MAX_IDS; i++) {
+                if (blank[i]) continue;
+                int seen = 0;
+                for (int j = 0; j < nh; j++) if (hid[j] == p[i].id) { seen = 1; break; }
+                if (!seen) { hid[nh] = p[i].id; share[nh] = 0; nh++; }
+            }
+            pc_runs_credited(p, n, h0, now, S, N, share, hid, nh);
+            for (int j = 0; j < nh; j++) {
+                int k = (int)floor(share[j] / loops + 0.5);
+                if (k > 1) expected -= k - 1;
+            }
+            if (expected < 1) expected = 1;
+        }
+    }
+    snprintf(d, sizeof d, "%d distinct creatives in last 2 loops, expected %d (%s)", nid, expected, why);
+    track(m, PC_FAULT_MISSING_CREATIVE, expected > 0 && nid < expected && !loop_bad, 0, now, d);
 }
 
 int pc_faults_push(pc_faults *m, const pc_features *f, const pc_event *ev, int64_t now)
@@ -187,8 +269,11 @@ int pc_faults_push(pc_faults *m, const pc_features *f, const pc_event *ev, int64
 
     if (ev && ev->type == PC_EV_NEW_PLAY) record_play(m, ev, now);
 
+    /* frozen: no change for a slot longer than the creative's usual run (a
+     * booking can hold several slots back to back) */
     int frozen_ms = m->profile.slot_count == 1 ? 0          /* takeover */
-                  : m->profile.slot_ms > 0 ? m->trig.frozen_ms : m->cfg.frozen_default_ms;
+                  : m->profile.slot_ms > 0 ? (m->cur_run_slots + 1) * m->profile.slot_ms
+                  : m->cfg.frozen_default_ms;
     char d[96];
     snprintf(d, sizeof d, "no creative change for over %d s", frozen_ms / 1000);
     track(m, PC_FAULT_FROZEN, on && !blank && frozen_ms > 0 && now - m->last_play_ms >= frozen_ms,

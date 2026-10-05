@@ -44,6 +44,8 @@ typedef struct {
     int   ptz_check;            /* compare PTZ position to baseline    */
     int   coverage_min_pct;     /* low_coverage alert below this (0 = off) */
     int   coverage_window_min;  /* ...measured over this many minutes  */
+    char  vault_screen[96];     /* screen name in Vault (bookings)      */
+    int   expected_creatives;   /* distinct creatives booked (0 = auto) */
     float ptz_tolerance;        /* degrees / zoom units                */
     pc_detector_cfg det;
     pc_faults_cfg   faults;

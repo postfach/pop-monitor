@@ -13,8 +13,16 @@ Fault injections (seconds from start):
 """
 import numpy as np
 
+import os
+
 SLOT = 8.0
 ROT = ["A", "B", "C", "D"]
+# Share-of-time variant for bookings tests: SIM_ROTATION=A,A,B,C,D,B gives a
+# 6-slot loop where A holds two slots back to back and B two slots spread out.
+# Custom rotations have no fault injections.
+CUSTOM = bool(os.environ.get("SIM_ROTATION"))
+if CUSTOM:
+    ROT = [x.strip() for x in os.environ["SIM_ROTATION"].split(",") if x.strip()]
 # normalised board corners: TL, TR, BR, BL (also used in the gateway config)
 QUAD = [(0.18, 0.16), (0.84, 0.22), (0.82, 0.80), (0.19, 0.86)]
 DURATION = 200.0
@@ -54,7 +62,7 @@ def _uv(w, h):
 
 
 def _creative(name, u, v, t):
-    seed = {"A": 11, "B": 23, "C": 37, "D": 51}[name]
+    seed = {"A": 11, "B": 23, "C": 37, "D": 51, "E": 67, "F": 79}[name]
     rng = np.random.RandomState(seed)
     pal = rng.randint(30, 230, size=(4, 8, 3)).astype(np.float32)
     bx = np.clip((u * 8).astype(int), 0, 7)
@@ -77,6 +85,9 @@ def _creative(name, u, v, t):
 
 def scene_at(t):
     """(current creative or None for black, previous creative, crossfade weight)."""
+    if CUSTOM:
+        k = int(t // SLOT) % len(ROT)
+        return ROT[k], None, 1.0
     if 160.0 <= t < 176.0:
         return None, None, 0.0
     k = int(t // SLOT) % len(ROT)
@@ -95,6 +106,11 @@ def render(t, w=1280, h=720, noise=True):
     frame = bg.copy()
     name, prev, mix = scene_at(t)
     local = t % SLOT                 # creatives play from their own start, like real ads
+    if CUSTOM and name is not None:  # a creative holding slots back to back plays on
+        k = int(t // SLOT) % len(ROT)
+        while k > 0 and ROT[k - 1] == name:
+            k -= 1
+            local += SLOT
     if name is None:
         board = np.full(u.shape + (3,), 3.0, np.float32)
     else:

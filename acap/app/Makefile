@@ -1,7 +1,7 @@
 PROGS = popmonitor
 CORE  = ../../core
 SRCS  = popmonitor.c $(CORE)/src/warp.c $(CORE)/src/features.c $(CORE)/src/detector.c \
-        $(CORE)/src/faults.c $(CORE)/src/score.c
+        $(CORE)/src/faults.c $(CORE)/src/score.c $(CORE)/src/runs.c
 OBJS  = $(SRCS:.c=.o)
 
 PKGS = glib-2.0 gio-2.0 vdostream axparameter
