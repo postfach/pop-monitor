@@ -14,6 +14,7 @@ static int failures = 0;
 static const pc_point QUAD[4] = {{0.16f, 0.17f}, {0.88f, 0.25f}, {0.86f, 0.83f}, {0.17f, 0.89f}};
 
 static uint32_t rng = 12345;
+static double g_gain = 1, g_offset = 0;   /* simulated camera exposure */
 static int rnd(void) { rng = rng * 1103515245u + 12345u; return (int)((rng >> 16) & 0x7fff); }
 
 /* Creative pattern at board coordinate (u,v) in [0,1]. */
@@ -32,6 +33,14 @@ static void pattern(int k, double u, double v, double t, int *r, int *g, int *b)
     double stripe = sin((u * (10 + k % 7) + v * (4 + k % 3)) * 6.283);
     int d = (int)(30 * stripe);
     *r += d; *g += d; *b += d;
+    /* k == 62: video whose left half is identical to creative 1, so the cut
+     * from it into creative 1 changes only about half the board */
+    if (k == 62 && u < 0.5) { pattern(1, u, v, t, r, g, b); return; }
+    if (k == 62) {
+        int m = (int)(70 * sin(t * 4.0 + bx * 1.3 + by * 2.1));
+        *r = 120 + m; *g = 90 - m; *b = 160 + m / 2;
+        return;
+    }
     /* k == 60: full-motion video creative, every zone keeps changing */
     if (k >= 60 && k < 70) {
         int m = (int)(70 * sin(t * 4.0 + bx * 1.3 + by * 2.1));
@@ -77,6 +86,7 @@ static void render(uint8_t *rgb, int k, int k2, double mix, double t, double blu
                     b = (int)(b * (1 - mix) + b2 * mix);
                 }
             }
+            r = (int)(r * g_gain + g_offset); g = (int)(g * g_gain + g_offset); b = (int)(b * g_gain + g_offset * 0.8);
             int n = rnd() % 7 - 3;                            /* sensor noise */
             p[0] = (uint8_t)fmin(255, fmax(0, r + n));
             p[1] = (uint8_t)fmin(255, fmax(0, g + n));
@@ -125,7 +135,7 @@ static void test_warp(void)
     pc_warp_free(&w);
 }
 
-typedef struct { int k, k2; double dur, fade; } seg;
+typedef struct { int k, k2; double dur, fade, gain, offset; } seg;   /* gain 0 = 1 */
 
 static int run_sequence(const seg *s, int nseg, int fps, const pc_profile *prof,
                         int *events, int *ids, int maxev, pc_faults *fm, int *faults_raised)
@@ -140,6 +150,8 @@ static int run_sequence(const seg *s, int nseg, int fps, const pc_profile *prof,
     int nev = 0;
     for (int i = 0; i < nseg; i++) {
         int frames = (int)(s[i].dur * fps);
+        g_gain = s[i].gain > 0 ? s[i].gain : 1;
+        g_offset = s[i].offset;
         for (int j = 0; j < frames; j++, t += 1.0 / fps) {
             double local = (double)j / fps;
             if (s[i].fade > 0 && local < s[i].fade)   /* k2 = previous creative */
@@ -164,6 +176,7 @@ static int run_sequence(const seg *s, int nseg, int fps, const pc_profile *prof,
     }
     free(rgb);
     pc_warp_free(&w);
+    g_gain = 1; g_offset = 0;
     return nev;
 }
 
@@ -203,6 +216,15 @@ static void test_video_creative(void)
         CHECK(abs(ev[0] - 10000) <= 400 && abs(ev[1] - 20000) <= 400 && abs(ev[2] - 30000) <= 400,
               "video plays at %d %d %d", ev[0], ev[1], ev[2]);
 
+    /* video into a static creative that shares half the screen: the cut is
+     * small, but the static creative must still be logged at its start */
+    seg s3[] = {{2, 0, 10, 0}, {62, 0, 10, 0}, {1, 0, 10, 0}, {3, 0, 10, 0}, {2, 0, 3, 0}};
+    n = run_sequence(s3, 5, 5, &prof, ev, ids, 16, NULL, NULL);
+    CHECK(n == 4, "video into half-matching creative: expected 4 plays, got %d", n);
+    if (n == 4)
+        CHECK(abs(ev[1] - 20000) <= 400 && abs(ev[2] - 30000) <= 400,
+              "plays at %d %d %d %d", ev[0], ev[1], ev[2], ev[3]);
+
     /* back-to-back video creatives: second is logged at the inferred boundary */
     seg s2[] = {{1, 0, 10, 0}, {60, 0, 10, 0}, {61, 0, 10, 0}, {2, 0, 10, 0}, {3, 0, 4, 0}};
     n = run_sequence(s2, 5, 5, &prof, ev, ids, 16, NULL, NULL);
@@ -210,6 +232,31 @@ static void test_video_creative(void)
     if (n == 4)
         CHECK(abs(ev[1] - 20000) <= 400 && abs(ev[2] - 30000) <= 400,
               "back-to-back video plays at %d %d %d %d", ev[0], ev[1], ev[2], ev[3]);
+}
+
+static void test_creative_ids_under_exposure_drift(void)
+{
+    /* 6 creatives x 3 loops; every play has different exposure, contrast
+     * and a slight cast, as a real camera does through the day. */
+    seg s[19];
+    const double gains[] = {1.0, 0.75, 1.25, 0.85, 1.15, 0.7, 1.3, 0.9, 1.1, 0.8, 1.2, 0.95,
+                            1.05, 0.72, 1.28, 0.88, 1.12, 0.78};
+    const double offs[] = {0, 18, -15, 10, -20, 25, -10, 5, -5, 15, -18, 8, -8, 22, -12, 12, -22, 3};
+    for (int i = 0; i < 18; i++) { s[i] = (seg){1 + i % 6, 0, 8, 0, gains[i], offs[i]}; }
+    s[18] = (seg){1, 0, 3, 0, 1, 0};
+    int ev[32], ids[32];
+    pc_profile prof = {6, 8000};
+    int n = run_sequence(s, 19, 5, &prof, ev, ids, 32, NULL, NULL);
+    CHECK(n == 18, "expected 18 plays, got %d", n);
+    int distinct[64] = {0}, nd = 0;
+    for (int i = 0; i < n; i++) {
+        int seen = 0;
+        for (int j = 0; j < nd; j++) if (distinct[j] == ids[i]) seen = 1;
+        if (!seen) distinct[nd++] = ids[i];
+    }
+    CHECK(nd == 6, "6 creatives under exposure drift should give 6 IDs, got %d", nd);
+    for (int i = 6; i < n; i++)
+        CHECK(ids[i] == ids[i - 6], "play %d id %d should repeat play %d id %d", i, ids[i], i - 6, ids[i - 6]);
 }
 
 static void test_faults(void)
@@ -344,6 +391,7 @@ int main(void)
     test_warp();
     test_detector_rotation();
     test_video_creative();
+    test_creative_ids_under_exposure_drift();
     test_faults();
     test_snapshot_score();
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }

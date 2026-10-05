@@ -24,7 +24,7 @@ typedef struct {
 
 typedef struct {
     int  active;                /* slot in use (cameras can be added/removed live) */
-    char site_id[64], name[64], model[32];
+    char site_id[64], name[64], model[32];   /* name = display name (site ID if unset) */
     char host[128], username[64], password[128];
     char rtsp_url[1024];        /* full URL; built from host if empty  */
     char vapix_url[256];        /* base URL; http://host if empty      */
@@ -65,6 +65,7 @@ typedef struct {
     int  control_port;          /* live-settings API for the review page (0 = off) */
     char state_file[600];       /* legacy region edits (migrated into cameras_file) */
     char cameras_file[600];     /* camera list managed from the review page */
+    char state_dir[520];        /* where the gateway keeps its own files     */
     int  cameras_from_state;    /* 1 if cameras came from cameras_file      */
     void *defaults_json;        /* cJSON: "defaults" from config.json       */
     void *cam_json[MAX_CAMERAS];/* cJSON: each camera's own settings        */
@@ -77,9 +78,11 @@ int  config_load(const char *path, gateway_cfg *g, char *err, size_t errlen);
 int  config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *out, char *err, size_t errlen);
 /* Write the active cameras' JSON objects to cameras_file. */
 int  config_save_cameras(const gateway_cfg *g);
-/* Slot index of the active camera with this name, or -1. */
-int  config_find_camera(const gateway_cfg *g, const char *name);
+/* Slot index of the active camera with this site ID, or -1. */
+int  config_find_camera(const gateway_cfg *g, const char *site_id);
 int  config_active_count(const gateway_cfg *g);
+/* File holding a site's creative library (keyed by site ID). */
+void config_library_path(const gateway_cfg *g, const char *site_id, char *out, size_t n);
 void config_free(gateway_cfg *g);
 /* Profile in force now for this camera (dayparts, else default). */
 pc_profile config_active_profile(const camera_cfg *c, int64_t epoch_ms);

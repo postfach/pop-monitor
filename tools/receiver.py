@@ -12,7 +12,7 @@ idempotency, then stores everything under --out:
   python3 tools/receiver.py --port 8080 --api-key KEY --hmac-key SECRET --out ./received
 
 GET / shows a review page: latest PoP images, alerts and camera status
-(filter with ?site=SITE_ID), and /roi?camera=NAME edits a camera's region
+(filter with ?site=SITE_ID), and /roi?site=SITE_ID edits a camera's region
 live. /api/* is forwarded to the gateway's live-settings API (GATEWAY_URL).
 Set REVIEW_USER and REVIEW_PASSWORD to put a login on the pages.
 
@@ -89,7 +89,7 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 <option value="120">Every 2 min</option><option value="300">Every 5 min</option><option value="600">Every 10 min</option>
 <option value="900">Every 15 min</option><option value="1800">Every 30 min</option><option value="3600">Every hour</option></select>
 <button id="now" type="button">Refresh now</button><span id="next" class="muted"></span></div></div>
-<h2>Cameras</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th></th></tr>{cams}</table></div>
+<h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th></th></tr>{cams}</table></div>
 <h2>Latest PoP images</h2><div class="grid">{pops}</div>
 <h2>Alerts</h2><div class="wrap"><table><tr><th>Time (UTC)</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
 </main>{refresh_js}</body></html>"""
@@ -135,14 +135,14 @@ async function load() {
     const cams = await r.json(), st = s.ok ? await s.json() : {};
     document.getElementById('sub').textContent = `${cams.length} site(s) on gateway ${st.gateway_id || ''}`;
     document.getElementById('rows').innerHTML = cams.map(c => {
-      const q = encodeURIComponent(c.name);
+      const q = encodeURIComponent(c.id);
       const exp = c.expected_per_hour ? ` <span class="muted">of ${c.expected_per_hour}</span>` : '';
-      return `<tr><td><b>${esc(c.site_id)}</b>${c.display_name ? `<br><span class="muted">${esc(c.display_name)}</span>` : ''}</td>
+      return `<tr><td><b>${esc(c.name)}</b>${c.name !== c.id ? `<br><span class="muted">${esc(c.id)}</span>` : ''}</td>
         <td>${esc(c.model)}</td><td>${hostText(c)}</td>
         <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
         <td>${rotation(c)}</td><td>${c.plays_last_hour}${exp}</td>
         <td class="bad">${esc(c.active_faults.join(', '))}</td>
-        <td class="actions"><a href="/site?camera=${q}">Settings</a><a href="/roi?camera=${q}">Region</a><a href="/?site=${encodeURIComponent(c.site_id)}">PoP</a></td></tr>`;
+        <td class="actions"><a href="/site?site=${q}">Settings</a><a href="/roi?site=${q}">Region</a><a href="/?site=${q}">PoP</a></td></tr>`;
     }).join('') || '<tr><td colspan="8" class="muted">No sites yet. Click Add site.</td></tr>';
     if (st.cameras_from_state) {
       const n = document.getElementById('note'); n.hidden = false;
@@ -242,7 +242,7 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 <p id="msg"></p><div id="testout"></div>
 </form>
 </main><script>
-const params = new URLSearchParams(location.search), editing = params.get('camera');
+const params = new URLSearchParams(location.search), editing = params.get('site') || params.get('camera');
 const f = document.getElementById('f'), $ = id => document.getElementById(id);
 const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || 'muted'; };
 let current = null;
@@ -265,7 +265,8 @@ async function init() {
   const r = await fetch('/api/cameras/' + encodeURIComponent(editing));
   if (!r.ok) { msg('Could not load this site: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad'); return; }
   current = await r.json();
-  $('title').textContent = current.site_id;
+  $('title').textContent = current.name;
+  document.title = current.name + ' – settings';
   $('sub').innerHTML = (current.connected ? '<span class="ok">Video connected</span>' : '<span class="bad">Video not connected</span>') +
     (current.active_faults.length ? ' &middot; <span class="bad">' + current.active_faults.join(', ') + '</span>' : '');
   for (const k of ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override'])
@@ -313,23 +314,23 @@ f.addEventListener('submit', async ev => {
   const j = await r.json().catch(() => ({}));
   $('save').disabled = false;
   if (!r.ok) { msg('Not saved: ' + (j.error || r.statusText), 'bad'); return; }
-  if (!editing) { location.href = '/roi?camera=' + encodeURIComponent(j.name) + '&new=1'; return; }
-  if (j.name !== editing) { history.replaceState(null, '', '/site?camera=' + encodeURIComponent(j.name)); }
+  if (!editing) { location.href = '/roi?site=' + encodeURIComponent(j.id) + '&new=1'; return; }
+  if (j.id !== editing) { location.href = '/site?site=' + encodeURIComponent(j.id); return; }
   location.reload();
 });
 
 $('test').onclick = async () => {
-  const name = current.name; $('testout').innerHTML = ''; msg('Asking the camera for a snapshot (saved settings)…');
+  const name = current.id; $('testout').innerHTML = ''; msg('Asking the camera for a snapshot (saved settings)…');
   const r = await fetch('/api/cameras/' + encodeURIComponent(name) + '/snapshot?t=' + Date.now());
   if (!r.ok) { msg((await r.json().catch(() => ({}))).error || 'Snapshot failed', 'bad'); return; }
   const url = URL.createObjectURL(await r.blob());
   msg('Snapshot OK. Video status is shown at the top of the page (refresh after a few seconds).', 'ok');
   $('testout').innerHTML = `<img src="${url}" alt="Snapshot from the camera">`;
 };
-$('region').onclick = () => { location.href = '/roi?camera=' + encodeURIComponent(current.name); };
+$('region').onclick = () => { location.href = '/roi?site=' + encodeURIComponent(current.id); };
 $('del').onclick = async () => {
-  if (!confirm(`Delete site ${current.site_id}? PoP records already received are kept.`)) return;
-  const r = await fetch('/api/cameras/' + encodeURIComponent(current.name), {method: 'DELETE'});
+  if (!confirm(`Delete site ${current.name}? PoP records already received are kept.`)) return;
+  const r = await fetch('/api/cameras/' + encodeURIComponent(current.id), {method: 'DELETE'});
   if (r.ok) location.href = '/sites'; else msg('Not deleted: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad');
 };
 init();
@@ -381,7 +382,7 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 </div>
 </main>
 <script>
-const name = new URLSearchParams(location.search).get('camera') || '';
+const qs = new URLSearchParams(location.search), name = qs.get('site') || qs.get('camera') || '';   /* site ID */
 const $ = id => document.getElementById(id);
 const c = $('c'), ctx = c.getContext('2d'), pv = $('preview'), pctx = pv.getContext('2d');
 const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently: true});
@@ -398,12 +399,13 @@ async function load() {
   try {
     const r = await fetch('/api/cameras');
     if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-    const cam = (await r.json()).find(x => x.name === name);
-    if (!cam) throw new Error('camera "' + name + '" not found on the gateway');
+    const cam = (await r.json()).find(x => x.id === name);
+    if (!cam) throw new Error('site "' + name + '" not found on the gateway');
+    $('cam').textContent = cam.name; document.title = cam.name + ' – region';
     saved = {roi: cam.roi.map(p => p.slice()), inset: cam.inset_pct};
     pts = saved.roi.map(p => p.slice());
     $('inset').value = saved.inset;
-    $('sub').textContent = cam.site_id + (cam.model ? ' · ' + cam.model : '') + (cam.connected ? ' · connected' : ' · video not connected');
+    $('sub').textContent = (cam.name !== cam.id ? cam.id + ' · ' : '') + (cam.model ? cam.model : 'Camera') + (cam.connected ? ' · connected' : ' · video not connected');
     await snapshot();
   } catch (e) { $('sub').textContent = ''; msg(String(e.message || e), 'bad'); }
 }
@@ -570,6 +572,11 @@ def gateway_cameras():
         return None
 
 
+def disp(r):
+    """What people see for a site: its display name, else its site ID."""
+    return r.get("site_name") or r.get("camera") or r.get("site_id") or ""
+
+
 def esc(v):
     return html.escape(str(v if v is not None else ""))
 
@@ -584,7 +591,7 @@ def render_page(site):
     live = gateway_cameras()                     # live from the gateway when it's reachable
     if live is not None:
         for c in live:
-            c = dict(c, camera=c.get("name"))
+            c = dict(c, site_name=c.get("name"))
             if c.get("expected_per_hour"):
                 c["coverage"] = c.get("plays_last_hour", 0) / c["expected_per_hour"]
             hb[c.get("site_id")] = c
@@ -593,14 +600,14 @@ def render_page(site):
         for c in (last[0].get("cameras", []) if last else []):
             hb[c.get("site_id")] = c
     cams = "".join(
-        f"<tr><td><a href='?site={esc(k)}'>{esc(k)}</a></td>"
+        f"<tr><td><a href='?site={urllib.parse.quote(k or '')}'>{esc(c.get('site_name') or c.get('camera') or k)}</a></td>"
         f"<td class='{'ok' if c.get('connected') else 'bad'}'>{'yes' if c.get('connected') else 'no'}</td>"
         f"<td>{esc(c.get('state'))}</td><td>{esc(c.get('plays_last_hour'))}</td>"
         f"<td>{esc(round(c['coverage'] * 100)) + '%' if 'coverage' in c else ''}</td>"
         f"<td>{esc((c.get('last_play_at') or '')[:19])}</td>"
         f"<td class='bad'>{esc(', '.join(c.get('active_faults', [])))}</td>"
-        f"<td><a href='/roi?camera={urllib.parse.quote(c.get('camera', ''))}'>Edit region</a> &middot; "
-        f"<a href='/site?camera={urllib.parse.quote(c.get('camera', ''))}'>Settings</a></td></tr>"
+        f"<td><a href='/roi?site={urllib.parse.quote(k or '')}'>Edit region</a> &middot; "
+        f"<a href='/site?site={urllib.parse.quote(k or '')}'>Settings</a></td></tr>"
         for k, c in sorted(hb.items()) if not site or k == site) or "<tr><td colspan=8 class='muted'>No heartbeat yet</td></tr>"
     cards = []
     for r in pops:
@@ -610,13 +617,14 @@ def render_page(site):
         flags = " [blank]" if r.get("is_blank") else ""
         flags += " [video]" if r.get("video_creative") else ""
         verdict = "" if q.get("usable", True) else f"<br><span class='bad'>{esc(q.get('reason'))}</span>"
-        cards.append(f"<div class='card'>{img}<div><b>{esc(r.get('site_id'))}</b> {esc(r.get('local_creative_id'))}{flags}<br>"
+        cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}<br>"
                      f"<span class='muted'>{esc(r.get('play_started_at', '')[:19])} UTC &middot; after "
                      f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}</div></div>")
-    rows = "".join(f"<tr><td>{esc(a.get('at', '')[:19])}</td><td>{esc(a.get('site_id'))}</td><td>{esc(a.get('fault'))}</td>"
+    rows = "".join(f"<tr><td>{esc(a.get('at', '')[:19])}</td><td>{esc(disp(a))}</td><td>{esc(a.get('fault'))}</td>"
                    f"<td class='{'ok' if a.get('state') == 'cleared' else 'bad'}'>{esc(a.get('state'))}</td><td>{esc(a.get('detail'))}</td></tr>"
                    for a in alerts) or "<tr><td colspan=5 class='muted'>No alerts</td></tr>"
-    sub = f"Site {esc(site)} &middot; <a href='/'>all sites</a>" if site else f"{len(hb)} camera(s)"
+    site_label = disp(hb.get(site) or next((r for r in recs if r.get("site_id") == site), {"site_id": site}))
+    sub = f"{esc(site_label)} &middot; <a href='/'>all sites</a>" if site else f"{len(hb)} site(s)"
     return PAGE.format(subtitle=sub, refresh_js=REFRESH_JS, cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
                        alerts=rows)
 

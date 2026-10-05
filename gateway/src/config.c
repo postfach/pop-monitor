@@ -304,6 +304,7 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
     while (L > 1 && d[L - 1] == '/') d[--L] = 0;
     char *slash = strrchr(d, '/');
     if (slash && slash != d) *slash = 0; else snprintf(d, sizeof d, ".");
+    snprintf(g->state_dir, sizeof g->state_dir, "%s", d);
     if (!*g->cameras_file) snprintf(g->cameras_file, sizeof g->cameras_file, "%s/cameras.json", d);
 
     const cJSON *defs = cJSON_GetObjectItemCaseSensitive(root, "defaults");
@@ -339,8 +340,8 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
         g->cameras[i].active = 1;
         g->n_cameras = i + 1;
         for (int k = 0; k < i; k++)
-            if (!strcmp(g->cameras[k].name, g->cameras[i].name)) {
-                snprintf(err, n, "camera name '%s' is used twice; names must be unique", g->cameras[i].name);
+            if (!strcmp(g->cameras[k].site_id, g->cameras[i].site_id)) {
+                snprintf(err, n, "site ID '%s' is used twice; site IDs must be unique", g->cameras[i].site_id);
                 goto fail;
             }
     }
@@ -362,11 +363,22 @@ int config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *c, ch
     return validate_camera(c, 0, err, n);
 }
 
-int config_find_camera(const gateway_cfg *g, const char *name)
+int config_find_camera(const gateway_cfg *g, const char *site_id)
 {
     for (int i = 0; i < g->n_cameras; i++)
-        if (g->cameras[i].active && !strcmp(g->cameras[i].name, name)) return i;
+        if (g->cameras[i].active && !strcmp(g->cameras[i].site_id, site_id)) return i;
     return -1;
+}
+
+void config_library_path(const gateway_cfg *g, const char *site_id, char *out, size_t n)
+{
+    char safe[80];
+    size_t k = 0;
+    for (const char *p = site_id; *p && k + 1 < sizeof safe; p++)
+        safe[k++] = ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+                     *p == '-' || *p == '_') ? *p : '_';
+    safe[k] = 0;
+    snprintf(out, n, "%s/creatives/%s.json", g->state_dir, safe);
 }
 
 int config_active_count(const gateway_cfg *g)

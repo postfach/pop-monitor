@@ -32,11 +32,75 @@ void pc_library_init(pc_library *lib)
 {
     memset(lib, 0, sizeof *lib);
     lib->next_id = 1;
-    lib->hash_tol = 8;
-    lib->grid_tol = 10.f;
+    lib->corr_min = 0.88f;
+    lib->chroma_tol = 10.f;
+    lib->tint_tol = 30.f;
+    lib->adapt = 0.2f;
 }
 
 static int fp_is_flat(const pc_features *f) { return f->std_y < 6.f; }
+
+static float mean_of(const float *v, int n)
+{
+    double s = 0;
+    for (int i = 0; i < n; i++) s += v[i];
+    return (float)(s / n);
+}
+
+/* Pearson correlation: insensitive to brightness (offset) and contrast (gain). */
+static float correlation(const float *a, const float *b, int n)
+{
+    double ma = 0, mb = 0;
+    for (int i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+    ma /= n;
+    mb /= n;
+    double sab = 0, saa = 0, sbb = 0;
+    for (int i = 0; i < n; i++) {
+        double da = a[i] - ma, db = b[i] - mb;
+        sab += da * db;
+        saa += da * da;
+        sbb += db * db;
+    }
+    if (saa < 1e-6 || sbb < 1e-6) return 0.f;
+    return (float)(sab / sqrt(saa * sbb));
+}
+
+int pc_fingerprint_match(const pc_library *lib, const pc_features *a, const pc_features *b,
+                         int grid_only, float *score)
+{
+    float mua = mean_of(a->cell_u, PC_CELLS), mva = mean_of(a->cell_v, PC_CELLS);
+    float mub = mean_of(b->cell_u, PC_CELLS), mvb = mean_of(b->cell_v, PC_CELLS);
+    float tint = fabsf(mua - mub) + fabsf(mva - mvb);
+    int fa = fp_is_flat(a), fb = fp_is_flat(b);
+    if (fa || fb) {                       /* blank / black / single colour screens */
+        float d = fabsf(a->mean_y - b->mean_y) + tint;
+        *score = 1.f - d / 100.f;
+        return fa && fb && d < 24.f;
+    }
+    /* colour layout relative to the overall tint (white balance shifts cancel) */
+    float rel = 0;
+    for (int i = 0; i < PC_CELLS; i++)
+        rel += fabsf((a->cell_u[i] - mua) - (b->cell_u[i] - mub)) +
+               fabsf((a->cell_v[i] - mva) - (b->cell_v[i] - mvb));
+    rel /= 2.f * PC_CELLS;
+    float corr = correlation(a->thumb, b->thumb, PC_THUMB);
+    float need = lib->corr_min - (grid_only ? 0.08f : 0.f);   /* video: averaged, looser */
+    *score = corr - rel / 100.f;
+    return corr >= need && rel <= lib->chroma_tol * (grid_only ? 1.5f : 1.f) && tint <= lib->tint_tol;
+}
+
+/* Blend a fingerprint towards a new sighting so slow drift is followed. */
+static void adapt_fp(pc_features *dst, const pc_features *src, float a)
+{
+    for (int i = 0; i < PC_CELLS; i++) {
+        dst->cell_y[i] += a * (src->cell_y[i] - dst->cell_y[i]);
+        dst->cell_u[i] += a * (src->cell_u[i] - dst->cell_u[i]);
+        dst->cell_v[i] += a * (src->cell_v[i] - dst->cell_v[i]);
+    }
+    for (int i = 0; i < PC_THUMB; i++) dst->thumb[i] += a * (src->thumb[i] - dst->thumb[i]);
+    dst->mean_y += a * (src->mean_y - dst->mean_y);
+    dst->std_y += a * (src->std_y - dst->std_y);
+}
 
 int pc_library_match_or_add(pc_library *lib, const pc_features *fp, int64_t now)
 {
@@ -46,21 +110,20 @@ int pc_library_match_or_add(pc_library *lib, const pc_features *fp, int64_t now)
 int pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t now, int grid_only)
 {
     int best = -1;
-    float best_d = 1e9f;
+    float best_score = -1e9f;
     for (int i = 0; i < lib->count; i++) {
-        pc_creative *c = &lib->items[i];
-        float gd = pc_features_grid_distance(fp, &c->fp);
-        int hd = pc_hamming64(fp->dhash, c->fp.dhash);
-        int flat = fp_is_flat(fp) && fp_is_flat(&c->fp);  /* dHash is noise on flat images */
-        if (gd <= lib->grid_tol && (grid_only || flat || hd <= lib->hash_tol) && gd < best_d) {
+        float sc;
+        if (pc_fingerprint_match(lib, fp, &lib->items[i].fp, grid_only, &sc) && sc > best_score) {
             best = i;
-            best_d = gd;
+            best_score = sc;
         }
     }
+    lib->changes++;
     if (best >= 0) {
         pc_creative *c = &lib->items[best];
         c->last_seen_ms = now;
         c->plays++;
+        if (!grid_only) adapt_fp(&c->fp, fp, lib->adapt);
         return c->id;
     }
     int slot;
@@ -139,11 +202,13 @@ static void motion_fp(const pc_detector *d, const pc_features *f, pc_features *o
         out->cell_u[i] = (float)(d->acc[1][i] / d->acc_n);
         out->cell_v[i] = (float)(d->acc[2][i] / d->acc_n);
     }
+    for (int i = 0; i < PC_THUMB; i++) out->thumb[i] = (float)(d->acc_thumb[i] / d->acc_n);
 }
 
 static void acc_reset(pc_detector *d)
 {
     memset(d->acc, 0, sizeof d->acc);
+    memset(d->acc_thumb, 0, sizeof d->acc_thumb);
     d->acc_n = 0;
 }
 
@@ -183,10 +248,14 @@ int pc_detector_push(pc_detector *d, const pc_features *f, int64_t now, pc_event
             d->acc[1][i] += f->cell_u[i];
             d->acc[2][i] += f->cell_v[i];
         }
+        for (int i = 0; i < PC_THUMB; i++) d->acc_thumb[i] += f->thumb[i];
         d->acc_n++;
     }
     d->frames_in_play++;
-    if (cut >= c->settle_fraction) d->motion_frames_in_play++;
+    if (cut >= c->settle_fraction) {
+        d->motion_frames_in_play++;
+        d->last_motion_ms = now;
+    }
 
     switch (d->state) {
     case PC_STABLE:
@@ -272,9 +341,14 @@ int pc_detector_push(pc_detector *d, const pc_features *f, int64_t now, pc_event
                 strong = hd >= 2 * c->new_hash_dist || gd >= 2 * c->new_grid_dist;
             }
 
-            /* After a video creative, the play starts at the last hard cut. */
-            int64_t start = d->motion_emitted && d->last_big_cut_ms > d->last_play_ms
-                          ? d->last_big_cut_ms : d->transition_start_ms;
+            /* After a video creative, the play starts at the last hard cut,
+             * or, when the cut was too small to count as one (the next
+             * creative shares part of the screen), when the motion stopped. */
+            int64_t start = d->transition_start_ms;
+            if (d->motion_emitted)
+                start = d->last_big_cut_ms > d->last_play_ms ? d->last_big_cut_ms
+                      : d->last_motion_ms > d->last_play_ms ? d->last_motion_ms
+                      : d->transition_start_ms;
             int64_t since = start - d->last_play_ms;
             int min_slot = d->trig.min_slot_ms > 0 ? d->trig.min_slot_ms : c->min_slot_ms;
             int accept = different && since >= min_slot;

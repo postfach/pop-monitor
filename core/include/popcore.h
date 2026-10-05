@@ -76,9 +76,13 @@ void pc_warp_apply_rgb(const pc_warp *w, const pc_frame *f, uint8_t *out_rgb);
 #define PC_GRID_X 8
 #define PC_GRID_Y 4
 #define PC_CELLS  (PC_GRID_X * PC_GRID_Y)
+#define PC_THUMB_W 16              /* luma thumbnail used to recognise creatives */
+#define PC_THUMB_H 8
+#define PC_THUMB  (PC_THUMB_W * PC_THUMB_H)
 
 typedef struct {
     float    cell_y[PC_CELLS], cell_u[PC_CELLS], cell_v[PC_CELLS];
+    float    thumb[PC_THUMB];     /* 16x8 luma means                          */
     uint64_t dhash;
     float    mean_y, std_y;
     float    sharpness;   /* variance of Laplacian on Y */
@@ -120,23 +124,34 @@ void pc_profile_triggers(const pc_profile *p, pc_triggers *t);
 /* Creative fingerprint library                                        */
 /* ------------------------------------------------------------------ */
 
-#define PC_LIBRARY_MAX 128
+#define PC_LIBRARY_MAX 256
 
 typedef struct {
     int         id;            /* local creative id, 1..             */
-    pc_features fp;
+    pc_features fp;            /* adapts slowly as the creative is seen again */
     int64_t     first_seen_ms, last_seen_ms;
     int         plays;
 } pc_creative;
 
+/* Creatives are recognised by the SHAPE of their brightness pattern
+ * (correlation of exposure-normalised 16x8 thumbnails) plus their colour
+ * layout relative to the overall tint, so exposure, contrast and white
+ * balance drift between plays don't create new IDs. */
 typedef struct {
     pc_creative items[PC_LIBRARY_MAX];
     int         count;
     int         next_id;
-    int         hash_tol;      /* max dHash bits for a match         */
-    float       grid_tol;      /* max grid distance for a match      */
+    float       corr_min;      /* thumbnail correlation for a match (0.88)     */
+    float       chroma_tol;    /* relative colour layout difference (10)       */
+    float       tint_tol;      /* overall colour cast difference (30)          */
+    float       adapt;         /* how fast a fingerprint follows drift (0.2)   */
+    unsigned    changes;       /* bumped on every add/update (for saving)      */
 } pc_library;
 
+/* Similarity of two fingerprints; returns 1 if they look like the same
+ * creative. *score (higher = closer) is set either way. */
+int  pc_fingerprint_match(const pc_library *lib, const pc_features *a, const pc_features *b,
+                          int grid_only, float *score);
 void pc_library_init(pc_library *lib);
 /* Returns the matching or newly-added creative id. */
 int  pc_library_match_or_add(pc_library *lib, const pc_features *fp, int64_t now_ms);
@@ -200,7 +215,9 @@ typedef struct {
     int64_t         last_frame_ms;
     int             motion_emitted;      /* this transition already logged */
     int64_t         last_big_cut_ms;     /* most recent cut-sized change   */
+    int64_t         last_motion_ms;      /* most recent frame with motion  */
     double          acc[3][PC_CELLS];    /* cell colour sums during motion */
+    double          acc_thumb[PC_THUMB];
     int             acc_n;
     int             frames_in_play, motion_frames_in_play; /* video creative? */
     uint64_t        sequence;

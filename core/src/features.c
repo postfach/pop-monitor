@@ -41,6 +41,8 @@ void pc_features_compute(const uint8_t *y, const uint8_t *u, const uint8_t *v,
     if (v) box_means(v, w, h, PC_GRID_X, PC_GRID_Y, f->cell_v);
     else for (int i = 0; i < PC_CELLS; i++) f->cell_v[i] = 128.f;
 
+    box_means(y, w, h, PC_THUMB_W, PC_THUMB_H, f->thumb);
+
     /* dHash: 9x8 thumbnail, compare horizontal neighbours -> 64 bits */
     float th[9 * 8];
     box_means(y, w, h, 9, 8, th);

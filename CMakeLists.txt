@@ -21,6 +21,7 @@ target_link_libraries(popcore PUBLIC m)
 enable_testing()
 add_executable(test_core core/tests/test_core.c)
 target_link_libraries(test_core popcore)
+target_compile_options(test_core PRIVATE -Wno-missing-field-initializers)
 add_test(NAME popcore COMMAND test_core)
 
 find_package(PkgConfig)

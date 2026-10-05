@@ -155,6 +155,7 @@ static char *heartbeat_json(void)
         cJSON *c = cJSON_CreateObject();
         pthread_mutex_lock(&s->mu);
         cJSON_AddStringToObject(c, "site_id", g->cameras[i].site_id);
+        cJSON_AddStringToObject(c, "site_name", g->cameras[i].name);
         cJSON_AddStringToObject(c, "camera", g->cameras[i].name);
         cJSON_AddBoolToObject(c, "connected", s->connected);
         cJSON_AddBoolToObject(c, "operating", s->operating);

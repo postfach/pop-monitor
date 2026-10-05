@@ -207,6 +207,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     cJSON_AddStringToObject(j, "event_id", id);
     cJSON_AddStringToObject(j, "type", "creative_change");
     cJSON_AddStringToObject(j, "site_id", c->site_id);
+    cJSON_AddStringToObject(j, "site_name", c->name);
     cJSON_AddStringToObject(j, "camera", c->name);
     cJSON_AddStringToObject(j, "camera_model", c->model);
     cJSON_AddStringToObject(j, "gateway_id", g->gateway_id);
@@ -360,6 +361,100 @@ static void *snapshot_thread(void *arg)
     return NULL;
 }
 
+/* ---------------- creative library persistence ---------------- */
+
+static cJSON *floats(const float *v, int n)
+{
+    cJSON *a = cJSON_CreateArray();
+    for (int i = 0; i < n; i++) cJSON_AddItemToArray(a, cJSON_CreateNumber(round((double)v[i] * 10) / 10));
+    return a;
+}
+
+static int read_floats(const cJSON *a, float *v, int n)
+{
+    if (!cJSON_IsArray(a) || cJSON_GetArraySize(a) != n) return -1;
+    for (int i = 0; i < n; i++) v[i] = (float)cJSON_GetArrayItem(a, i)->valuedouble;
+    return 0;
+}
+
+/* Save a site's creative library so creative IDs survive restarts. */
+static void library_save(camera *cm, const pc_library *lib)
+{
+    char path[700], dir[700];
+    config_library_path(cm->app->cfg, cm->cfg->site_id, path, sizeof path);
+    snprintf(dir, sizeof dir, "%s/creatives", cm->app->cfg->state_dir);
+    util_mkdir_p(dir);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON_AddStringToObject(root, "site_id", cm->cfg->site_id);
+    cJSON_AddNumberToObject(root, "next_id", lib->next_id);
+    cJSON *items = cJSON_AddArrayToObject(root, "creatives");
+    for (int i = 0; i < lib->count; i++) {
+        const pc_creative *c = &lib->items[i];
+        cJSON *o = cJSON_CreateObject();
+        char h[17];
+        snprintf(h, sizeof h, "%016llx", (unsigned long long)c->fp.dhash);
+        cJSON_AddNumberToObject(o, "id", c->id);
+        cJSON_AddNumberToObject(o, "plays", c->plays);
+        cJSON_AddStringToObject(o, "dhash", h);
+        cJSON_AddNumberToObject(o, "mean_y", round((double)c->fp.mean_y * 10) / 10);
+        cJSON_AddNumberToObject(o, "std_y", round((double)c->fp.std_y * 10) / 10);
+        cJSON_AddNumberToObject(o, "sharpness", round((double)c->fp.sharpness));
+        cJSON_AddItemToObject(o, "y", floats(c->fp.cell_y, PC_CELLS));
+        cJSON_AddItemToObject(o, "u", floats(c->fp.cell_u, PC_CELLS));
+        cJSON_AddItemToObject(o, "v", floats(c->fp.cell_v, PC_CELLS));
+        cJSON_AddItemToObject(o, "thumb", floats(c->fp.thumb, PC_THUMB));
+        cJSON_AddItemToArray(items, o);
+    }
+    char *txt = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (util_write_file_atomic(path, txt, strlen(txt)) != 0) LOGW(cm->cfg->name, "cannot save creative library");
+    free(txt);
+}
+
+static void library_load(camera *cm, pc_library *lib, int64_t now)
+{
+    char path[700];
+    config_library_path(cm->app->cfg, cm->cfg->site_id, path, sizeof path);
+    size_t len;
+    char *txt = util_read_file(path, &len);
+    if (!txt) return;
+    cJSON *root = cJSON_Parse(txt);
+    free(txt);
+    const cJSON *items = root ? cJSON_GetObjectItemCaseSensitive(root, "creatives") : NULL;
+    const cJSON *next = root ? cJSON_GetObjectItemCaseSensitive(root, "next_id") : NULL;
+    if (!cJSON_IsArray(items) || !cJSON_IsNumber(next)) { cJSON_Delete(root); return; }
+    lib->count = 0;
+    lib->next_id = next->valueint > 0 ? next->valueint : 1;
+    const cJSON *o;
+    cJSON_ArrayForEach(o, items) {
+        if (lib->count >= PC_LIBRARY_MAX) break;
+        pc_creative *c = &lib->items[lib->count];
+        memset(c, 0, sizeof *c);
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id"), *pl = cJSON_GetObjectItemCaseSensitive(o, "plays");
+        const cJSON *dh = cJSON_GetObjectItemCaseSensitive(o, "dhash");
+        if (!cJSON_IsNumber(id) ||
+            read_floats(cJSON_GetObjectItemCaseSensitive(o, "y"), c->fp.cell_y, PC_CELLS) ||
+            read_floats(cJSON_GetObjectItemCaseSensitive(o, "u"), c->fp.cell_u, PC_CELLS) ||
+            read_floats(cJSON_GetObjectItemCaseSensitive(o, "v"), c->fp.cell_v, PC_CELLS) ||
+            read_floats(cJSON_GetObjectItemCaseSensitive(o, "thumb"), c->fp.thumb, PC_THUMB))
+            continue;
+        c->id = id->valueint;
+        c->plays = cJSON_IsNumber(pl) ? pl->valueint : 0;
+        if (cJSON_IsString(dh)) c->fp.dhash = strtoull(dh->valuestring, NULL, 16);
+        const cJSON *m = cJSON_GetObjectItemCaseSensitive(o, "mean_y"), *sd = cJSON_GetObjectItemCaseSensitive(o, "std_y");
+        const cJSON *sh = cJSON_GetObjectItemCaseSensitive(o, "sharpness");
+        c->fp.mean_y = cJSON_IsNumber(m) ? (float)m->valuedouble : 0;
+        c->fp.std_y = cJSON_IsNumber(sd) ? (float)sd->valuedouble : 0;
+        c->fp.sharpness = cJSON_IsNumber(sh) ? (float)sh->valuedouble : 0;
+        c->first_seen_ms = c->last_seen_ms = now;
+        if (c->id >= lib->next_id) lib->next_id = c->id + 1;
+        lib->count++;
+    }
+    cJSON_Delete(root);
+    LOGI(cm->cfg->name, "loaded %d known creatives (next ID c-%04d)", lib->count, lib->next_id);
+}
+
 /* ---------------- stream thread ---------------- */
 
 static void push_job(camera *cm, const pc_event *ev, int64_t now_mono, pc_profile prof)
@@ -392,6 +487,9 @@ static void *stream_thread(void *arg)
     pc_faults fm;
     pc_detector_init(&det, &c->det, &prof);
     pc_faults_init(&fm, &c->faults, &c->det, &prof);
+    library_load(cm, &det.library, util_mono_ms());
+    unsigned lib_saved = det.library.changes;
+    int64_t lib_saved_at = util_mono_ms();
 
     pc_warp warp = {0};
     int ow = 192, oh = 96;
@@ -480,8 +578,11 @@ static void *stream_thread(void *arg)
                 roi_ver = status_get_roi(st, roi, &inset);
                 pc_warp_free(&warp);
                 uint64_t seq = det.sequence;          /* keep play numbering continuous */
-                pc_detector_init(&det, &c->det, &prof);
+                int next_id = det.library.next_id;    /* new framing: new fingerprints, */
+                pc_detector_init(&det, &c->det, &prof);  /* but never reuse an ID */
                 det.sequence = seq;
+                det.library.next_id = next_id;
+                det.library.changes = lib_saved + 1;
                 pc_faults_init(&fm, &c->faults, &c->det, &prof);
                 pc_faults_set_operating(&fm, util_in_time_range(c->operating_hours, util_wall_ms()), now);
                 LOGI(c->name, "region updated: (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f), inset %.0f%%",
@@ -529,6 +630,12 @@ static void *stream_thread(void *arg)
                 free(jpg);
             }
 
+            if (det.library.changes != lib_saved && now - lib_saved_at > 60000) {
+                library_save(cm, &det.library);
+                lib_saved = det.library.changes;
+                lib_saved_at = now;
+            }
+
             frames_in_window++;
             pthread_mutex_lock(&st->mu);
             st->state = det.state;
@@ -549,6 +656,7 @@ static void *stream_thread(void *arg)
         if (!lost_since) lost_since = util_mono_ms();
         util_sleep_ms(1000);
     }
+    if (det.library.changes != lib_saved) library_save(cm, &det.library);
     pc_warp_free(&warp);
     free(py); free(pu); free(pv);
     pthread_mutex_lock(&cm->mu);

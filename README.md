@@ -139,6 +139,14 @@ count and length, or takeover), operating hours and the PTZ check. Saving starts
 straight away and takes you to the region editor. **Settings** edits an existing site; saving
 restarts only that camera. **Test camera** fetches a snapshot with the saved settings.
 
+**Site ID and display name.** The site ID is the permanent key: it appears in URLs
+(`/site?site=AKL-BRITOMART-01`), in the API, in the creative library file name and as
+`site_id` in every record sent to the backend, so it should match the site code used in
+Vault. The display name ("Britomart North") is what people read: the review page, Sites
+list, region editor, Teams/Slack alerts and the gateway log all show it, falling back to
+the site ID when it is blank. Records carry it as `site_name`. Changing the site ID of an
+existing site keeps its creative library.
+
 The first change made on the Sites or region pages creates `cameras.json` next to the queue
 (in the Docker volume). From then on that file is the camera list and the `cameras` array in
 `config.json` is only used if `cameras.json` is deleted. `defaults` (such as the camera
@@ -184,7 +192,7 @@ PoP metadata example:
 ```json
 {
   "event_id": "4f0c…", "type": "creative_change",
-  "site_id": "AKL-BRITOMART-01", "camera": "britomart-north", "camera_model": "M5525-E",
+  "site_id": "AKL-BRITOMART-01", "site_name": "Britomart North", "camera_model": "M5525-E",
   "gateway_id": "akl-gw-01",
   "play_started_at": "2026-10-05T07:41:10.200Z", "settled_at": "2026-10-05T07:41:10.900Z",
   "captured_at": "2026-10-05T07:41:12.180Z", "ntp_synced": true,
@@ -209,8 +217,17 @@ Alert metadata: `type: "fault"`, `fault`, `state` (`raised`, `cleared`, `occurre
 `coverage`, `active_faults`, plus queue depth. **The backend should alert when heartbeats
 stop**: a gateway that is offline can't report itself.
 
-`local_creative_id` is per camera and only groups repeat plays. Matching a play to a booked
-campaign happens on the backend (e.g. against the creative files in Vault).
+`local_creative_id` (`c-0001`, `c-0002`, …) is per site and only groups repeat plays of the
+same artwork, so a 6-slot loop should settle on about six IDs plus one for a blank slot.
+Matching a play to a booked campaign happens on the backend (e.g. against the creative files
+in Vault). The gateway recognises a repeat by correlating a 16×8 thumbnail of the board plus
+its colour layout, which tolerates day/night exposure changes, and slowly adapts each stored
+creative to the conditions it is seen in. Video creatives are fingerprinted from an average
+over their motion. The library (up to 256 creatives per site) is saved every minute to
+`creatives/<site_id>.json` in the gateway volume and reloaded on start, so IDs stay the same
+across restarts and updates. Delete a site's file to restart its numbering, for example
+after a complete change of campaigns. `camera` is still sent with the same value as
+`site_name` for older consumers.
 
 ## Field trial: tuning on real footage
 

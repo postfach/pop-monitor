@@ -149,7 +149,7 @@ static char *teams_payload(const camera_cfg *cam, const char *fault, const char 
     char title[200];
     snprintf(title, sizeof title, "%s%s %s at %s",
              !strcmp(state, "cleared") ? "Recovered: " : (!strcmp(sev, "critical") ? "Critical: " : ""),
-             fault, state, cam->site_id);
+             fault, state, cam->name);
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "message");
     cJSON *atts = cJSON_AddArrayToObject(root, "attachments");
@@ -171,7 +171,7 @@ static char *teams_payload(const camera_cfg *cam, const char *fault, const char 
     cJSON *fs = cJSON_CreateObject();
     cJSON_AddStringToObject(fs, "type", "FactSet");
     cJSON *facts = cJSON_AddArrayToObject(fs, "facts");
-    const char *kv[][2] = {{"Site", cam->site_id}, {"Camera", cam->name}, {"Fault", fault},
+    const char *kv[][2] = {{"Site", cam->name}, {"Site ID", cam->site_id}, {"Fault", fault},
                            {"State", state}, {"Severity", sev}, {"Time (UTC)", when},
                            {"Detail", detail ? detail : ""}};
     for (size_t i = 0; i < sizeof kv / sizeof kv[0]; i++) {
@@ -190,9 +190,9 @@ static char *slack_payload(const camera_cfg *cam, const char *fault, const char 
                            const char *sev, const char *when, const char *detail)
 {
     char text[600];
-    snprintf(text, sizeof text, "%s *%s %s* at *%s* (%s)\n%s\n_%s UTC_",
+    snprintf(text, sizeof text, "%s *%s %s* at *%s* (site ID %s)\n%s\n_%s UTC_",
              !strcmp(state, "cleared") ? ":white_check_mark:" : (!strcmp(sev, "critical") ? ":red_circle:" : ":warning:"),
-             fault, state, cam->site_id, cam->name, detail ? detail : "", when);
+             fault, state, cam->name, cam->site_id, detail ? detail : "", when);
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "text", text);
     cJSON *blocks = cJSON_AddArrayToObject(root, "blocks");
@@ -226,6 +226,7 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
     cJSON_AddStringToObject(j, "state", state);
     cJSON_AddStringToObject(j, "severity", sev);
     cJSON_AddStringToObject(j, "site_id", cam->site_id);
+    cJSON_AddStringToObject(j, "site_name", cam->name);
     cJSON_AddStringToObject(j, "camera", cam->name);
     cJSON_AddStringToObject(j, "camera_model", cam->model);
     cJSON_AddStringToObject(j, "gateway_id", g->gateway_id);
@@ -248,7 +249,7 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
     /* 2. direct notifications, rate limited */
     if (!*g->teams_webhook && !*g->slack_webhook) return;
     char key[160];
-    snprintf(key, sizeof key, "%s/%s", cam->name, fault);
+    snprintf(key, sizeof key, "%s/%s", cam->site_id, fault);
     pthread_mutex_lock(&mu);
     int ok = cooldown_ok(key, state, g->alert_cooldown_s, at_wall);
     pthread_mutex_unlock(&mu);

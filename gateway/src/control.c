@@ -234,7 +234,8 @@ static cJSON *camera_json(int i)
     const cJSON *o = A->cfg->cam_json[i];
     cam_status *s = &A->status[i];
     cJSON *j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "name", c->name);
+    cJSON_AddStringToObject(j, "id", c->site_id);          /* key for URLs and the API */
+    cJSON_AddStringToObject(j, "name", c->name);           /* what people see          */
     cJSON_AddStringToObject(j, "site_id", c->site_id);
     cJSON_AddStringToObject(j, "display_name", raw_str(o, "name"));
     cJSON_AddStringToObject(j, "model", c->model);
@@ -364,10 +365,6 @@ static int check_camera(const cJSON *obj, int self, camera_cfg *out, char *err, 
             snprintf(err, n, "site ID '%s' is already used by another site", out->site_id);
             return -1;
         }
-        if (!strcmp(A->cfg->cameras[i].name, out->name)) {
-            snprintf(err, n, "another site is already called '%s'", out->name);
-            return -1;
-        }
     }
     return 0;
 }
@@ -415,7 +412,7 @@ static void handle_create(int fd, const char *body)
     save_all();
     cJSON *j = camera_json(slot);
     pthread_mutex_unlock(&A->cams_mu);
-    LOGI("control", "site %s added from the review page", c.name);
+    LOGI("control", "site %s added from the review page", c.site_id);
     respond_json(fd, 201, j);
 }
 
@@ -437,8 +434,14 @@ static void handle_update(int fd, int idx, const char *body)
         return;
     }
     char old[64];
-    snprintf(old, sizeof old, "%s", A->cfg->cameras[idx].name);
+    snprintf(old, sizeof old, "%s", A->cfg->cameras[idx].site_id);
     camera_stop(idx);                            /* restart this camera only */
+    if (strcmp(old, c.site_id)) {                /* site ID renamed: keep its creative library */
+        char from[700], to[700];
+        config_library_path(A->cfg, old, from, sizeof from);
+        config_library_path(A->cfg, c.site_id, to, sizeof to);
+        rename(from, to);
+    }
     c.active = 1;
     A->cfg->cameras[idx] = c;
     cJSON_Delete(A->cfg->cam_json[idx]);
@@ -448,8 +451,8 @@ static void handle_update(int fd, int idx, const char *body)
     save_all();
     cJSON *j = camera_json(idx);
     pthread_mutex_unlock(&A->cams_mu);
-    LOGI("control", "site %s updated from the review page%s%s", c.name, strcmp(old, c.name) ? " (was " : "",
-         strcmp(old, c.name) ? old : "");
+    LOGI("control", "site %s updated from the review page%s%s%s", c.site_id, strcmp(old, c.site_id) ? " (was " : "",
+         strcmp(old, c.site_id) ? old : "", strcmp(old, c.site_id) ? ")" : "");
     respond_json(fd, 200, j);
 }
 
@@ -457,7 +460,7 @@ static void handle_delete(int fd, int idx)
 {
     pthread_mutex_lock(&A->cams_mu);
     char name[64];
-    snprintf(name, sizeof name, "%s", A->cfg->cameras[idx].name);
+    snprintf(name, sizeof name, "%s", A->cfg->cameras[idx].site_id);
     camera_stop(idx);
     A->cfg->cameras[idx].active = 0;
     cJSON_Delete(A->cfg->cam_json[idx]);
