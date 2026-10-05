@@ -131,6 +131,8 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 .thumb img{{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}} .thumb span{{color:#888;font-size:12px}}
 .card div{{padding:8px 10px}} .bad{{color:var(--bad)}} .ok{{color:var(--ok)}}
 .wrap{{overflow-x:auto}}
+.alerts{{max-height:330px;overflow-y:auto;border:1px solid var(--line);border-radius:8px}}
+.alerts th{{position:sticky;top:0;background:var(--bg);box-shadow:inset 0 -1px var(--line)}} .alerts tr:last-child td{{border-bottom:0}}
 .toolbar{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}}
 .refresh{{display:flex;gap:8px;align-items:center}} .refresh select,.refresh button{{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}}
 .refresh button{{cursor:pointer}} #next{{min-width:110px;font-size:12px}}</style></head><body><main>
@@ -144,7 +146,7 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 <button id="now" type="button">Refresh now</button><span id="next" class="muted"></span></div></div>
 <h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play ({zone})</th><th>Active faults</th><th></th></tr>{cams}</table></div>
 <h2>{pops_title}</h2><div class="grid">{pops}</div>
-<h2>Alerts</h2><div class="wrap"><table><tr><th>Time ({zone})</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
+<h2>Alerts <span class="muted" style="font-size:13px;font-weight:400">{alerts_note}</span></h2><div class="wrap alerts"><table><tr><th>Time ({zone})</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
 </main>{refresh_js}</body></html>"""
 
 
@@ -752,6 +754,7 @@ def render_page(site):
     site_label = disp(hb.get(site) or next((r for r in recs if r.get("site_id") == site), {"site_id": site}))
     sub = f"{esc(site_label)} &middot; <a href='/'>all sites</a>" if site else f"{len(hb)} site(s)"
     return PAGE.format(subtitle=sub, refresh_js=REFRESH_JS, zone=esc(zone_label()),
+                       alerts_note=f"newest {len(alerts)}, scroll for more" if len(alerts) > 8 else "",
                        pops_title="Latest PoP images" if site else "Latest PoP from each site", cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
                        alerts=rows)
 
