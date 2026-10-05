@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include "control.h"
+#include "alerts.h"
 #include "camera.h"
+#include "uploader.h"
 #include "util.h"
 #include "vapix.h"
 
@@ -226,6 +228,17 @@ static int raw_int(const cJSON *o, const char *k, int def)
     return def;
 }
 
+/* Coverage counting state (status mutex held): minutes of data so far, and the
+ * last alert-window figure once the window is full. */
+static void add_coverage_status(cJSON *j, const camera_cfg *c, const cam_status *s)
+{
+    int64_t w = util_wall_ms();
+    double mins = s->coverage_since_wall ? (w - s->coverage_since_wall) / 60000.0 : -1;
+    cJSON_AddNumberToObject(j, "coverage_data_min", mins < 0 ? -1 : (int)mins);
+    if (mins >= c->coverage_window_min && s->coverage_window_pct >= 0)
+        cJSON_AddNumberToObject(j, "coverage_window_pct", (int)(s->coverage_window_pct + 0.5f));
+}
+
 /* One camera for the UI: its own settings (not inherited defaults, never the
  * password) plus live status. cams_mu held. */
 static cJSON *camera_json(int i)
@@ -258,7 +271,15 @@ static cJSON *camera_json(int i)
     cJSON_AddNumberToObject(j, "dayparts", c->n_dayparts);
     cJSON_AddStringToObject(j, "operating_hours", c->operating_hours);
     cJSON_AddBoolToObject(j, "ptz_check", c->ptz_check);
+    cJSON_AddNumberToObject(j, "coverage_min_pct", c->coverage_min_pct);
+    cJSON_AddNumberToObject(j, "coverage_window_min", c->coverage_window_min);
+    cJSON_AddBoolToObject(j, "coverage_custom", cJSON_GetObjectItemCaseSensitive(o, "coverage_min_pct") ||
+                                                cJSON_GetObjectItemCaseSensitive(o, "coverage_window_min"));
     pthread_mutex_lock(&s->mu);
+    add_coverage_status(j, c, s);
+    cJSON_AddNumberToObject(j, "uptime_pct", (int)(status_uptime(s, util_wall_ms()) * 1000 + 0.5) / 10.0);
+    cJSON_AddNumberToObject(j, "reconnects", s->reconnects);
+    if (s->last_frame_wall) cJSON_AddNumberToObject(j, "last_frame_age_s", (double)((util_wall_ms() - s->last_frame_wall) / 1000));
     cJSON_AddBoolToObject(j, "connected", s->connected);
     cJSON_AddStringToObject(j, "state", pc_state_name(s->state));
     cJSON_AddNumberToObject(j, "plays_last_hour", status_plays_last_hour(s, util_wall_ms()));
@@ -273,6 +294,7 @@ static cJSON *camera_json(int i)
         if (s->fault_active[k]) cJSON_AddItemToArray(f, cJSON_CreateString(pc_fault_name(k)));
     if (s->stream_lost) cJSON_AddItemToArray(f, cJSON_CreateString("stream_lost"));
     if (s->camera_moved) cJSON_AddItemToArray(f, cJSON_CreateString("camera_moved"));
+    if (s->low_coverage) cJSON_AddItemToArray(f, cJSON_CreateString("low_coverage"));
     cJSON_AddItemToObject(j, "roi", roi_json(s->roi));
     cJSON_AddNumberToObject(j, "inset_pct", s->inset_pct);
     pthread_mutex_unlock(&s->mu);
@@ -299,6 +321,8 @@ static void handle_settings(int fd)
     cJSON_AddBoolToObject(j, "cameras_from_state", A->cfg->cameras_from_state);
     cJSON_AddStringToObject(j, "cameras_file", A->cfg->cameras_file);
     cJSON_AddNumberToObject(j, "max_cameras", MAX_CAMERAS);
+    cJSON_AddNumberToObject(j, "default_coverage_min_pct", raw_int(d, "coverage_min_pct", 90));
+    cJSON_AddNumberToObject(j, "default_coverage_window_min", raw_int(d, "coverage_window_min", 30));
     respond_json(fd, 200, j);
 }
 
@@ -335,6 +359,13 @@ static void merge_form(cJSON *obj, const cJSON *in)
             { if (v) cJSON_DeleteItemFromObjectCaseSensitive(obj, ints[k]); continue; }
         if (cJSON_IsNumber(v)) set_item(obj, ints[k], cJSON_CreateNumber(v->valueint));
     }
+    static const char *cov[] = {"coverage_min_pct", "coverage_window_min", NULL};
+    for (int k = 0; cov[k]; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, cov[k]);
+        if (!v) continue;
+        if (cJSON_IsNumber(v)) set_item(obj, cov[k], cJSON_CreateNumber(v->valueint));
+        else cJSON_DeleteItemFromObjectCaseSensitive(obj, cov[k]);   /* null or "": use the default */
+    }
     static const char *bools[] = {"use_https", "camera_tls_insecure", "ptz_check", "takeover", NULL};
     for (int k = 0; bools[k]; k++) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, bools[k]);
@@ -369,7 +400,7 @@ static int check_camera(const cJSON *obj, int self, camera_cfg *out, char *err, 
     return 0;
 }
 
-static void handle_create(int fd, const char *body)
+static void handle_create(int fd, const char *body, int dry_run)
 {
     cJSON *in = cJSON_Parse(body);
     if (!cJSON_IsObject(in)) { cJSON_Delete(in); respond_error(fd, 400, "expected a JSON object"); return; }
@@ -402,6 +433,17 @@ static void handle_create(int fd, const char *body)
         respond_error(fd, 400, err);
         return;
     }
+    if (dry_run) {                               /* bulk import preview: validate only */
+        pthread_mutex_unlock(&A->cams_mu);
+        cJSON_Delete(obj);
+        cJSON *ok = cJSON_CreateObject();
+        cJSON_AddStringToObject(ok, "status", "valid");
+        cJSON_AddStringToObject(ok, "site_id", c.site_id);
+        cJSON_AddStringToObject(ok, "name", c.name);
+        cJSON_AddStringToObject(ok, "video_url", c.rtsp_url);
+        respond_json(fd, 200, ok);
+        return;
+    }
     c.active = 1;
     A->cfg->cameras[slot] = c;
     cJSON_Delete(A->cfg->cam_json[slot]);
@@ -414,6 +456,26 @@ static void handle_create(int fd, const char *body)
     pthread_mutex_unlock(&A->cams_mu);
     LOGI("control", "site %s added from the review page", c.site_id);
     respond_json(fd, 201, j);
+}
+
+/* Close the open faults of a camera that is being restarted or removed, so the
+ * backend and Teams don't keep showing alerts nobody will ever clear. Call
+ * after camera_stop() and before its config or status is replaced. */
+static void clear_open_faults(int idx, const char *why)
+{
+    cam_status *s = &A->status[idx];
+    const char *open[PC_FAULT_COUNT + 3];
+    int n = 0;
+    pthread_mutex_lock(&s->mu);
+    for (int k = 0; k < PC_FAULT_COUNT; k++)
+        if (s->fault_active[k]) open[n++] = pc_fault_name(k);
+    if (s->stream_lost) open[n++] = "stream_lost";
+    if (s->camera_moved) open[n++] = "camera_moved";
+    if (s->low_coverage) open[n++] = "low_coverage";
+    pthread_mutex_unlock(&s->mu);
+    int64_t w = util_wall_ms();
+    for (int i = 0; i < n; i++)
+        alerts_send(A, &A->cfg->cameras[idx], open[i], "cleared", w, w, why, NULL, 0);
 }
 
 static void handle_update(int fd, int idx, const char *body)
@@ -436,6 +498,7 @@ static void handle_update(int fd, int idx, const char *body)
     char old[64];
     snprintf(old, sizeof old, "%s", A->cfg->cameras[idx].site_id);
     camera_stop(idx);                            /* restart this camera only */
+    clear_open_faults(idx, "site settings changed; checking again from now");
     if (strcmp(old, c.site_id)) {                /* site ID renamed: keep its creative library */
         char from[700], to[700];
         config_library_path(A->cfg, old, from, sizeof from);
@@ -462,6 +525,7 @@ static void handle_delete(int fd, int idx)
     char name[64];
     snprintf(name, sizeof name, "%s", A->cfg->cameras[idx].site_id);
     camera_stop(idx);
+    clear_open_faults(idx, "site removed");
     A->cfg->cameras[idx].active = 0;
     cJSON_Delete(A->cfg->cam_json[idx]);
     A->cfg->cam_json[idx] = NULL;
@@ -582,13 +646,18 @@ static void handle(int fd)
     }
 
     char *q = strchr(path, '?');
+    int dry_run = q && strstr(q, "dry_run=1") != NULL;
     if (q) *q = 0;
     if (!strcmp(path, "/api/cameras")) {
         if (!strcmp(method, "GET")) handle_list(fd);
-        else if (!strcmp(method, "POST")) handle_create(fd, body);
+        else if (!strcmp(method, "POST")) handle_create(fd, body, dry_run);
         else respond_error(fd, 404, "unknown endpoint");
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/settings")) {
         handle_settings(fd);
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/health")) {
+        cJSON *h = gateway_health_json();
+        cJSON_AddStringToObject(h, "gateway_id", A->cfg->gateway_id);
+        respond_json(fd, 200, h);
     } else if (!strncmp(path, "/api/cameras/", 13)) {
         char name[512];
         snprintf(name, sizeof name, "%s", path + 13);

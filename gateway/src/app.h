@@ -29,10 +29,29 @@ typedef struct {
     pc_point roi[4];                 /* live region (editable at runtime) */
     float    inset_pct;
     unsigned roi_version;            /* bumped on every change            */
+    int      low_coverage;           /* low_coverage fault active          */
+    int64_t  started_wall;           /* camera (re)started                 */
+    int64_t  connected_since_wall;   /* 0 while disconnected               */
+    int64_t  connected_ms;           /* total connected time before connected_since */
+    int      reconnects;             /* stream (re)connections after the first */
+    int64_t  coverage_since_wall;    /* coverage data valid from (0 = not counting) */
+    float    coverage_window_pct;    /* last check over the alert window, -1 = not yet */
 } cam_status;
+
+/* Gateway-wide health counters (uploader + heartbeat). */
+typedef struct {
+    pthread_mutex_t mu;
+    int64_t  start_wall;
+    uint64_t sent, retries, dead;
+    int64_t  last_ok_wall, last_fail_wall;
+    int      fail_streak;            /* consecutive failed uploads          */
+    char     last_error[200];
+    int64_t  hb_ok_wall;             /* last heartbeat the backend accepted */
+} gw_health;
 
 typedef struct {
     gateway_cfg  *cfg;
+    gw_health     health;
     volatile int  running;
     cam_status   *status;            /* MAX_CAMERAS slots, one per camera */
     pthread_mutex_t cams_mu;         /* guards the camera list (add/edit/remove) */
@@ -47,6 +66,14 @@ static inline void status_reset(cam_status *s)
     s->mu = keep;
 }
 
+/* Camera connected for this share of the time since it started (mutex held). */
+static inline double status_uptime(const cam_status *s, int64_t now)
+{
+    if (!s->started_wall || now <= s->started_wall) return 0;
+    int64_t up = s->connected_ms + (s->connected_since_wall ? now - s->connected_since_wall : 0);
+    return (double)up / (double)(now - s->started_wall);
+}
+
 /* copy the live region (takes the status mutex) */
 static inline unsigned status_get_roi(cam_status *s, pc_point roi[4], float *inset)
 {
@@ -56,6 +83,15 @@ static inline unsigned status_get_roi(cam_status *s, pc_point roi[4], float *ins
     unsigned v = s->roi_version;
     pthread_mutex_unlock(&s->mu);
     return v;
+}
+
+/* plays in (now - window_ms, now] (call with status mutex held) */
+static inline int status_plays_since(const cam_status *s, int64_t now_wall, int64_t window_ms)
+{
+    int n = 0;
+    for (int i = 0; i < PLAY_RING; i++)
+        if (s->play_ring[i] && now_wall - s->play_ring[i] <= window_ms && s->play_ring[i] <= now_wall) n++;
+    return n;
 }
 
 /* plays in the last hour for a camera (call with status mutex held) */

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -147,6 +148,39 @@ void queue_stats(const char *dir, int *count, uint64_t *bytes)
     }
     free(v);
     *count = recs;
+}
+
+void queue_info_get(const char *dir, queue_info *qi)
+{
+    memset(qi, 0, sizeof *qi);
+    int n;
+    entry *v = list_files(dir, &n, &qi->bytes);
+    for (int i = 0; i < n; i++) {
+        size_t L = strlen(v[i].name);
+        if (L <= 5 || strcmp(v[i].name + L - 5, ".json")) continue;
+        qi->records++;
+        int prio = 0;
+        long long ms = 0;
+        if (sscanf(v[i].name, "%d-%lld", &prio, &ms) == 2) {
+            if (prio == QPRIO_ALERT) qi->alerts++; else qi->pops++;
+            if (ms > 0 && (!qi->oldest_ms || ms < qi->oldest_ms)) qi->oldest_ms = ms;
+        }
+    }
+    free(v);
+    char dd[1100];
+    snprintf(dd, sizeof dd, "%s/dead", dir);
+    uint64_t db;
+    v = list_files(dd, &n, &db);
+    for (int i = 0; i < n; i++) {
+        size_t L = strlen(v[i].name);
+        if (L > 5 && !strcmp(v[i].name + L - 5, ".json")) qi->dead++;
+    }
+    free(v);
+    struct statvfs sv;
+    if (statvfs(dir, &sv) == 0) {
+        qi->disk_free = (uint64_t)sv.f_bavail * sv.f_frsize;
+        qi->disk_total = (uint64_t)sv.f_blocks * sv.f_frsize;
+    }
 }
 
 void queue_enforce_cap(const char *dir, uint64_t max_bytes)

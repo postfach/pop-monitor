@@ -15,6 +15,83 @@
 static pthread_t up_thr, hb_thr;
 static app_ctx *A;
 
+static char last_curl_err[100];
+
+/* ok: 1 sent, 0 failed (will retry), 2 dead-lettered */
+static void health_note(int ok, long status, const char *err)
+{
+    (void)status;
+    gw_health *h = &A->health;
+    pthread_mutex_lock(&h->mu);
+    int64_t w = util_wall_ms();
+    if (ok == 1) { h->sent++; h->last_ok_wall = w; h->fail_streak = 0; }
+    else {
+        if (ok == 2) h->dead++; else { h->retries++; h->fail_streak++; }
+        h->last_fail_wall = w;
+        snprintf(h->last_error, sizeof h->last_error, "%s", err ? err : "");
+    }
+    pthread_mutex_unlock(&h->mu);
+}
+
+static void add_time(cJSON *o, const char *k, int64_t ms)
+{
+    if (!ms) return;
+    char ts[64];
+    util_iso8601(ms, ts, sizeof ts);
+    cJSON_AddStringToObject(o, k, ts);
+}
+
+cJSON *gateway_health_json(void)
+{
+    const gateway_cfg *g = A->cfg;
+    gw_health *h = &A->health;
+    int64_t now = util_wall_ms();
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "app_version", PC_VERSION);
+    add_time(j, "started_at", h->start_wall);
+    cJSON_AddNumberToObject(j, "uptime_s", (double)((now - h->start_wall) / 1000));
+    cJSON_AddNumberToObject(j, "heartbeat_s", g->heartbeat_s);
+    cJSON_AddBoolToObject(j, "ntp_synced", util_clock_synced());
+    pthread_mutex_lock(&h->mu);
+    cJSON *u = cJSON_AddObjectToObject(j, "uploads");
+    cJSON_AddNumberToObject(u, "sent", (double)h->sent);
+    cJSON_AddNumberToObject(u, "retries", (double)h->retries);
+    cJSON_AddNumberToObject(u, "rejected", (double)h->dead);
+    cJSON_AddNumberToObject(u, "fail_streak", h->fail_streak);
+    add_time(u, "last_ok_at", h->last_ok_wall);
+    add_time(u, "last_fail_at", h->last_fail_wall);
+    if (h->last_fail_wall) cJSON_AddStringToObject(u, "last_error", h->last_error);
+    add_time(u, "last_heartbeat_ok_at", h->hb_ok_wall);
+    pthread_mutex_unlock(&h->mu);
+    queue_info qi;
+    queue_info_get(g->queue_dir, &qi);
+    cJSON *q = cJSON_AddObjectToObject(j, "queue");
+    cJSON_AddNumberToObject(q, "records", qi.records);
+    cJSON_AddNumberToObject(q, "pops", qi.pops);
+    cJSON_AddNumberToObject(q, "alerts", qi.alerts);
+    cJSON_AddNumberToObject(q, "bytes", (double)qi.bytes);
+    cJSON_AddNumberToObject(q, "max_bytes", (double)((uint64_t)g->queue_max_mb << 20));
+    cJSON_AddNumberToObject(q, "dead", qi.dead);
+    add_time(q, "oldest_at", qi.oldest_ms);
+    if (qi.oldest_ms) cJSON_AddNumberToObject(q, "oldest_age_s", (double)((now - qi.oldest_ms) / 1000));
+    cJSON *d = cJSON_AddObjectToObject(j, "disk");
+    cJSON_AddNumberToObject(d, "free_bytes", (double)qi.disk_free);
+    cJSON_AddNumberToObject(d, "total_bytes", (double)qi.disk_total);
+    int ncam = 0, nconn = 0;
+    pthread_mutex_lock(&A->cams_mu);
+    for (int i = 0; i < g->n_cameras; i++) {
+        if (!g->cameras[i].active) continue;
+        ncam++;
+        pthread_mutex_lock(&A->status[i].mu);
+        nconn += A->status[i].connected;
+        pthread_mutex_unlock(&A->status[i].mu);
+    }
+    pthread_mutex_unlock(&A->cams_mu);
+    cJSON_AddNumberToObject(j, "cameras", ncam);
+    cJSON_AddNumberToObject(j, "cameras_connected", nconn);
+    return j;
+}
+
 static size_t sink(void *p, size_t s, size_t n, void *u) { (void)p; (void)u; return s * n; }
 
 /* Returns HTTP status, or -1 on transport failure. */
@@ -35,7 +112,7 @@ static long post_record(CURL *c, const char *stem)
     const cJSON *eid = cJSON_GetObjectItem(meta, "event_id");
     const char *endpoint = (cJSON_IsString(type) && !strcmp(type->valuestring, "fault"))
                          ? "/v1/alerts" : "/v1/pop";
-    char url[400], idem[128], auth[400], sig[160];
+    char url[400], idem[300], auth[400], sig[160];
     snprintf(url, sizeof url, "%s%s", g->server_url, endpoint);
     snprintf(idem, sizeof idem, "Idempotency-Key: %s", cJSON_IsString(eid) ? eid->valuestring : stem);
 
@@ -81,7 +158,10 @@ static long post_record(CURL *c, const char *stem)
     long status = -1;
     CURLcode rc = curl_easy_perform(c);
     if (rc == CURLE_OK) curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
-    else LOGW("upload", "%s: %s", url, curl_easy_strerror(rc));
+    else {
+        LOGW("upload", "%s: %s", url, curl_easy_strerror(rc));
+        snprintf(last_curl_err, sizeof last_curl_err, "%s", curl_easy_strerror(rc));
+    }
     curl_mime_free(mime);
     curl_slist_free_all(h);
     cJSON_Delete(meta);
@@ -110,18 +190,28 @@ static void *upload_thread(void *arg)
         if (st == 0 || (st >= 200 && st < 300) || st == 409) {   /* 409 = already have it */
             queue_remove(g->queue_dir, stem);
             backoff_ms = 0;
+            health_note(1, st, NULL);
             LOGD("upload", "sent %s (HTTP %ld)", stem, st);
             continue;
         }
         if (st >= 400 && st < 500 && st != 401 && st != 403 && st != 408 && st != 429) {
             LOGE("upload", "server rejected %s (HTTP %ld): moved to dead/", stem, st);
             queue_dead_letter(g->queue_dir, stem);
+            char e[80];
+            snprintf(e, sizeof e, "server rejected a record (HTTP %ld); moved to dead/", st);
+            health_note(2, st, e);
             continue;
         }
         /* server down, auth problem or network: keep the record, back off */
         backoff_ms = backoff_ms ? backoff_ms * 2 : 5000;
         if (backoff_ms > 600000) backoff_ms = 600000;
         LOGW("upload", "upload failed (HTTP %ld); retrying in %d s", st, backoff_ms / 1000);
+        {
+            char e[160];
+            if (st < 0) snprintf(e, sizeof e, "cannot reach the server (%s)", last_curl_err);
+            else snprintf(e, sizeof e, "server returned HTTP %ld", st);
+            health_note(0, st, e);
+        }
         for (int waited = 0; waited < backoff_ms && A->running; waited += 500) util_sleep_ms(500);
     }
     curl_easy_cleanup(c);
@@ -147,6 +237,7 @@ static char *heartbeat_json(void)
     cJSON *q = cJSON_AddObjectToObject(j, "queue");
     cJSON_AddNumberToObject(q, "records", qcount);
     cJSON_AddNumberToObject(q, "bytes", (double)qbytes);
+    cJSON_AddItemToObject(j, "health", gateway_health_json());
     cJSON *cams = cJSON_AddArrayToObject(j, "cameras");
     pthread_mutex_lock(&A->cams_mu);
     for (int i = 0; i < g->n_cameras; i++) {
@@ -170,6 +261,13 @@ static char *heartbeat_json(void)
             cJSON_AddNumberToObject(c, "expected_per_hour", s->expected_per_hour);
             cJSON_AddNumberToObject(c, "coverage", (double)ph / s->expected_per_hour);
         }
+        if (s->coverage_since_wall)
+            cJSON_AddNumberToObject(c, "coverage_data_min", (int)((now - s->coverage_since_wall) / 60000));
+        if (s->coverage_window_pct >= 0 && s->coverage_since_wall &&
+            now - s->coverage_since_wall >= (int64_t)g->cameras[i].coverage_window_min * 60000)
+            cJSON_AddNumberToObject(c, "coverage_window_pct", (int)(s->coverage_window_pct + 0.5f));
+        cJSON_AddNumberToObject(c, "uptime_pct", (int)(status_uptime(s, now) * 1000 + 0.5) / 10.0);
+        cJSON_AddNumberToObject(c, "reconnects", s->reconnects);
         cJSON_AddNumberToObject(c, "slot_count", s->profile.slot_count);
         cJSON_AddNumberToObject(c, "slot_ms", s->profile.slot_ms);
         cJSON *f = cJSON_AddArrayToObject(c, "active_faults");
@@ -177,6 +275,7 @@ static char *heartbeat_json(void)
             if (s->fault_active[k]) cJSON_AddItemToArray(f, cJSON_CreateString(pc_fault_name(k)));
         if (s->stream_lost) cJSON_AddItemToArray(f, cJSON_CreateString("stream_lost"));
         if (s->camera_moved) cJSON_AddItemToArray(f, cJSON_CreateString("camera_moved"));
+        if (s->low_coverage) cJSON_AddItemToArray(f, cJSON_CreateString("low_coverage"));
         pthread_mutex_unlock(&s->mu);
         cJSON_AddItemToArray(cams, c);
     }
@@ -198,6 +297,11 @@ static void *heartbeat_thread(void *arg)
             char *body = heartbeat_json();
             long st = http_post_json(url, body, g->api_key, g->tls_insecure, 20);
             if (st < 200 || st >= 300) LOGW("heartbeat", "heartbeat failed (HTTP %ld)", st);
+            else {
+                pthread_mutex_lock(&A->health.mu);
+                A->health.hb_ok_wall = util_wall_ms();
+                pthread_mutex_unlock(&A->health.mu);
+            }
             free(body);
             next = util_mono_ms() + (int64_t)g->heartbeat_s * 1000;
         }

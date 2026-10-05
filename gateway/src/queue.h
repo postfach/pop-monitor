@@ -22,6 +22,14 @@ void queue_dead_letter(const char *dir, const char *stem);
  * first (keeping metadata and ROI), then whole oldest records. */
 void queue_enforce_cap(const char *dir, uint64_t max_bytes);
 void queue_stats(const char *dir, int *count, uint64_t *bytes);
+
+typedef struct {
+    int      records, alerts, pops, dead;
+    uint64_t bytes;
+    int64_t  oldest_ms;            /* wall time of the oldest waiting record, 0 = empty */
+    uint64_t disk_free, disk_total;
+} queue_info;
+void queue_info_get(const char *dir, queue_info *qi);
 void queue_wake(void);               /* signal the uploader            */
 void queue_wait(int timeout_ms);     /* used by the uploader           */
 

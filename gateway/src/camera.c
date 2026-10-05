@@ -74,10 +74,56 @@ static void status_fault(camera *cm, const char *name, int raised)
     pthread_mutex_lock(&cm->st->mu);
     if (!strcmp(name, "stream_lost")) cm->st->stream_lost = raised;
     else if (!strcmp(name, "camera_moved")) cm->st->camera_moved = raised;
+    else if (!strcmp(name, "low_coverage")) cm->st->low_coverage = raised;
     else
         for (int k = 0; k < PC_FAULT_COUNT; k++)
             if (!strcmp(name, pc_fault_name(k))) cm->st->fault_active[k] = raised;
     pthread_mutex_unlock(&cm->st->mu);
+}
+
+/* Coverage alert, run from housekeeping (every 30 s). Coverage = plays logged
+ * over the alert window / plays the rotation should produce in that time.
+ * Only counted while the site is operating, connected, has a slot length and
+ * the detector hasn't just been reset; the window must be full before it is
+ * judged, so a restart never raises it. `reset` restarts the count. */
+static void coverage_check(camera *cm, int reset)
+{
+    const camera_cfg *c = cm->cfg;
+    cam_status *st = cm->st;
+    int64_t w = util_wall_ms();
+    int64_t win = (int64_t)c->coverage_window_min * 60000;
+    pthread_mutex_lock(&st->mu);
+    int slot_ms = st->profile.slot_ms;
+    int eligible = c->coverage_min_pct > 0 && st->operating && st->connected && !st->paused &&
+                   st->expected_per_hour > 0 && slot_ms > 0 && st->profile.slot_count != 1;
+    if (reset || !eligible) st->coverage_since_wall = 0;
+    if (eligible && !st->coverage_since_wall) st->coverage_since_wall = w;
+    int ready = eligible && w - st->coverage_since_wall >= win;
+    int plays = ready ? status_plays_since(st, w, win) : 0;
+    float pct = ready ? 100.f * plays * slot_ms / (float)win : -1.f;
+    st->coverage_window_pct = pct;
+    int active = st->low_coverage;
+    pthread_mutex_unlock(&st->mu);
+
+    char d[200];
+    int expected = slot_ms > 0 ? (int)(win / slot_ms) : 0;
+    if (active && !eligible) {
+        status_fault(cm, "low_coverage", 0);
+        alerts_send(cm->app, c, "low_coverage", "cleared", w, w,
+                    "no longer measured (outside operating hours, video down or rotation changed)", NULL, 0);
+    } else if (ready && !active && pct < c->coverage_min_pct) {
+        snprintf(d, sizeof d, "coverage %.0f%% over the last %d min: %d of %d expected plays (alert below %d%%)",
+                 pct, c->coverage_window_min, plays, expected, c->coverage_min_pct);
+        LOGW(c->name, "%s", d);
+        status_fault(cm, "low_coverage", 1);
+        alerts_send(cm->app, c, "low_coverage", "raised", w - win, w, d, NULL, 0);
+    } else if (ready && active && pct >= c->coverage_min_pct + 2) {   /* small hysteresis */
+        snprintf(d, sizeof d, "coverage back to %.0f%% over the last %d min (%d of %d)",
+                 pct, c->coverage_window_min, plays, expected);
+        LOGI(c->name, "%s", d);
+        status_fault(cm, "low_coverage", 0);
+        alerts_send(cm->app, c, "low_coverage", "cleared", w - win, w, d, NULL, 0);
+    }
 }
 
 /* Board aspect from the ROI corners, for warp output sizes. */
@@ -498,7 +544,7 @@ static void *stream_thread(void *arg)
     unsigned roi_ver = status_get_roi(st, roi, &inset);
     uint8_t *py = NULL, *pu = NULL, *pv = NULL;
     int64_t lost_since = 0, last_housekeep = 0, last_analysed = 0;
-    int backoff = 2000, frames_in_window = 0;
+    int backoff = 2000, frames_in_window = 0, cov_reset = 1, connects = 0;
     int64_t fps_window_start = util_mono_ms();
 
     while (RUNNING(cm)) {
@@ -527,6 +573,8 @@ static void *stream_thread(void *arg)
         backoff = 2000;
         pthread_mutex_lock(&st->mu);
         st->connected = 1;
+        if (st->connected_since_wall == 0) st->connected_since_wall = util_wall_ms();
+        if (connects++) st->reconnects++;
         int was_lost = st->stream_lost;
         pthread_mutex_unlock(&st->mu);
         if (was_lost) {
@@ -535,6 +583,7 @@ static void *stream_thread(void *arg)
             alerts_send(cm->app, c, "stream_lost", "cleared", mono_to_wall(lost_since), w, "video restored", NULL, 0);
         }
         lost_since = 0;
+        cov_reset = 1;                 /* plays were missed while the video was down */
 
         pc_frame f;
         int64_t pts;
@@ -548,7 +597,8 @@ static void *stream_thread(void *arg)
                 int on = util_in_time_range(c->operating_hours, w);
                 pc_faults_set_operating(&fm, on, now);
                 pc_profile p = config_active_profile(c, w);
-                if (p.slot_count != prof.slot_count || p.slot_ms != prof.slot_ms) {
+                int prof_changed = p.slot_count != prof.slot_count || p.slot_ms != prof.slot_ms;
+                if (prof_changed) {
                     LOGI(c->name, "rotation profile now %d x %d ms", p.slot_count, p.slot_ms);
                     prof = p;
                     pc_detector_set_profile(&det, &prof);
@@ -561,6 +611,8 @@ static void *stream_thread(void *arg)
                 st->profile = prof;
                 st->expected_per_hour = tr.expected_per_hour;
                 pthread_mutex_unlock(&st->mu);
+                coverage_check(cm, prof_changed || cov_reset);
+                cov_reset = 0;
                 last_housekeep = now;
             }
 
@@ -585,6 +637,7 @@ static void *stream_thread(void *arg)
                 det.library.changes = lib_saved + 1;
                 pc_faults_init(&fm, &c->faults, &c->det, &prof);
                 pc_faults_set_operating(&fm, util_in_time_range(c->operating_hours, util_wall_ms()), now);
+                cov_reset = 1;
                 LOGI(c->name, "region updated: (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f), inset %.0f%%",
                      roi[0].x, roi[0].y, roi[1].x, roi[1].y, roi[2].x, roi[2].y, roi[3].x, roi[3].y, inset);
             }
@@ -652,6 +705,10 @@ static void *stream_thread(void *arg)
         LOGW(c->name, "stream ended or failed; reconnecting");
         pthread_mutex_lock(&st->mu);
         st->connected = 0;
+        if (st->connected_since_wall) {
+            st->connected_ms += util_wall_ms() - st->connected_since_wall;
+            st->connected_since_wall = 0;
+        }
         pthread_mutex_unlock(&st->mu);
         if (!lost_since) lost_since = util_mono_ms();
         util_sleep_ms(1000);
@@ -673,6 +730,9 @@ int camera_start(app_ctx *app, int idx)
     cm->idx = idx;
     cm->cfg = &app->cfg->cameras[idx];
     cm->st = &app->status[idx];
+    pthread_mutex_lock(&cm->st->mu);
+    cm->st->started_wall = util_wall_ms();
+    pthread_mutex_unlock(&cm->st->mu);
     pthread_mutex_init(&cm->mu, NULL);
     pthread_cond_init(&cm->cv, NULL);
     if (pthread_create(&cm->snap_thr, NULL, snapshot_thread, cm) != 0) { free(cm); return -1; }

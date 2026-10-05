@@ -84,6 +84,8 @@ static void camera_defaults(camera_cfg *c)
     c->analysis_fps = 5;
     snprintf(c->operating_hours, sizeof c->operating_hours, "00:00-24:00");
     c->ptz_check = 1;
+    c->coverage_min_pct = 90;
+    c->coverage_window_min = 30;
     snprintf(c->rtsp_transport, sizeof c->rtsp_transport, "tcp");
     snprintf(c->stream_params, sizeof c->stream_params, "resolution=1280x720&fps=10&videocodec=h264");
     c->ptz_tolerance = 1.0f;
@@ -119,6 +121,8 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_float(o, "inset_pct", &c->inset_pct);
     get_int(o, "analysis_fps", &c->analysis_fps);
     get_int(o, "ptz_check", &c->ptz_check);
+    get_int(o, "coverage_min_pct", &c->coverage_min_pct);
+    get_int(o, "coverage_window_min", &c->coverage_window_min);
     get_float(o, "ptz_tolerance", &c->ptz_tolerance);
     get_int(o, "realtime", &c->realtime);
     get_int(o, "loop", &c->loop);
@@ -192,6 +196,14 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
 
 static int validate_camera(camera_cfg *c, int idx, char *err, size_t n)
 {
+    if (c->coverage_min_pct < 0 || c->coverage_min_pct > 100) {
+        snprintf(err, n, "camera %s: coverage alert threshold must be 0-100%% (0 = off)", c->site_id);
+        return -1;
+    }
+    if (c->coverage_window_min < 5 || c->coverage_window_min > 240) {
+        snprintf(err, n, "camera %s: coverage window must be 5-240 minutes", c->site_id);
+        return -1;
+    }
     if (!*c->site_id) { snprintf(err, n, "camera %d: site_id is required", idx); return -1; }
     if (c->http_port < 0 || c->http_port > 65535 || c->rtsp_port < 0 || c->rtsp_port > 65535) {
         snprintf(err, n, "camera %s: ports must be between 1 and 65535", c->site_id);

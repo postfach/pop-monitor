@@ -42,6 +42,8 @@ typedef struct {
     int   n_dayparts;
     char  operating_hours[24];
     int   ptz_check;            /* compare PTZ position to baseline    */
+    int   coverage_min_pct;     /* low_coverage alert below this (0 = off) */
+    int   coverage_window_min;  /* ...measured over this many minutes  */
     float ptz_tolerance;        /* degrees / zoom units                */
     pc_detector_cfg det;
     pc_faults_cfg   faults;

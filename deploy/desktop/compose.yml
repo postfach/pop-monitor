@@ -38,6 +38,8 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Pacific/Auckland}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}     # gateway-offline alerts come from here
+      POP_SLACK_WEBHOOK: ${POP_SLACK_WEBHOOK:-}
       POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
       GATEWAY_URL: http://gateway:8090

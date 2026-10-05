@@ -89,6 +89,8 @@ int main(int argc, char **argv)
     app.status = calloc(MAX_CAMERAS, sizeof(cam_status));
     for (int i = 0; i < MAX_CAMERAS; i++) pthread_mutex_init(&app.status[i].mu, NULL);
     pthread_mutex_init(&app.cams_mu, NULL);
+    pthread_mutex_init(&app.health.mu, NULL);
+    app.health.start_wall = util_wall_ms();
     control_init_regions(&app);           /* config.json, then edits saved from the review page */
 
     struct sigaction sa;

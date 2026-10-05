@@ -172,6 +172,48 @@ exists (a removed site, or one renamed before this version) are listed at the bo
 Sites page under **Records from sites that no longer exist**, where **Delete** removes them
 and their images from the receiver.
 
+## Coverage alert
+
+Coverage is plays logged ÷ plays the rotation should produce (one per slot). The gateway
+raises `low_coverage` when coverage over the last **30 minutes** falls below **90%**, and
+clears it once it is 2 points above the threshold again. It is only measured while the site
+is in operating hours, the video is connected and a slot length is set (not for takeovers);
+the count restarts after a restart, a video outage, a region edit or a rotation change, and
+the first judgement waits for a full window, so restarts don't raise it. Set the threshold
+and window per site on the Settings page (0 = off), or for every site in `config.json`:
+`"defaults": {"coverage_min_pct": 90, "coverage_window_min": 30}`.
+
+Low coverage usually means similar creatives back to back aren't being told apart, the region
+needs adjusting, or the slot length is wrong. Coverage far above 100% means the slot length is
+set too long, or animated creatives are being split into several plays. The review page shows
+hourly coverage, and "warming up" during a site's first hour of counting.
+
+## Adding many sites
+
+* **Duplicate site** (on a site's Settings page) opens the Add site form pre-filled with that
+  site's model, ports, transport, rotation, hours and alert settings. Enter the new ID, name
+  and host. The password isn't copied.
+* **Import from CSV** (on the Sites page): download the template, fill one row per site in
+  Excel, upload it, check the preview (each new row is validated by the gateway without being
+  created), then Import. Only `site_id` and `host` are required; blank cells use the
+  defaults. Tick "Update sites that already exist" to bulk-edit: only filled cells change.
+  Each new site starts with the full frame as its region, so set the region next (the results
+  list links to each one).
+
+## Gateway health
+
+The **Health** page shows each gateway from its latest heartbeat: online or offline, uptime,
+cameras connected, records waiting to upload and the age of the oldest, upload counts and
+the last error, records rejected by the server, disk space and clock sync, and per site the
+video uptime, reconnects, frame rate, coverage and open problems. Warnings are listed at the
+top of each gateway.
+
+If a gateway sends no heartbeat for 3 × `heartbeat_s` (at least 3 minutes), the receiver
+records a `gateway_offline` alert, shows a banner on the review page, and posts to the Teams
+and Slack webhooks set in `.env` (`POP_TEAMS_WEBHOOK`, `POP_SLACK_WEBHOOK`). It posts again
+when heartbeats resume. Records made while the gateway's uplink was down are uploaded
+when it reconnects.
+
 ## Editing a camera's region live
 
 On the review page, click **Edit region** next to a camera. The editor fetches a fresh frame
@@ -224,12 +266,17 @@ PoP metadata example:
 Alert metadata: `type: "fault"`, `fault`, `state` (`raised`, `cleared`, `occurred`),
 `severity`, `since`, `at`, `detail`. Faults: `black`, `blank`, `frozen`, `blank_slot`,
 `loop_changed`, `missing_creative`, `partial_failure`, `blurred`, `camera_moved`,
-`stream_lost`, `snapshot_failed`, `poor_pop_image`.
+`stream_lost`, `snapshot_failed`, `poor_pop_image`, `low_coverage`. The interim receiver adds
+`gateway_offline` (with an empty `site_id` and a `gateway_id`). When a site is edited or
+removed, the gateway sends `cleared` for each of its open faults.
 
 **`POST /v1/heartbeat`** (JSON, every `heartbeat_s`): per camera `connected`, `state`,
 `fps`, `last_frame_at`, `last_play_at`, `plays_last_hour`, `expected_per_hour`,
-`coverage`, `active_faults`, plus queue depth. **The backend should alert when heartbeats
-stop**: a gateway that is offline can't report itself.
+`coverage`, `coverage_data_min`, `coverage_window_pct`, `uptime_pct`, `reconnects`,
+`active_faults`, plus `health` (the same object as the gateway's `GET /api/health`: uptime,
+version, upload counts and last error, queue size and oldest record, rejected records, disk
+space, NTP state). **The backend should alert when heartbeats stop**: a gateway that is
+offline can't report itself. The interim receiver does this (see Gateway health).
 
 `local_creative_id` (`c-0001`, `c-0002`, …) is per site and only groups repeat plays of the
 same artwork, so a 6-slot loop should settle on about six IDs plus one for a blank slot.
