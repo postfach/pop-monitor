@@ -8,3 +8,5 @@ __pycache__/
 # Vault pulls hold booking data: keep them out of git
 deploy/desktop/bookings/vault-bookings.json
 bookings/vault-bookings.json
+deploy/desktop/bookings/creatives/
+deploy/bookings/creatives/

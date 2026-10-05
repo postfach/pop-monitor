@@ -19,7 +19,8 @@ SLOT = 8.0
 ROT = ["A", "B", "C", "D"]
 # Share-of-time variant for bookings tests: SIM_ROTATION=A,A,B,C,D,B gives a
 # 6-slot loop where A holds two slots back to back and B two slots spread out.
-# Custom rotations have no fault injections.
+# Custom rotations have no fault injections. An entry can also be the path of an
+# image file, shown as that real creative (artwork-matching tests).
 CUSTOM = bool(os.environ.get("SIM_ROTATION"))
 if CUSTOM:
     ROT = [x.strip() for x in os.environ["SIM_ROTATION"].split(",") if x.strip()]
@@ -61,7 +62,27 @@ def _uv(w, h):
     return _maps[key]
 
 
+_imgs = {}
+
+
+def _artwork(path, u, v):
+    """A real creative (image file) on the board, as a camera sees it: a little
+    soft, with a warm cast and some sun glare towards the top left."""
+    if path not in _imgs:
+        from PIL import Image
+        with Image.open(path) as im:
+            _imgs[path] = np.asarray(im.convert("RGB"), np.float32)
+    a = _imgs[path]
+    h, w = a.shape[:2]
+    img = a[np.clip((v * h).astype(int), 0, h - 1), np.clip((u * w).astype(int), 0, w - 1)]
+    img = img * np.array([1.05, 0.98, 0.9], np.float32) * 0.85
+    glare = 60 * np.exp(-((u - 0.2) ** 2 + (v - 0.15) ** 2) / 0.08)
+    return img + glare[..., None]
+
+
 def _creative(name, u, v, t):
+    if "/" in name or name.lower().endswith((".png", ".jpg", ".jpeg")):
+        return _artwork(name, u, v)
     seed = {"A": 11, "B": 23, "C": 37, "D": 51, "E": 67, "F": 79}[name]
     rng = np.random.RandomState(seed)
     pal = rng.randint(30, 230, size=(4, 8, 3)).astype(np.float32)

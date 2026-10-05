@@ -211,24 +211,38 @@ leaving out house and unbooked fill.
 
 1. A weekly pull of booked campaigns is saved as `vault-bookings.json` in the bookings
    folder (`deploy/desktop/bookings/`, or `POP_BOOKINGS_DIR` for Portainer), or uploaded with
-   **Upload Vault pull** on the Bookings page. The format and the scheduled task are in
+   **Upload Vault pull or creatives** on the Bookings page. The format and the scheduled task are in
    `docs/vault-pull.md`.
 2. Set each site's **Vault screen** on its Settings page (the list is filled from the pull),
    or in the `vault_screen` column of the CSV import.
-3. The page lists the campaigns booked on that screen this week with their plays per loop,
-   and every creative seen with its share of the loop. Nothing is matched automatically:
-   Vault doesn't say which artwork belongs to which campaign, and programmatic slots play
-   artwork that is in no booking. Each new creative starts as **Unassigned**; set it to its
-   campaign, **Programmatic** or **House**. Links are kept for later weeks (a creative linked
-   to a campaign that isn't booked that week is counted with house).
+3. A pull of the booked artwork from SharePoint (Booked Campaigns / Creative+MIs, using each
+   campaign's Material Instructions to pick the file for the screen and its dates) is saved as
+   `creatives/vault-creatives.json` plus images in the same folder, or uploaded as a zip with
+   the same button. See "Creatives pull" in `docs/vault-pull.md`.
+4. The page lists the campaigns booked on that screen this week with their plays per loop and
+   artwork, and every creative seen with its share of the loop. Each creative's PoP images
+   are compared with the booked artwork for the screen (fine detail with the camera's glare,
+   vignetting and exposure removed, best of small offsets, median over up to 5 recent images):
+   * **artwork match**: at least 40% and at least 8 points ahead of every other campaign. It is
+     assigned to that campaign automatically ("Auto: …" in the list).
+   * **looks like …?**: 30–40%, or too close to another campaign. Stays unassigned.
+   * **matches no booked artwork**: usually programmatic, house, or artwork missing from
+     SharePoint.
+   * **off schedule**: matched artwork that played outside its dates in the Material
+     Instructions (a teaser left on, a new creative started early).
+   Anything can be set by hand to a campaign, **Programmatic** or **House**; that always wins
+   and is kept for later weeks (a creative linked to a campaign that isn't booked that week is
+   counted with house). Video creatives aren't matched yet.
 
 Each card shows true coverage (booked slots delivered ÷ booked slots, over the certain
-bookings that have creatives linked), booked vs available slots, programmatic, house,
+bookings that have artwork or creatives linked), booked vs available slots, programmatic, house,
 unassigned and blank slots per loop, and how much of the week has been monitored. Campaigns
-with no creative linked show as "not linked" and aren't judged. Warnings cover unassigned
+with no artwork in SharePoint and no creative linked show as "not linked" and aren't judged. Warnings cover unassigned
 creatives, linked campaigns whose creatives weren't seen or are under-delivering, and more
-plays booked than the loop has slots. The review page shows a creative's campaign (or
-Programmatic / House) only once it is linked.
+plays booked than the loop has slots, plus off-schedule artwork. The review page shows each
+PoP's campaign (marked "artwork match" when matched automatically) or Programmatic / House.
+The receiver image includes numpy and Pillow for the matching; without them the page works
+with links set by hand only.
 
 Limits of the Vault data: it gives each booking's first week, last week and number of weeks,
 not which weeks, so a booking with gaps is shown as "may be booked this week" (and left out of

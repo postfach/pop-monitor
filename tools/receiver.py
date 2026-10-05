@@ -33,6 +33,9 @@ import os
 import threading
 import time
 import uuid
+import shutil
+import zipfile
+import io
 from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -979,6 +982,8 @@ th{white-space:nowrap;font-weight:600} td.n{text-align:right;white-space:nowrap}
 .meter{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--line);vertical-align:middle;margin-right:6px;overflow:hidden}
 .meter i{display:block;height:100%;background:var(--ok)} .meter i.under{background:var(--warn)} .meter i.none{background:var(--bad)}
 .thumb{width:72px;height:40px;object-fit:contain;background:#000;border-radius:4px;display:block}
+.thumb.sm{width:44px;height:30px;display:inline-block;margin-right:4px;vertical-align:middle}
+.pill.ok{border-color:var(--ok);color:var(--ok)}
 select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);max-width:260px}
 .pill{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted);white-space:nowrap}
 .pill.warn{border-color:var(--warn);color:var(--warn)}
@@ -987,13 +992,14 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
 <h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
 <div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
-<span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull<input type="file" id="up" accept=".json,application/json" hidden></label></div>
+<span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
 <div id="out"></div>
 <details class="note muted"><summary>How this is worked out</summary>
 <p>Vault lists, for each booked campaign, the screens it books with its weeks and plays per loop. For each site linked to a Vault screen, this page adds up that week's bookings and compares them with what the gateway saw.</p>
 <p><b>Per loop</b> figures are slots held per loop of the site's rotation. A creative on screen for two slots back to back counts as two; a longer run than that creative usually holds (a missed change, hold-over or freeze) only counts its usual length.</p>
 <p>Vault gives each booking's first and last week and how many weeks it books, but not which ones. A booking with gaps is only <b>certain</b> in its first and last week; in between it shows as <i>may be booked this week</i> and isn't counted in true coverage (it can still be matched to a creative). Week-by-week data from a Vault API would remove this.</p>
-<p>Vault doesn't say which artwork belongs to which campaign, and programmatic slots play artwork that is in no booking, so nothing is matched automatically. Each new creative starts as <b>unassigned</b>; set it to its campaign, <b>Programmatic</b> or <b>House</b>. Links are kept for later weeks. A campaign with no creative linked shows as <i>not linked</i> and isn't judged.</p>
+<p><b>Artwork matching.</b> The booked creatives for each screen are pulled from SharePoint (Booked Campaigns / Creative+MIs, using each campaign's Material Instructions where they name the file for the screen). Each creative the gateway sees is compared with that artwork using its PoP images: fine detail (text, edges, layout) with the camera's glare and exposure removed. A clear match (at least 40% and well ahead of every other campaign) assigns it to that campaign as <span class="pill ok">artwork match</span>; a weaker one shows <span class="pill">looks like …?</span> and stays unassigned; <span class="pill">matches no booked artwork</span> usually means programmatic, house, or a creative that isn't in SharePoint. Artwork that played outside the dates in its Material Instructions is flagged <span class="pill warn">off schedule</span>. Video creatives aren't matched yet.</p>
+<p>Anything can be set by hand (a campaign, <b>Programmatic</b> or <b>House</b>), which always wins and is kept for later weeks. A campaign with no artwork in SharePoint and no creative linked shows as <i>not linked</i> and isn't judged.</p>
 <p><b>Delivery</b> is slots delivered per loop ÷ slots booked per loop, over the time the gateway was watching. <b>True coverage</b> is booked slots delivered ÷ booked slots, over the certain bookings that have creatives linked. <b>Monitored</b> is the share of the week so far with verified plays.</p></details>
 </main><script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1010,21 +1016,51 @@ function meter(c) {
   if (c.status === 'seen') return `<span class="muted">seen, ${one(c.delivered)} / loop</span>`;
   return `<span class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(d * 100))}%"></i></span>${c.status === 'not seen' ? '<span class="bad">not seen</span>' : pct(d)}`;
 }
+const artUrl = f => '/creatives/file?f=' + encodeURIComponent(f);
+const fmtd = d => d ? new Date(d + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short'}) : '';
+function artCell(c, s) {
+  const files = c.artwork.filter(a => a.file);
+  if (!files.length) {
+    const miss = (s.artwork.missing || []).find(m => m.campaign_id === c.campaign_id);
+    const vids = c.artwork.filter(a => a.kind === 'video').length;
+    return `<span class="muted" title="${esc(miss ? miss.reason : '')}">${vids ? vids + ' video(s), not matched' : s.artwork.library ? 'none in SharePoint' : '—'}</span>`;
+  }
+  return files.slice(0, 4).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}${a.from || a.to ? ' · ' + fmtd(a.from) + '–' + fmtd(a.to) : ''}${a.rotation ? ' · ' + a.rotation + '%' : ''}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('') +
+     (files.length > 4 ? ` <span class="muted">+${files.length - 4}</span>` : '');
+}
+function refThumb(cr) {
+  const a = cr.art; if (!a || !a.file || a.status === 'none') return '';
+  return `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}"><img class="thumb" loading="lazy" src="${artUrl(a.file)}" alt="booked artwork" style="${a.status === 'possible' ? 'opacity:.55' : ''}"></a>`;
+}
+function artPill(cr, s, cname) {
+  const a = cr.art;
+  if (cr.link) return '<span class="pill">set by hand</span>';
+  if (!a) return '';
+  const sc = `match ${Math.round(a.score * 100)}%, next best ${Math.round(a.next * 100)}%, over ${a.samples} PoP image(s) and ${a.candidates} booked artwork(s)`;
+  if (a.status === 'matched') return `<span class="pill ok" title="${esc(sc)}">artwork match</span>` +
+     (a.off_schedule ? ` <span class="pill warn" title="${esc(a.name)} runs ${fmtd(a.from)}–${fmtd(a.to)}">off schedule</span>` : '');
+  if (a.status === 'possible') return `<span class="pill" title="${esc(sc)}">looks like ${esc(cname(a.campaign_id))}?</span>`;
+  return `<span class="pill" title="${esc(sc)}">matches no booked artwork</span>`;
+}
 function site(s, rep) {
   if (!s.vault_screen) return `<div class="site"><div class="top"><h2>${esc(s.name)}</h2></div>
      <p class="muted" style="margin:6px 0 0">Not linked to a Vault screen. <a href="/site?site=${encodeURIComponent(s.site_id)}">Set its Vault screen name</a> to compare bookings.</p></div>`;
   const camp = s.campaigns.map(c => `<tr${c.certain ? '' : ' style="opacity:.7"'}><td>${c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}<br><span class="muted">${esc(c.advertiser)} · ${esc(c.campaign_id)}</span></td>
      <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
+     <td>${artCell(c, s)}</td>
      <td>${c.creatives.map(esc).join(', ') || '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
   const opt = (v, label, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
-  const opts = (sel) => opt('', 'Unassigned', sel) + opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
+  const cname = id => (s.campaigns.find(c => c.campaign_id === id) || {}).name || id;
+  const opts = (sel, cr) => opt('', cr.art && cr.art.status === 'matched' && !cr.link ? 'Auto: ' + cname(cr.art.campaign_id) : 'Unassigned', sel) +
+     opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
      `<optgroup label="Booked this week">` + s.campaigns.map(c => opt(c.campaign_id, c.name, sel)).join('') + `</optgroup>` +
      (sel && sel !== 'programmatic' && sel !== 'house' && !s.campaigns.some(c => c.campaign_id === sel) ? opt(sel, sel + ' (not booked this week)', sel) : '');
-  const crs = s.creatives.map(cr => `<tr><td>${cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt=""></a>` : ''}</td>
+  const crs = s.creatives.map(cr => `<tr><td>${cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt="PoP image"></a>` : ''}</td>
+     <td>${refThumb(cr)}</td>
      <td><b>${esc(cr.creative_id)}</b>${cr.video ? ' <span class="pill">video</span>' : ''}${cr.blank ? ' <span class="pill">blank</span>' : ''}</td>
      <td class="n">${cr.plays}</td><td class="n">${one(cr.share)}</td>
-     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link)}</select>
-       ${cr.assigned === 'unassigned' ? '<span class="pill warn">unassigned</span>' : ''}`}</td></tr>`).join('');
+     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link, cr)}</select>
+       ${artPill(cr, s, cname)}${cr.assigned === 'unassigned' ? ' <span class="pill warn">unassigned</span>' : ''}`}</td></tr>`).join('');
   const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
   const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < s.booked_per_loop
        ? `of ${s.booked_linked_per_loop} linked booked slot(s); ${s.booked_per_loop - s.booked_linked_per_loop} not linked yet` : 'booked slots delivered')
@@ -1042,11 +1078,11 @@ function site(s, rep) {
        ${tile('Monitored', hrs(s.seen_s), `of ${hrs(s.elapsed_s)} this week so far · ${Math.floor(s.loops_seen || 0)} loops`)}
      </div>
      <h3>Booked campaigns</h3>
-     <div class="wrap"><table><thead><tr><th>Campaign</th><th class="n">Booked / loop</th><th>Slot type</th><th>Creatives</th><th class="n">Seen / loop</th><th>Delivery</th></tr></thead>
-     <tbody>${camp || '<tr><td colspan="6" class="muted">Nothing booked on this screen this week in the Vault pull.</td></tr>'}</tbody></table></div>
+     <div class="wrap"><table><thead><tr><th>Campaign</th><th class="n">Booked / loop</th><th>Slot type</th><th>Artwork</th><th>Creatives</th><th class="n">Seen / loop</th><th>Delivery</th></tr></thead>
+     <tbody>${camp || '<tr><td colspan="7" class="muted">Nothing booked on this screen this week in the Vault pull.</td></tr>'}</tbody></table></div>
      <h3>Creatives seen</h3>
-     <div class="wrap"><table><thead><tr><th></th><th>Creative</th><th class="n">Plays</th><th class="n">Slots / loop</th><th>Campaign</th></tr></thead>
-     <tbody>${crs || '<tr><td colspan="5" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></div>`;
+     <div class="wrap"><table><thead><tr><th>PoP</th><th>Booked artwork</th><th>Creative</th><th class="n">Plays</th><th class="n">Slots / loop</th><th>Campaign</th></tr></thead>
+     <tbody>${crs || '<tr><td colspan="6" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></div>`;
 }
 async function load() {
   const r = await fetch('/bookings.json' + (week ? '?week=' + week : ''));
@@ -1054,7 +1090,9 @@ async function load() {
   week = rep.week;
   document.getElementById('wk').textContent = 'Week of ' + new Date(rep.week + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
   document.getElementById('sub').innerHTML = rep.pulled_at
-    ? `Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '')
+    ? `Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '') +
+      (rep.creatives ? ` · artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : ' · <span class="warn">no artwork library yet</span>') +
+      (rep.artwork_enabled === false ? ' · <span class="warn">artwork matching unavailable (needs numpy and Pillow)</span>' : '')
     : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>';
   document.getElementById('out').innerHTML = !rep.gateway ? '<p class="bad">Cannot reach the gateway, so the sites are unknown.</p>'
     : rep.sites.map(s => site(s, rep)).join('') || '<p class="muted">No sites.</p>';
@@ -1072,7 +1110,9 @@ document.getElementById('out').addEventListener('change', async e => {
 });
 document.getElementById('up').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  const r = await fetch('/bookings/upload', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: await f.text()});
+  const zip = /\.zip$/i.test(f.name);
+  const r = await fetch(zip ? '/bookings/creatives' : '/bookings/upload', {method: 'POST',
+    headers: {'Content-Type': zip ? 'application/zip' : 'application/json'}, body: zip ? await f.arrayBuffer() : await f.text()});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) alert(j.error || 'Upload failed'); else load();
 };
@@ -1459,7 +1499,7 @@ def index_records():
                     continue
                 RECS["by_site"].setdefault(r.get("site_id"), []).append(
                     (t, r.get("local_creative_id"), bool(r.get("is_blank")), bool(r.get("video_creative")),
-                     r.get("event_id"), "roi_sha256" in r))
+                     r.get("event_id"), "roi_sha256" in r, (r.get("quality") or {}).get("usable", True) is not False))
             RECS["size"] += end
             for v in RECS["by_site"].values():
                 v.sort(key=lambda x: x[0])
@@ -1526,23 +1566,265 @@ def save_link(site_id, creative_id, campaign_id):
 LINK_KINDS = ("programmatic", "house")
 
 
-def match(creatives, campaigns, links):
-    """Creatives are assigned only by a link someone has set on the Bookings page
-    (a campaign, programmatic or house). Nothing is guessed: Vault doesn't say
-    which artwork belongs to which campaign, and programmatic slots carry
-    artwork that is in no booking. Returns {creative_id: assignment}, where an
+def match(creatives, campaigns, links, art=None):
+    """Assign each creative: a link someone set on the Bookings page (a campaign,
+    programmatic or house) wins; otherwise a confident match of its PoP images
+    to a booked creative's artwork; otherwise it stays unassigned. Nothing is
+    guessed from share of the loop. Returns {creative_id: assignment}, where an
     assignment is a booked campaign_id, "programmatic", "house", "unbooked"
     (linked to a campaign not booked this week) or "unassigned"."""
     booked = {c["campaign_id"] for c in campaigns}
+    art = art or {}
     out = {}
     for cr in creatives:
         cid = links.get(cr["creative_id"])
+        a = art.get(cr["creative_id"])
+        if not cid and a and a["status"] == "matched":
+            cid = a["campaign_id"]
         if not cid:
             out[cr["creative_id"]] = "unassigned"
         elif cid in LINK_KINDS or cid in booked:
             out[cr["creative_id"]] = cid
         else:
             out[cr["creative_id"]] = "unbooked"
+    return out
+
+
+
+# ---------------------------------------------------------------- artwork matching
+# The creatives booked on each screen (pulled from SharePoint's Creative+MIs folders
+# into vault-creatives.json + images) are compared with the PoP images of each
+# creative the gateway has seen. Needs numpy and Pillow; without them the Bookings
+# page works as before, with links set by hand only.
+try:
+    import numpy as _np
+    from PIL import Image as _Image, ImageFilter as _ImageFilter
+    ART_OK = True
+except ImportError:                                   # pragma: no cover
+    ART_OK = False
+
+ART_GW, ART_GH = 48, 32          # fingerprint grid
+ART_MATCH = 0.40                 # fine-detail correlation that counts as a match
+ART_MARGIN = 0.08                # ...and by this much over any other campaign
+ART_POSSIBLE = 0.30              # shown as "looks like" below a match
+ART_SAMPLES = 5                  # PoP images per creative compared
+CRE = {"mtime": None, "path": None, "data": None, "root": None}
+CRE_LOCK = threading.Lock()
+ART_CACHE = {}                   # (path, mtime, inset) or event id -> prepared arrays
+ART_RESULTS = {}                 # memo of per-creative results
+
+
+def creatives_paths():
+    """(manifest, image root) candidates: mounted folder, then an upload."""
+    mounted = os.environ.get("CREATIVES_DIR", "/bookings/creatives")
+    up = os.path.join(ARGS.out, "creatives")
+    return [(os.path.join(d, "vault-creatives.json"), d) for d in (mounted, up) if d]
+
+
+def load_creatives():
+    best = None
+    for path, root in creatives_paths():
+        try:
+            m = os.path.getmtime(path)
+        except OSError:
+            continue
+        if best is None or m > best[2]:
+            best = (path, root, m)
+    with CRE_LOCK:
+        if best is None:
+            CRE.update(mtime=None, path=None, data=None, root=None)
+            return None
+        if CRE["path"] == best[0] and CRE["mtime"] == best[2]:
+            return CRE["data"]
+        try:
+            with open(best[0], encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data.get("creatives"), list):
+                raise ValueError("no creatives list")
+        except (OSError, ValueError) as e:
+            print(f"creatives: cannot read {best[0]}: {e}", flush=True)
+            return CRE["data"]
+        CRE.update(mtime=best[2], path=best[0], data=data, root=best[1])
+        ART_RESULTS.clear()
+        print(f"creatives: loaded {len(data['creatives'])} creative file(s) from {best[0]}", flush=True)
+        return data
+
+
+def install_creatives_zip(raw):
+    """Unpack an uploaded creatives library (vault-creatives.json + images) into
+    the data folder, replacing the previous upload. Returns the creative count."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        raise ValueError("not a zip file")
+    names = [n for n in z.namelist() if not n.endswith("/")]
+    man = [n for n in names if n.rsplit("/", 1)[-1] == "vault-creatives.json"]
+    if not man:
+        raise ValueError("the zip has no vault-creatives.json")
+    base = man[0][: -len("vault-creatives.json")]          # the folder the manifest is in
+    try:
+        data = json.loads(z.read(man[0]))
+    except ValueError:
+        raise ValueError("vault-creatives.json is not valid JSON")
+    if not isinstance(data.get("creatives"), list):
+        raise ValueError("vault-creatives.json has no creatives list")
+    dest = os.path.join(ARGS.out, "creatives")
+    tmp = dest + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    ok_ext = (".json", ".jpg", ".jpeg", ".png")
+    for n in names:
+        if not n.startswith(base) or not n.lower().endswith(ok_ext):
+            continue
+        rel = n[len(base):]
+        target = os.path.realpath(os.path.join(tmp, rel))
+        if not target.startswith(os.path.realpath(tmp) + os.sep):
+            raise ValueError(f"unsafe path in zip: {n}")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with z.open(n) as src, open(target, "wb") as out:
+            shutil.copyfileobj(src, out)
+    old = dest + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(dest):
+        os.replace(dest, old)
+    os.replace(tmp, dest)
+    shutil.rmtree(old, ignore_errors=True)
+    os.utime(os.path.join(dest, "vault-creatives.json"))  # newest library wins
+    load_creatives()
+    return len(data["creatives"])
+
+
+def creative_file(rel):
+    """Absolute path of a manifest image, refusing anything outside the library."""
+    root = CRE.get("root")
+    if not root or not rel:
+        return None
+    full = os.path.realpath(os.path.join(root, rel))
+    if not full.startswith(os.path.realpath(root) + os.sep) or not os.path.isfile(full):
+        return None
+    return full
+
+
+def screen_creatives(screen):
+    data = load_creatives()
+    if not data or not screen:
+        return []
+    want = screen_key(screen)
+    return [c for c in data["creatives"] if screen_key(c.get("screen")) == want]
+
+
+def _hp(t, k=3):
+    p = _np.pad(t, k, mode="edge")
+    b = _np.zeros_like(t)
+    for dy in range(2 * k + 1):
+        for dx in range(2 * k + 1):
+            b += p[dy:dy + t.shape[0], dx:dx + t.shape[1]]
+    return t - b / (2 * k + 1) ** 2
+
+
+def _prep(img, inset=0.0):
+    """Fine luma detail of an image on a fixed grid: low frequencies (glare,
+    vignetting, exposure) removed, so it can be compared with a camera photo."""
+    img = img.convert("RGB")
+    if inset > 0:                         # the PoP image leaves out the board's edge
+        w, h = img.size
+        img = img.crop((w * inset, h * inset, w * (1 - inset), h * (1 - inset)))
+    img = img.resize((ART_GW * 4, ART_GH * 4), _Image.BILINEAR).filter(_ImageFilter.GaussianBlur(1.2))
+    img = img.resize((ART_GW, ART_GH), _Image.BOX).convert("L")
+    return _hp(_np.asarray(img, dtype=float))
+
+
+def _corr(a, b):
+    a = a.ravel() - a.mean()
+    b = b.ravel() - b.mean()
+    d = math.sqrt(float(a @ a) * float(b @ b))
+    return float(a @ b) / d if d > 1e-9 else 0.0
+
+
+def _shift_corr(a, b, r=2):
+    """Best correlation over small offsets (the region may be a little off)."""
+    H, W = a.shape
+    best = -1.0
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            A = a[max(0, dy):H + min(0, dy), max(0, dx):W + min(0, dx)]
+            B = b[max(0, -dy):H + min(0, -dy), max(0, -dx):W + min(0, -dx)]
+            best = max(best, _corr(A, B))
+    return best
+
+
+def _ref_fp(rel, inset):
+    path = creative_file(rel)
+    if not path:
+        return None
+    key = (path, os.path.getmtime(path), round(inset, 3))
+    if key not in ART_CACHE:
+        try:
+            with _Image.open(path) as im:
+                ART_CACHE[key] = _prep(im, inset)
+        except Exception as e:
+            print(f"creatives: cannot read {path}: {e}", flush=True)
+            ART_CACHE[key] = None
+    return ART_CACHE[key]
+
+
+def _pop_fp(eid):
+    key = ("pop", eid)
+    if key not in ART_CACHE:
+        try:
+            with _Image.open(os.path.join(ARGS.out, "images", f"{eid}.roi.jpg")) as im:
+                ART_CACHE[key] = _prep(im)
+        except Exception:
+            ART_CACHE[key] = None
+    return ART_CACHE[key]
+
+
+def artwork_matches(cam, t0, t1):
+    """For each creative the site showed in [t0, t1): the booked artwork it
+    matches. Returns {creative_id: {...}} or {} when matching isn't possible."""
+    if not ART_OK or not cam.get("vault_screen"):
+        return {}
+    cands = [c for c in screen_creatives(cam["vault_screen"]) if c.get("file") and c.get("kind", "image") == "image"]
+    if not cands:
+        return {}
+    inset = max(0.0, min(0.4, float(cam.get("inset_pct") or 0) / 100.0))
+    refs = [(c, _ref_fp(c["file"], inset)) for c in cands]
+    refs = [(c, f) for c, f in refs if f is not None]
+    plays = index_records().get(cam.get("id"), [])
+    samples = {}
+    for p in reversed(plays):                       # newest first, this period, usable images
+        if t0 <= p[0] < t1 and not p[2] and p[5] and (len(p) < 7 or p[6]):
+            lst = samples.setdefault(p[1], [])
+            if len(lst) < ART_SAMPLES:
+                lst.append(p)
+    out = {}
+    for cid, ps in samples.items():
+        key = (cam.get("id"), cid, tuple(p[4] for p in ps), CRE["mtime"], round(inset, 3))
+        if key in ART_RESULTS:
+            out[cid] = ART_RESULTS[key]
+            continue
+        fps = [f for f in (_pop_fp(p[4]) for p in ps) if f is not None]
+        if not fps:
+            continue
+        scored = []
+        for c, rf in refs:
+            vals = sorted(_shift_corr(f, rf) for f in fps)
+            scored.append((vals[len(vals) // 2], c))       # median over the samples
+        scored.sort(key=lambda x: -x[0])
+        best, bc = scored[0]
+        other = max([v for v, c in scored if c["campaign_id"] != bc["campaign_id"]] or [0.0])
+        status = ("matched" if best >= ART_MATCH and best - other >= ART_MARGIN
+                  else "possible" if best >= ART_POSSIBLE else "none")
+        res = {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"), "file": bc.get("file"),
+               "score": round(best, 2), "next": round(other, 2), "from": bc.get("from"), "to": bc.get("to"),
+               "samples": len(fps), "candidates": len(refs), "last_play": ps[0][0]}
+        # played outside the dates its Material Instructions give it (e.g. a teaser left on)
+        if status == "matched":
+            late = bc.get("to") and datetime.fromtimestamp(ps[0][0], LOCAL_TZ).date().isoformat() > bc["to"]
+            early = bc.get("from") and datetime.fromtimestamp(ps[-1][0], LOCAL_TZ).date().isoformat() < bc["from"]
+            res["off_schedule"] = "late" if late else "early" if early else ""
+        ART_RESULTS[key] = res
+        out[cid] = res
     return out
 
 
@@ -1570,16 +1852,25 @@ def site_bookings(cam, week, links_all):
         c["per_loop"] = c["plays_per_loop"]
     sure = [c for c in campaigns if c["certain"]]
     site_links = links_all.get(sid, {})
-    m = match(crs, campaigns, site_links)
+    art = artwork_matches(cam, start, t1) if t1 > start else {}
+    library = screen_creatives(res["vault_screen"])
+    m = match(crs, campaigns, site_links, art)
     by_c = {c["campaign_id"]: c for c in campaigns}
     for c in campaigns:
+        mine = [x for x in library if x.get("campaign_id") == c["campaign_id"]]
         c.update(creatives=[], delivered=0.0,
-                 linked=[k for k, v in site_links.items() if v == c["campaign_id"]])
+                 linked=[k for k, v in site_links.items() if v == c["campaign_id"]],
+                 artwork=[{"name": x.get("name"), "file": x.get("file"), "kind": x.get("kind", "image"),
+                           "from": x.get("from"), "to": x.get("to"), "rotation": x.get("rotation")} for x in mine])
     tally = {"programmatic": 0.0, "house": 0.0, "unbooked": 0.0, "unassigned": 0.0}
     for cr in crs:
         a = "blank" if cr["blank"] else m.get(cr["creative_id"], "unassigned")
         cr["assigned"] = a
         cr["link"] = site_links.get(cr["creative_id"], "")
+        cr["art"] = art.get(cr["creative_id"])
+        cr["by"] = "manual" if cr["link"] else "artwork" if a not in ("unassigned", "blank") else ""
+        if cr["by"] == "artwork" and a in by_c:
+            by_c[a]["linked"].append(cr["creative_id"])
         if a in by_c:
             by_c[a]["creatives"].append(cr["creative_id"])
             by_c[a]["delivered"] += cr["share"]
@@ -1590,8 +1881,8 @@ def site_bookings(cam, week, links_all):
     delivered = 0.0
     for c in campaigns:
         c["delivery"] = c["delivered"] / c["plays_per_loop"] if c["plays_per_loop"] else None
-        if not c["linked"]:
-            c["status"] = "not linked"      # no creative assigned to it yet: can't tell
+        if not c["linked"] and not any(x["file"] for x in c["artwork"]):
+            c["status"] = "not linked"      # no creative assigned and no artwork to look for: can't tell
             continue
         if not c["certain"]:
             c["status"] = "maybe" if not c["creatives"] else "seen"
@@ -1602,7 +1893,13 @@ def site_bookings(cam, week, links_all):
         delivered += min(c["delivered"], c["plays_per_loop"])
         if loops >= 1 and c["status"] == "not seen":
             res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but "
-                                   "none of its linked creatives has been seen.")
+                                   "none of its creatives has been seen.")
+    for cr in crs:
+        a = cr.get("art") or {}
+        if a.get("off_schedule"):
+            when = f"after its end date ({a['to']})" if a["off_schedule"] == "late" else f"before its start date ({a['from']})"
+            res["warnings"].append(f"{cr['creative_id']} is {a.get('name')} ({a['campaign_id']}), which played {when} "
+                                   "in its Material Instructions.")
     if tally["unassigned"] > 0.05 and loops >= 1:
         n = len([cr for cr in crs if cr["assigned"] == "unassigned"])
         res["warnings"].append(f"{n} creative(s) not assigned yet ({tally['unassigned']:.1f} slot(s) per loop): "
@@ -1616,7 +1913,11 @@ def site_bookings(cam, week, links_all):
                booked_per_loop=booked, unsold_per_loop=max(0, N - booked),
                programmatic_per_loop=tally["programmatic"], house_per_loop=tally["house"], unbooked_per_loop=tally["unbooked"],
                unassigned_per_loop=tally["unassigned"], blank_per_loop=blank,
-               booked_linked_per_loop=booked_linked, loops_seen=loops, monitored=(seen_s / elapsed) if elapsed else None,
+               booked_linked_per_loop=booked_linked,
+               artwork={"enabled": ART_OK, "library": len([x for x in library if x.get("file")]),
+                        "videos": len([x for x in library if x.get("kind") == "video"]),
+                        "missing": [x for x in ((load_creatives() or {}).get("missing") or [])
+                                    if screen_key(x.get("screen")) == screen_key(res["vault_screen"])]}, loops_seen=loops, monitored=(seen_s / elapsed) if elapsed else None,
                seen_s=seen_s, elapsed_s=elapsed,
                # over the certain bookings that have creatives linked; the rest can't be judged yet
                true_coverage=(delivered / booked_linked) if booked_linked and loops else None,
@@ -1630,7 +1931,12 @@ def bookings_report(week):
     links = load_links()
     out = {"week": week.isoformat(), "pulled_at": local_time((data or {}).get("generated_at"), True),
            "source": (data or {}).get("source", ""), "file": BOOKINGS["path"],
-           "campaigns": len((data or {}).get("proposals", [])), "gateway": cams is not None, "sites": []}
+           "campaigns": len((data or {}).get("proposals", [])), "gateway": cams is not None, "sites": [],
+           "artwork_enabled": ART_OK}
+    lib = load_creatives()
+    if lib:
+        out["creatives"] = {"pulled_at": local_time(lib.get("generated_at"), True), "source": lib.get("source", ""),
+                            "count": len([c for c in lib["creatives"] if c.get("file")])}
     for cam in cams or []:
         out["sites"].append(site_bookings(cam, week, links))
     return out
@@ -1654,7 +1960,7 @@ def campaign_for_record(r, cache):
             for cr in rep["creatives"]:
                 a = cr.get("assigned")
                 if a in names:
-                    cache[key][cr["creative_id"]] = names[a]["name"]
+                    cache[key][cr["creative_id"]] = names[a]["name"] + (" (artwork match)" if cr.get("by") == "artwork" else "")
                 elif a in ("programmatic", "house"):
                     cache[key][cr["creative_id"]] = "Programmatic" if a == "programmatic" else "House"
     return cache[key].get(cid)
@@ -1885,6 +2191,17 @@ class H(BaseHTTPRequestHandler):
             body = render_page(m.group(1) if m else "").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+        elif path == "/creatives/file":           # a booked creative's artwork, from the library
+            load_creatives()
+            m = re.search(r"(?:^|&)f=([^&]+)", query)
+            full = creative_file(urllib.parse.unquote(m.group(1))) if m else None
+            if not full:
+                return self.reply(404)
+            with open(full, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png" if full.lower().endswith(".png") else "image/jpeg")
+            self.send_header("Cache-Control", "max-age=3600")
         elif re.fullmatch(r"/images/[0-9a-f-]{36}\.(frame|roi)\.jpg", path):
             try:
                 with open(os.path.join(ARGS.out, "images", path.rsplit("/", 1)[1]), "rb") as f:
@@ -1913,6 +2230,15 @@ class H(BaseHTTPRequestHandler):
             if self.authorised():
                 self.proxy("POST")
             return
+        if self.path == "/bookings/creatives":     # upload a creatives library (zip)
+            if not self.authorised():
+                return
+            raw = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 512 << 20))
+            try:
+                n = install_creatives_zip(raw)
+            except ValueError as e:
+                return self.reply(400, {"error": str(e)})
+            return self.reply(200, {"status": "loaded", "creatives": n})
         if self.path in ("/bookings/upload", "/bookings/link"):
             if not self.authorised():
                 return

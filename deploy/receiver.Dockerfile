@@ -2,6 +2,8 @@
 #   docker build -f deploy/receiver.Dockerfile -t pop-monitor/receiver:0.1.0 .
 FROM python:3.12-slim
 RUN useradd -r -u 10001 pop && mkdir /data && chown pop /data
+# numpy + Pillow: matching PoP images against the booked artwork (Bookings page)
+RUN pip install --no-cache-dir "numpy>=1.26" "pillow>=10"
 COPY tools/receiver.py /app/receiver.py
 USER pop
 EXPOSE 8080

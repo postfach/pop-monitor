@@ -44,6 +44,7 @@ services:
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
       GATEWAY_URL: http://gateway:8090
       BOOKINGS_FILE: /bookings/vault-bookings.json
+      CREATIVES_DIR: /bookings/creatives        # vault-creatives.json + images (artwork matching)
       REVIEW_USER: ${REVIEW_USER:-}
       REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
     ports:

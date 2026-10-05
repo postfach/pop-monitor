@@ -55,8 +55,9 @@ What Vault gives, and its limits:
   week-by-week figure. `weeks` lower than the span from `first_week` to `last_week`
   means some weeks in between aren't booked; the Bookings page marks these "some weeks".
 * Where in the loop the slots fall (back to back or spread), and which artwork belongs
-  to which campaign, aren't in Vault. Each creative is assigned on the Bookings page by hand
-  (a campaign, Programmatic or House); nothing is guessed. Doohly's playlist would give both.
+  to which campaign, aren't in Vault. Which artwork belongs to which campaign comes from
+  SharePoint instead (see "Creatives pull" below); anything else is assigned on the
+  Bookings page by hand (a campaign, Programmatic or House). Doohly's playlist would give both.
 
 ## The scheduled task
 
@@ -75,3 +76,70 @@ writes into the folder above. Its instructions:
    `vault-bookings.json`, so the receiver never reads a half-written file.
 4. Report how many campaigns and screens it holds, how many were re-read, and any
    proposals it could not read.
+
+## Creatives pull (artwork matching)
+
+The booked artwork lives in SharePoint: Sales site, `00_Sales (NEW FOLDER)/Booked Campaigns/
+Creative+MIs/<year>/<month>/LUMO_<id> <name>` (animated campaigns under `<year>/Subtle/`).
+Each campaign folder has the artwork for each screen size and usually a Material
+Instructions spreadsheet that says, per screen and week, which file plays, from when to
+when, and at what rotation. The pull turns that into `creatives/vault-creatives.json` plus
+the images, next to `vault-bookings.json` (so `deploy/desktop/bookings/creatives/`), or a zip
+of that folder uploaded on the Bookings page.
+
+```json
+{
+  "format": "pop-monitor/vault-creatives",
+  "version": 1,
+  "generated_at": "2026-10-05T21:01:28Z",
+  "source": "SharePoint Creative+MIs via Microsoft 365 connector",
+  "weeks": ["2026-10-05"],
+  "screens": [{"name": "Beach", "width": 576, "height": 396}],
+  "creatives": [
+    {"campaign_id": "LUMO_19023", "screen": "Beach",
+     "name": "PAL020 Raspberry Launch Billboards_Teaser_Beach 576x396.png",
+     "file": "beach/images/LUMO_19023/PAL020 Raspberry Launch Billboards_Teaser_Beach 576x396.png",
+     "kind": "image", "from": "2026-10-05", "to": "2026-10-07", "rotation": null,
+     "via": "mi", "folder_url": "https://lumodigital.sharepoint.com/sites/LUMO/Sales/..."}
+  ],
+  "missing": [{"campaign_id": "LUMO_19180", "screen": "Beach", "reason": "no creative folder"}]
+}
+```
+
+`file` is relative to the folder holding the JSON. `from`/`to` (dates the file plays,
+from the Material Instructions) and `rotation` (%) are optional; `via` says how the file
+was chosen: `mi` (named in the Material Instructions for that screen), `filename` (the
+file name names the screen) or `size` (the file matches the screen's pixel size).
+Videos are listed with `kind: "video"` and no file; they aren't matched yet.
+
+Steps, per monitored Vault screen and per campaign booked on it this week (from
+`vault-bookings.json`):
+
+1. Find the campaign's folders: list `Creative+MIs/<year>/<this month>`, the previous month
+   and `Subtle/<n>.<month>`, matching folder names on the 5-digit id (names vary:
+   `LUMO_19762_Wolfbrook`, `LUMO_14460 & LUMO_17421 …`); otherwise search folders for
+   `LUMO_<id>` and keep hits under `/Creative+MIs/`. Prefer the newest month. Skip `POPs`,
+   `Contracts`, `Archive`, `Not Booked`, `Wrong spec`.
+2. Read the Material Instructions (`*Material Instructions*.xlsx`, `*MI*.xlsx`, or a
+   `Booking Update` sheet): rows whose Site Name is `LUMO-<screen>` overlapping the week;
+   creative columns give file names, often with a date range in the header ("5th Oct - 7th
+   October") and a rotation %.
+3. Pick the files for the screen: named in the Material Instructions (tolerating typos and
+   missing extensions), else named for the screen, else the screen's pixel size. Where a
+   folder has weekly subfolders (`w.c 05.10.26`), use this week's.
+4. Download each image (the connector's `read_resource` saves it) into
+   `creatives/<screen-slug>/images/<campaign_id>/<file name>` and write the manifest;
+   record campaigns with nothing usable in `missing` with the reason.
+
+The first pull for three screens took about 220 connector calls (most of them folder
+listings). Next weeks can reuse files already pulled when the folder hasn't changed.
+In production, a small service with Microsoft Graph access (`Sites.Read.All`) can do the
+same pull directly and keep the library current; the receiver only needs the folder.
+
+What was learned from the first pull (week of 5 Oct, Curletts In / Albany Expressway In /
+Beach): 91 of 96 campaign-screen pairs had artwork; missing were campaigns with no
+Creative+MIs folder yet (Mitre 10 LUMO_19180, Kernel LUMO_19766), videos only (KidsCan),
+or Material Instructions naming no file (ASB). Some Material Instructions disagree with
+the Vault booking (CUPRA, Asahi, ACT), one has day-parting (Anchor: Real Good 9am–5pm,
+Wake Up to Milk overnight; not modelled yet), and one gives its rotation only as a picture
+of a table (Chemist Warehouse).
