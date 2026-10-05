@@ -1,0 +1,23 @@
+# systemd unit for running pop-gateway directly on a Linux host.
+# Secrets go in /etc/pop-gateway/env (mode 600):
+#   POP_API_KEY=...  POP_HMAC_KEY=...  POP_CAMERA_PASSWORD=...  POP_TEAMS_WEBHOOK=...
+[Unit]
+Description=PoP Monitor gateway (billboard proof-of-play)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+User=pop
+EnvironmentFile=/etc/pop-gateway/env
+Environment=TZ=Pacific/Auckland
+ExecStart=/usr/local/bin/pop-gateway -c /etc/pop-gateway/config.json
+Restart=always
+RestartSec=5
+StateDirectory=pop-gateway
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pop-gateway
+
+[Install]
+WantedBy=multi-user.target

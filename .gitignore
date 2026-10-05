@@ -1,0 +1,6 @@
+build*/
+*.o
+acap/app/popmonitor
+acap/app/package.conf*
+acap/app/param.conf
+__pycache__/

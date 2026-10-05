@@ -1,0 +1,85 @@
+{
+  "gateway_id": "akl-gw-01",
+  "server_url": "https://pop.example.lumodigital.nz",
+  "api_key": "${POP_API_KEY}",
+  "hmac_key": "${POP_HMAC_KEY}",
+  "queue_dir": "/var/lib/pop-gateway/queue",
+  "queue_max_mb": 20000,
+  "heartbeat_s": 300,
+  "log_level": "info",
+
+  "alerts": {
+    "teams_webhook": "${POP_TEAMS_WEBHOOK}",
+    "slack_webhook": "",
+    "cooldown_s": 1800
+  },
+
+  "defaults": {
+    "username": "pop-monitor",
+    "password": "${POP_CAMERA_PASSWORD}",
+    "analysis_fps": 5,
+    "inset_pct": 3,
+    "operating_hours": "05:00-01:00",
+    "ptz_check": true,
+    "ptz_tolerance": 1.0,
+    "detector": {
+      "cut_fraction": 0.60,
+      "settle_fraction": 0.15,
+      "settle_ms": 600,
+      "new_hash_dist": 10,
+      "new_grid_dist": 14,
+      "min_slot_ms": 4000,
+      "motion_play_ms": 2000
+    },
+    "faults": {
+      "black_ms": 10000,
+      "blank_ms": 10000,
+      "partial_ms": 300000,
+      "frozen_default_ms": 60000
+    },
+    "snapshot": {
+      "delay_ms": 1000,
+      "burst": 3,
+      "interval_ms": 300,
+      "compression": 15,
+      "resolution": "",
+      "roi_width": 1024,
+      "roi_quality": 92,
+      "image_policy": "every_play"
+    }
+  },
+
+  "cameras": [
+    {
+      "site_id": "AKL-BRITOMART-01",
+      "name": "britomart-north",
+      "model": "M5525-E",
+      "host": "10.20.1.15",
+      "roi": [[0.18, 0.16], [0.84, 0.22], [0.82, 0.80], [0.19, 0.86]],
+      "profile": { "slot_count": 6, "slot_ms": 10000 },
+      "dayparts": [
+        { "from": "06:00", "to": "22:00", "slot_count": 6, "slot_ms": 10000 },
+        { "from": "22:00", "to": "06:00", "slot_count": 4, "slot_ms": 15000 }
+      ]
+    },
+    {
+      "site_id": "AKL-NEWMARKET-02",
+      "name": "newmarket-east",
+      "model": "P3227-LVE",
+      "host": "10.20.4.22",
+      "roi": [[0.10, 0.12], [0.90, 0.10], [0.91, 0.88], [0.09, 0.90]],
+      "profile": { "slot_count": 8, "slot_ms": 8000 },
+      "ptz_check": false
+    },
+    {
+      "site_id": "AKL-SH1-TAKEOVER",
+      "name": "sh1-southbound",
+      "model": "M5526-E",
+      "host": "10.20.7.40",
+      "rtsp_url": "rtsp://pop-monitor:${POP_CAMERA_PASSWORD}@10.20.7.40/axis-media/media.amp?resolution=1280x720&fps=10&videocodec=h264",
+      "roi": [[0.22, 0.20], [0.80, 0.24], [0.79, 0.76], [0.23, 0.80]],
+      "takeover": true,
+      "operating_hours": "00:00-24:00"
+    }
+  ]
+}

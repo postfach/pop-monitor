@@ -1,0 +1,20 @@
+{
+  "gateway_id": "test-gw",
+  "server_url": "http://127.0.0.1:8080",
+  "api_key": "test-key",
+  "hmac_key": "test-secret",
+  "queue_dir": "/tmp/pop-test-queue",
+  "heartbeat_s": 30,
+  "alerts": {
+    "teams_webhook": "http://127.0.0.1:8080/hooks/teams",
+    "slack_webhook": "http://127.0.0.1:8080/hooks/slack"
+  },
+  "cameras": [{
+    "site_id": "TEST-SITE-01", "name": "sim-board", "model": "M5525-E",
+    "rtsp_url": "/tmp/board.mp4", "realtime": true,
+    "vapix_url": "http://127.0.0.1:8081", "username": "root", "password": "pass",
+    "roi": [[0.18,0.16],[0.84,0.22],[0.82,0.80],[0.19,0.86]],
+    "profile": {"slot_count": 4, "slot_ms": 8000},
+    "snapshot": {"resolution": "1920x1080"}
+  }]
+}

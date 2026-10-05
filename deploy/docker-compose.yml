@@ -1,0 +1,47 @@
+# PoP Monitor trial stack for Portainer (Stacks > Add stack > Web editor).
+#
+#   gateway   watches the cameras, sends PoP records and alerts
+#   receiver  interim backend + review page on port 8080, until the real
+#             LUMO backend exists (then point server_url at that instead)
+#
+# Before deploying:
+#   1. Build the images on the Docker host:  sh deploy/build-images.sh
+#      (or push them to your registry and change the image names below)
+#   2. Put your config on the host at /opt/pop-monitor/config.json
+#      (start from deploy/config.trial.json)
+#   3. In Portainer, add the environment variables listed in deploy/stack.env.example
+services:
+  gateway:
+    image: pop-monitor/gateway:${POP_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on: [receiver]
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+      POP_CAMERA_PASSWORD: ${POP_CAMERA_PASSWORD:?set POP_CAMERA_PASSWORD}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+    volumes:
+      - ${POP_CONFIG_PATH:-/opt/pop-monitor/config.json}:/etc/pop-gateway/config.json:ro
+      - pop-queue:/var/lib/pop-gateway
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  receiver:
+    image: pop-monitor/receiver:${POP_VERSION:-0.1.0}
+    restart: unless-stopped
+    environment:
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+    ports:
+      - "${POP_REVIEW_PORT:-8080}:8080"
+    volumes:
+      - pop-received:/data
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+volumes:
+  pop-queue:
+  pop-received:

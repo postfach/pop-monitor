@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.7.4",
+  "acapPackageConf": {
+    "setup": {
+      "appName": "popmonitor",
+      "friendlyName": "PoP Monitor",
+      "vendor": "LUMO",
+      "version": "0.1.0",
+      "runMode": "respawn",
+      "embeddedSdkVersion": "3.0"
+    },
+    "configuration": {
+      "paramConfig": [
+        { "name": "SiteId",        "default": "",                         "type": "string" },
+        { "name": "RoiCorners",    "default": "0,0 1,0 1,1 0,1",          "type": "string" },
+        { "name": "RoiInsetPct",   "default": "3",                        "type": "int:min=0,max=20" },
+        { "name": "AnalysisFps",   "default": "5",                        "type": "int:min=1,max=10" },
+        { "name": "SlotCount",     "default": "0",                        "type": "int:min=0,max=64" },
+        { "name": "SlotLengthMs",  "default": "0",                        "type": "int:min=0,max=600000" },
+        { "name": "OperatingHours","default": "00:00-24:00",              "type": "string" },
+        { "name": "ServerUrl",     "default": "",                         "type": "string" },
+        { "name": "ApiKey",        "default": "",                         "type": "password" },
+        { "name": "SnapshotDelayMs","default": "1000",                    "type": "int:min=0,max=5000" }
+      ]
+    }
+  }
+}
