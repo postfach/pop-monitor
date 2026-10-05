@@ -172,7 +172,7 @@ static char *teams_payload(const camera_cfg *cam, const char *fault, const char 
     cJSON_AddStringToObject(fs, "type", "FactSet");
     cJSON *facts = cJSON_AddArrayToObject(fs, "facts");
     const char *kv[][2] = {{"Site", cam->name}, {"Site ID", cam->site_id}, {"Fault", fault},
-                           {"State", state}, {"Severity", sev}, {"Time (UTC)", when},
+                           {"State", state}, {"Severity", sev}, {"Time", when},
                            {"Detail", detail ? detail : ""}};
     for (size_t i = 0; i < sizeof kv / sizeof kv[0]; i++) {
         cJSON *f = cJSON_CreateObject();
@@ -190,7 +190,7 @@ static char *slack_payload(const camera_cfg *cam, const char *fault, const char 
                            const char *sev, const char *when, const char *detail)
 {
     char text[600];
-    snprintf(text, sizeof text, "%s *%s %s* at *%s* (site ID %s)\n%s\n_%s UTC_",
+    snprintf(text, sizeof text, "%s *%s %s* at *%s* (site ID %s)\n%s\n_%s_",
              !strcmp(state, "cleared") ? ":white_check_mark:" : (!strcmp(sev, "critical") ? ":red_circle:" : ":warning:"),
              fault, state, cam->name, cam->site_id, detail ? detail : "", when);
     cJSON *root = cJSON_CreateObject();
@@ -217,6 +217,8 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
     util_uuid4(id);
     util_iso8601(since_wall, since, sizeof since);
     util_iso8601(at_wall, at, sizeof at);
+    char at_local[64];           /* people read local time; records stay UTC */
+    util_local_time(at_wall, at_local, sizeof at_local);
 
     /* 1. durable record for the backend (sent before PoP records) */
     cJSON *j = cJSON_CreateObject();
@@ -254,6 +256,6 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
     int ok = cooldown_ok(key, state, g->alert_cooldown_s, at_wall);
     pthread_mutex_unlock(&mu);
     if (!ok) return;
-    if (*g->teams_webhook) direct_push(g->teams_webhook, teams_payload(cam, fault, state, sev, at, detail));
-    if (*g->slack_webhook) direct_push(g->slack_webhook, slack_payload(cam, fault, state, sev, at, detail));
+    if (*g->teams_webhook) direct_push(g->teams_webhook, teams_payload(cam, fault, state, sev, at_local, detail));
+    if (*g->slack_webhook) direct_push(g->slack_webhook, slack_payload(cam, fault, state, sev, at_local, detail));
 }

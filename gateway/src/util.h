@@ -8,6 +8,8 @@ int64_t util_wall_ms(void);      /* epoch milliseconds (CLOCK_REALTIME) */
 int64_t util_mono_ms(void);      /* monotonic milliseconds              */
 void    util_sleep_ms(int ms);
 void    util_iso8601(int64_t epoch_ms, char *buf, size_t n);   /* UTC, ms */
+void    util_local_iso(int64_t epoch_ms, char *buf, size_t n); /* local (TZ), ms, +hh:mm */
+void    util_local_time(int64_t epoch_ms, char *buf, size_t n);/* "2026-10-05 19:41:10 NZDT" */
 int     util_clock_synced(void); /* 1 if the kernel reports NTP sync    */
 void    util_uuid4(char out[37]);
 int     util_mkdir_p(const char *path);

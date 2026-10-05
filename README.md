@@ -99,6 +99,10 @@ docker exec -it <gateway-container> popreplay /var/lib/pop-gateway/board.mp4 --r
 6. Run it with systemd (`gateway/pop-gateway.service`) or Docker. Set `TZ=Pacific/Auckland`
    so operating hours and dayparts use local time, and make sure the host runs NTP.
 
+**Time zones.** `TZ` in `.env` (default `Pacific/Auckland`) sets the time shown to people:
+the review page, gateway log and Teams/Slack alerts. Records sent to the backend keep UTC
+timestamps (`...Z`) so nothing is ambiguous across daylight-saving changes or regions.
+
 ### Key settings
 
 | Setting | Default | Notes |
@@ -157,6 +161,9 @@ user and password) still come from `config.json` and `.env`.
   login, leave it blank so the default from `.env` is used instead.
 * Settings the form doesn't show (detector tuning, time-of-day profiles, snapshot options)
   are kept when a site is edited, and can be set in `config.json` under `defaults`.
+
+**Review page.** With all sites shown, the PoP section has only the newest image from each
+site. Click a site's name (or **All PoP from this site**) to see its recent plays.
 
 ## Editing a camera's region live
 

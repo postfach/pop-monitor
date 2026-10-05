@@ -46,6 +46,27 @@ void util_iso8601(int64_t ms, char *buf, size_t n)
              tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ms % 1000));
 }
 
+void util_local_iso(int64_t ms, char *buf, size_t n)
+{
+    time_t s = (time_t)(ms / 1000);
+    struct tm tm;
+    localtime_r(&s, &tm);
+    long off = tm.tm_gmtoff / 60;
+    char sign = off < 0 ? '-' : '+';
+    if (off < 0) off = -off;
+    snprintf(buf, n, "%04d-%02d-%02dT%02d:%02d:%02d.%03d%c%02ld:%02ld", tm.tm_year + 1900,
+             tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ms % 1000),
+             sign, off / 60, off % 60);
+}
+
+void util_local_time(int64_t ms, char *buf, size_t n)
+{
+    time_t s = (time_t)(ms / 1000);
+    struct tm tm;
+    localtime_r(&s, &tm);
+    if (!strftime(buf, n, "%Y-%m-%d %H:%M:%S %Z", &tm) && n) buf[0] = 0;
+}
+
 int util_clock_synced(void)
 {
     struct timex tx;
@@ -142,7 +163,7 @@ void util_log(int level, const char *tag, const char *fmt, ...)
     if (level < util_log_level) return;
     static const char *lv[] = {"DEBUG", "INFO", "WARN", "ERROR"};
     char ts[64];
-    util_iso8601(util_wall_ms(), ts, sizeof ts);
+    util_local_iso(util_wall_ms(), ts, sizeof ts);
     pthread_mutex_lock(&log_mu);
     fprintf(stderr, "%s %-5s [%s] ", ts, lv[level], tag ? tag : "-");
     va_list ap;

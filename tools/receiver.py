@@ -31,6 +31,7 @@ import hmac
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,9 +90,9 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 <option value="120">Every 2 min</option><option value="300">Every 5 min</option><option value="600">Every 10 min</option>
 <option value="900">Every 15 min</option><option value="1800">Every 30 min</option><option value="3600">Every hour</option></select>
 <button id="now" type="button">Refresh now</button><span id="next" class="muted"></span></div></div>
-<h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th></th></tr>{cams}</table></div>
-<h2>Latest PoP images</h2><div class="grid">{pops}</div>
-<h2>Alerts</h2><div class="wrap"><table><tr><th>Time (UTC)</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
+<h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play ({zone})</th><th>Active faults</th><th></th></tr>{cams}</table></div>
+<h2>{pops_title}</h2><div class="grid">{pops}</div>
+<h2>Alerts</h2><div class="wrap"><table><tr><th>Time ({zone})</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
 </main>{refresh_js}</body></html>"""
 
 
@@ -577,6 +578,39 @@ def disp(r):
     return r.get("site_name") or r.get("camera") or r.get("site_id") or ""
 
 
+def local_zone():
+    """The time zone from TZ (as set in .env), else the container's, else UTC."""
+    name = os.environ.get("TZ", "").lstrip(":")
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+LOCAL_TZ = local_zone()
+
+
+def local_time(iso, with_zone=False):
+    """'2026-10-05T06:41:10.200Z' -> '2026-10-05 19:41:10' in the local zone."""
+    if not iso:
+        return ""
+    try:
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        t = t.astimezone(LOCAL_TZ)
+        return t.strftime("%Y-%m-%d %H:%M:%S" + (" %Z" if with_zone else ""))
+    except ValueError:
+        return str(iso)[:19]
+
+
+def zone_label():
+    return datetime.now(LOCAL_TZ).strftime("%Z") or "local"
+
+
 def esc(v):
     return html.escape(str(v if v is not None else ""))
 
@@ -585,7 +619,14 @@ def render_page(site):
     recs = tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 2000)
     if site:
         recs = [r for r in recs if r.get("site_id") == site]
-    pops = [r for r in recs if r.get("type") == "creative_change"][-60:][::-1]
+    pops = [r for r in recs if r.get("type") == "creative_change"]
+    if site:
+        pops = pops[-60:][::-1]
+    else:                                        # all sites: only the newest PoP from each
+        newest = {}
+        for r in pops:
+            newest[r.get("site_id")] = r
+        pops = sorted(newest.values(), key=lambda r: disp(r).lower())
     alerts = [r for r in recs if r.get("type") == "fault"][-50:][::-1]
     hb = {}
     live = gateway_cameras()                     # live from the gateway when it's reachable
@@ -604,7 +645,7 @@ def render_page(site):
         f"<td class='{'ok' if c.get('connected') else 'bad'}'>{'yes' if c.get('connected') else 'no'}</td>"
         f"<td>{esc(c.get('state'))}</td><td>{esc(c.get('plays_last_hour'))}</td>"
         f"<td>{esc(round(c['coverage'] * 100)) + '%' if 'coverage' in c else ''}</td>"
-        f"<td>{esc((c.get('last_play_at') or '')[:19])}</td>"
+        f"<td>{esc(local_time(c.get('last_play_at')))}</td>"
         f"<td class='bad'>{esc(', '.join(c.get('active_faults', [])))}</td>"
         f"<td><a href='/roi?site={urllib.parse.quote(k or '')}'>Edit region</a> &middot; "
         f"<a href='/site?site={urllib.parse.quote(k or '')}'>Settings</a></td></tr>"
@@ -617,15 +658,17 @@ def render_page(site):
         flags = " [blank]" if r.get("is_blank") else ""
         flags += " [video]" if r.get("video_creative") else ""
         verdict = "" if q.get("usable", True) else f"<br><span class='bad'>{esc(q.get('reason'))}</span>"
+        more = "" if site else f"<br><a href='?site={urllib.parse.quote(r.get('site_id') or '')}'>All PoP from this site</a>"
         cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}<br>"
-                     f"<span class='muted'>{esc(r.get('play_started_at', '')[:19])} UTC &middot; after "
-                     f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}</div></div>")
-    rows = "".join(f"<tr><td>{esc(a.get('at', '')[:19])}</td><td>{esc(disp(a))}</td><td>{esc(a.get('fault'))}</td>"
+                     f"<span class='muted'>{esc(local_time(r.get('play_started_at'), True))} &middot; after "
+                     f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}{more}</div></div>")
+    rows = "".join(f"<tr><td>{esc(local_time(a.get('at')))}</td><td>{esc(disp(a))}</td><td>{esc(a.get('fault'))}</td>"
                    f"<td class='{'ok' if a.get('state') == 'cleared' else 'bad'}'>{esc(a.get('state'))}</td><td>{esc(a.get('detail'))}</td></tr>"
                    for a in alerts) or "<tr><td colspan=5 class='muted'>No alerts</td></tr>"
     site_label = disp(hb.get(site) or next((r for r in recs if r.get("site_id") == site), {"site_id": site}))
     sub = f"{esc(site_label)} &middot; <a href='/'>all sites</a>" if site else f"{len(hb)} site(s)"
-    return PAGE.format(subtitle=sub, refresh_js=REFRESH_JS, cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
+    return PAGE.format(subtitle=sub, refresh_js=REFRESH_JS, zone=esc(zone_label()),
+                       pops_title="Latest PoP images" if site else "Latest PoP from each site", cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
                        alerts=rows)
 
 
