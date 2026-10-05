@@ -346,7 +346,12 @@ class H(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             code, ctype, body = e.code, e.headers.get("Content-Type", "application/json"), e.read()
         except Exception as e:  # gateway not running / unreachable
-            return self.reply(502, {"error": f"cannot reach the gateway at {url.split('/api')[0]}: {e}"})
+            base = url.split('/api')[0]
+            hint = ("the gateway container is not running (it may be restarting after an error). "
+                    "Check it with: docker compose ps   and   docker compose logs gateway --tail 30"
+                    if "Name or service not known" in str(e) or "not known" in str(e)
+                    else "check that the gateway is running and control_port is 8090")
+            return self.reply(502, {"error": f"cannot reach the gateway at {base}: {hint} ({e})"})
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
