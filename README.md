@@ -163,7 +163,14 @@ user and password) still come from `config.json` and `.env`.
   are kept when a site is edited, and can be set in `config.json` under `defaults`.
 
 **Review page.** With all sites shown, the PoP section has only the newest image from each
-site. Click a site's name (or **All PoP from this site**) to see its recent plays.
+site. Click a site's name (or **All PoP from this site**) to see its recent plays. Every
+image tile is the same size; portrait boards are shown whole with black bars at the sides.
+
+**Old records.** The review page only shows sites the gateway currently has. Renaming a site
+ID moves its stored PoP and alerts to the new ID. Records left under an ID that no longer
+exists (a removed site, or one renamed before this version) are listed at the bottom of the
+Sites page under **Records from sites that no longer exist**, where **Delete** removes them
+and their images from the receiver.
 
 ## Editing a camera's region live
 

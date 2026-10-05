@@ -66,6 +66,56 @@ def tail_jsonl(path, n):
     return out
 
 
+def rewrite_records(fn):
+    """Rewrite records.jsonl through fn(record) -> record, or None to drop it
+    (its images are deleted too). Returns how many records were dropped."""
+    path = os.path.join(ARGS.out, "records.jsonl")
+    dropped = 0
+    with LOCK:
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return 0
+        tmp = path + ".tmp"
+        with open(tmp, "w") as out:
+            for line in lines:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    out.write(line)
+                    continue
+                new = fn(r)
+                if new is None:
+                    dropped += 1
+                    SEEN.discard(r.get("event_id"))
+                    for kind in ("frame", "roi"):
+                        try:
+                            os.remove(os.path.join(ARGS.out, "images", f"{r.get('event_id')}.{kind}.jpg"))
+                        except (FileNotFoundError, TypeError):
+                            pass
+                    continue
+                out.write(json.dumps(new) + "\n")
+        os.replace(tmp, path)
+    return dropped
+
+
+def recorded_sites():
+    """Every site ID that has records here, with counts and the newest time."""
+    sites = {}
+    for r in tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 1000000):
+        sid = r.get("site_id")
+        e = sites.setdefault(sid, {"site_id": sid, "name": "", "pops": 0, "alerts": 0, "last": ""})
+        e["name"] = disp(r) or e["name"]
+        e["pops" if r.get("type") == "creative_change" else "alerts"] += 1
+        t = r.get("play_started_at") or r.get("at") or ""
+        if t > e["last"]:
+            e["last"] = t
+    for e in sites.values():
+        e["last_local"] = local_time(e["last"], True)
+    return sites
+
+
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PoP Monitor review</title><style>
@@ -76,7 +126,9 @@ main{{max-width:1200px;margin:0 auto;padding:20px 16px 40px}} h1{{font-size:20px
 h2{{font-size:16px;margin:28px 0 8px}} .muted{{color:var(--muted)}} a{{color:inherit}}
 table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}}
-.card{{border:1px solid var(--line);border-radius:8px;overflow:hidden}} .card img{{width:100%;display:block;background:#000}}
+.card{{border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;flex-direction:column}}
+.thumb{{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}}
+.thumb img{{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}} .thumb span{{color:#888;font-size:12px}}
 .card div{{padding:8px 10px}} .bad{{color:var(--bad)}} .ok{{color:var(--ok)}}
 .wrap{{overflow-x:auto}}
 .toolbar{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}}
@@ -117,6 +169,10 @@ td.actions a{margin-right:12px} .note{border:1px solid var(--line);border-radius
 <div class="wrap"><table><thead><tr><th>Site</th><th>Model</th><th>Camera</th><th>Video</th><th>Rotation</th><th>Plays / hour</th><th>Faults</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Loading&hellip;</td></tr></tbody></table></div>
 <p class="note muted" id="note" hidden></p>
+<section id="old" hidden><h2 style="font-size:16px;margin:28px 0 4px">Records from sites that no longer exist</h2>
+<p class="muted" style="margin:0 0 10px">PoP images and alerts stored under a site ID the gateway no longer has (sites that were removed, or renamed before this version). They're already hidden from the review page; delete them to free the space.</p>
+<div class="wrap"><table><thead><tr><th>Site ID</th><th>Last name</th><th>PoP images</th><th>Alerts</th><th>Newest</th><th></th></tr></thead>
+<tbody id="oldrows"></tbody></table></div></section>
 </main><script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function rotation(c) {
@@ -145,6 +201,7 @@ async function load() {
         <td class="bad">${esc(c.active_faults.join(', '))}</td>
         <td class="actions"><a href="/site?site=${q}">Settings</a><a href="/roi?site=${q}">Region</a><a href="/?site=${q}">PoP</a></td></tr>`;
     }).join('') || '<tr><td colspan="8" class="muted">No sites yet. Click Add site.</td></tr>';
+    loadOld(new Set(cams.map(c => c.id)));
     if (st.cameras_from_state) {
       const n = document.getElementById('note'); n.hidden = false;
       n.textContent = 'Sites are managed here and saved by the gateway. The cameras list in config.json is no longer used.';
@@ -154,6 +211,29 @@ async function load() {
     document.getElementById('rows').innerHTML = '';
   }
 }
+async function loadOld(known) {
+  const r = await fetch('/records/sites'); if (!r.ok) return;
+  const old = (await r.json()).filter(e => !known.has(e.site_id));
+  const sec = document.getElementById('old'), rows = document.getElementById('oldrows');
+  if (rows.querySelector('[data-armed]')) return;   // don't redraw while a delete is being confirmed
+  sec.hidden = !old.length;
+  rows.innerHTML = old.map(e => `<tr><td><b>${esc(e.site_id)}</b></td><td>${esc(e.name)}</td><td>${e.pops}</td><td>${e.alerts}</td>
+    <td>${esc(e.last_local)}</td>
+    <td><button class="btn" data-site="${esc(e.site_id)}">Delete</button></td></tr>`).join('');
+}
+document.getElementById('oldrows').addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-site]'); if (!b) return;
+  if (!b.dataset.armed) {                          // first click arms, second click deletes
+    b.dataset.armed = 1; b.textContent = 'Click again to delete'; b.style.borderColor = 'var(--bad)'; b.style.color = 'var(--bad)';
+    setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Delete'; b.style.cssText = ''; } }, 5000);
+    return;
+  }
+  b.disabled = true; b.textContent = 'Deleting…';
+  const r = await fetch('/records/delete', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({site_id: b.dataset.site})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { b.textContent = j.error || 'Failed'; return; }
+  delete b.dataset.armed; load();
+});
 load(); setInterval(load, 15000);
 </script></body></html>
 '''
@@ -619,6 +699,10 @@ def render_page(site):
     recs = tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 2000)
     if site:
         recs = [r for r in recs if r.get("site_id") == site]
+    live = gateway_cameras()                     # live from the gateway when it's reachable
+    if live is not None:                         # hide records from sites that no longer exist
+        known = {c.get("id") or c.get("site_id") for c in live}
+        recs = [r for r in recs if r.get("site_id") in known]
     pops = [r for r in recs if r.get("type") == "creative_change"]
     if site:
         pops = pops[-60:][::-1]
@@ -629,7 +713,6 @@ def render_page(site):
         pops = sorted(newest.values(), key=lambda r: disp(r).lower())
     alerts = [r for r in recs if r.get("type") == "fault"][-50:][::-1]
     hb = {}
-    live = gateway_cameras()                     # live from the gateway when it's reachable
     if live is not None:
         for c in live:
             c = dict(c, site_name=c.get("name"))
@@ -653,7 +736,8 @@ def render_page(site):
     cards = []
     for r in pops:
         q = r.get("quality", {})
-        img = f"<img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''>" if "roi_sha256" in r else ""
+        img = (f"<div class='thumb'><img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''></div>"
+               if "roi_sha256" in r else "<div class='thumb'><span>no image</span></div>")
         full = f" &middot; <a href='/images/{esc(r['event_id'])}.frame.jpg' target='_blank'>full frame</a>" if "frame_sha256" in r else ""
         flags = " [blank]" if r.get("is_blank") else ""
         flags += " [video]" if r.get("video_creative") else ""
@@ -710,6 +794,23 @@ class H(BaseHTTPRequestHandler):
                     if "Name or service not known" in str(e) or "not known" in str(e)
                     else "check that the gateway is running and control_port is 8090")
             return self.reply(502, {"error": f"cannot reach the gateway at {base}: {hint} ({e})"})
+        m = re.fullmatch(r"/api/cameras/([^/?]+)", self.path)
+        if method == "PUT" and m and 200 <= code < 300:
+            old_id = urllib.parse.unquote(m.group(1))
+            try:
+                cam = json.loads(body)
+                new_id, new_name = cam.get("id") or cam.get("site_id"), cam.get("name")
+            except ValueError:
+                new_id = None
+            if new_id and new_id != old_id:    # keep this site's history under its new ID
+                def move(r):
+                    if r.get("site_id") == old_id:
+                        r["site_id"] = new_id
+                        if new_name:
+                            r["site_name"] = r["camera"] = new_name
+                    return r
+                rewrite_records(move)
+                print(f"site ID {old_id} -> {new_id}: records moved", flush=True)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -737,6 +838,8 @@ class H(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             return self.proxy("GET")
+        if path == "/records/sites":
+            return self.reply(200, sorted(recorded_sites().values(), key=lambda e: e["site_id"] or ""))
         if path in ("/roi", "/sites", "/site"):
             body = {"/roi": ROI_PAGE, "/sites": SITES_PAGE, "/site": SITE_PAGE}[path].encode()
             self.send_response(200)
@@ -774,6 +877,19 @@ class H(BaseHTTPRequestHandler):
             if self.authorised():
                 self.proxy("POST")
             return
+        if self.path == "/records/delete":         # review page: remove a site's stored records
+            if not self.authorised():
+                return
+            try:
+                sid = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))["site_id"]
+            except (ValueError, KeyError, TypeError):
+                return self.reply(400, {"error": "site_id required"})
+            live = gateway_cameras()
+            if live is not None and sid in {c.get("id") for c in live}:
+                return self.reply(409, {"error": "that site still exists; remove it on the Sites page first"})
+            n = rewrite_records(lambda r: None if r.get("site_id") == sid else r)
+            print(f"deleted {n} record(s) for site {sid}", flush=True)
+            return self.reply(200, {"deleted": n})
         if self.path.startswith("/hooks/"):      # stand-in for Teams/Slack webhooks
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             with LOCK, open(os.path.join(ARGS.out, "hooks.jsonl"), "a") as f:
