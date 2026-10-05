@@ -554,13 +554,40 @@ static void *stream_thread(void *arg)
     float inset;
     unsigned roi_ver = status_get_roi(st, roi, &inset);
     unsigned expect_ver = (unsigned)-1;
+    pthread_mutex_lock(&st->mu);
+    unsigned reset_ver = st->reset_applied;   /* a reset asked for while restarting still applies */
+    pthread_mutex_unlock(&st->mu);
     uint8_t *py = NULL, *pu = NULL, *pv = NULL;
     int64_t lost_since = 0, last_housekeep = 0, last_analysed = 0;
     int backoff = 2000, frames_in_window = 0, cov_reset = 1, connects = 0;
     int64_t fps_window_start = util_mono_ms();
 
+#define APPLY_RESET() do {                                                       \
+        pthread_mutex_lock(&st->mu);                                             \
+        int want = st->reset_version != reset_ver, renumber = st->reset_renumber; \
+        reset_ver = st->reset_applied = st->reset_version;                      \
+        pthread_mutex_unlock(&st->mu);                                           \
+        if (want) {                                                              \
+            /* forget every creative this site has seen; plays continue */      \
+            uint64_t seq_ = det.sequence;                                        \
+            int next_ = renumber ? 1 : det.library.next_id;                      \
+            pc_detector_init(&det, &c->det, &prof);                              \
+            det.sequence = seq_;                                                 \
+            det.library.next_id = next_;                                         \
+            pc_faults_init(&fm, &c->faults, &c->det, &prof);                     \
+            pc_faults_set_operating(&fm, util_in_time_range(c->operating_hours, util_wall_ms()), util_mono_ms()); \
+            library_save(cm, &det.library);                                      \
+            lib_saved = det.library.changes;                                     \
+            lib_saved_at = util_mono_ms();                                       \
+            cov_reset = 1;                                                       \
+            expect_ver = (unsigned)-1;                                           \
+            LOGI(c->name, "creatives reset: next new creative is c-%04d", next_); \
+        }                                                                        \
+    } while (0)
+
     while (RUNNING(cm)) {
         char err[256] = "";
+        APPLY_RESET();
         pop_stream_opts so = {c->realtime, c->loop, 15, c->rtsp_transport, &cm->stop};
         pop_stream *s = pop_stream_open(c->rtsp_url, &so, err, sizeof err);
         if (!s) {
@@ -577,7 +604,7 @@ static void *stream_thread(void *arg)
                 alerts_send(cm->app, c, "stream_lost", "raised", mono_to_wall(lost_since), w,
                             "no video from the camera for over 60 s", NULL, 0);
             }
-            for (int t = 0; t < backoff && RUNNING(cm); t += 250) util_sleep_ms(250);
+            for (int t = 0; t < backoff && RUNNING(cm); t += 250) { util_sleep_ms(250); APPLY_RESET(); }
             backoff = backoff < 30000 ? backoff * 2 : 30000;
             continue;
         }
@@ -644,6 +671,7 @@ static void *stream_thread(void *arg)
             st->last_frame_wall = util_wall_ms();
             int roi_changed = st->roi_version != roi_ver;
             pthread_mutex_unlock(&st->mu);
+            APPLY_RESET();
             if (roi_changed) {
                 /* region edited from the review page: re-warp and start the
                  * detector afresh so the change itself isn't counted as a play */

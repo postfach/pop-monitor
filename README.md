@@ -341,8 +341,14 @@ creatives had been merged into one ID, the first one seen keeps the ID and the o
 new one (earlier records stay under the old ID). Video creatives are fingerprinted from an average
 over their motion. The library (up to 256 creatives per site) is saved every minute to
 `creatives/<site_id>.json` in the gateway volume and reloaded on start, so IDs stay the same
-across restarts and updates. Delete a site's file to restart its numbering, for example
-after a complete change of campaigns. `camera` is still sent with the same value as
+across restarts and updates. To start a site's creatives afresh (testing, or a complete
+change of campaigns), use **Reset creatives…** on its Settings page. It asks you to type the
+site ID to confirm. The gateway forgets the site's creatives and clears its detection
+alerts; new creatives continue the ID numbering. Tick the option to also delete the site's
+stored PoP records, images, alerts and Bookings links, which restarts IDs at c-0001 (plays
+from before the reset that are still queued on the gateway are then discarded on arrival).
+The gateway API is `POST /api/cameras/<site_id>/reset-creatives` with
+`{"restart_numbering": true|false}`. `camera` is still sent with the same value as
 `site_name` for older consumers.
 
 ## Field trial: tuning on real footage

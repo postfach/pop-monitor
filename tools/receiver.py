@@ -68,6 +68,27 @@ def tail_jsonl(path, n):
     return out
 
 
+def load_resets():
+    try:
+        with open(os.path.join(ARGS.out, "site-resets.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def note_reset(site_id, ts):
+    """Remember when a site's creatives were reset with its history deleted, so
+    plays from before it (still queued on the gateway) aren't stored under IDs
+    that are now being reused."""
+    with LOCK:
+        r = load_resets()
+        r[site_id] = ts
+        tmp = os.path.join(ARGS.out, "site-resets.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(r, f)
+        os.replace(tmp, os.path.join(ARGS.out, "site-resets.json"))
+
+
 def rewrite_records(fn):
     """Rewrite records.jsonl through fn(record) -> record, or None to drop it
     (its images are deleted too). Returns how many records were dropped."""
@@ -260,6 +281,9 @@ label.f{display:flex;flex-direction:column;gap:4px;margin-bottom:8px} label.f sp
 input[type=text],input[type=number],input[type=password],input[type=time]{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);width:100%}
 input:disabled{opacity:.5} .check{display:flex;gap:8px;align-items:center;margin:4px 0 10px;clear:both}
 [hidden]{display:none!important}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);max-width:520px;width:calc(100% - 32px);padding:18px 20px}
+dialog::backdrop{background:rgba(0,0,0,.45)} dialog h2{font-size:17px;margin:0 0 8px} dialog ul{margin:6px 0 10px;padding-left:18px}
+dialog code{background:var(--panel);padding:1px 5px;border-radius:4px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden} .seg label{padding:6px 12px;cursor:pointer}
 .seg input{display:none} .seg input:checked+span{font-weight:600;color:var(--accent)}
 details{clear:both;margin:4px 0 10px} summary{cursor:pointer;color:var(--muted)}
@@ -331,10 +355,21 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
   <button type="button" id="region" hidden>Edit region</button>
   <button type="button" id="dup" hidden>Duplicate site</button>
   <span style="flex:1"></span>
+  <button type="button" class="danger" id="reset" hidden>Reset creatives&hellip;</button>
   <button type="button" class="danger" id="del" hidden>Delete site</button>
 </div>
 <p id="msg"></p><div id="testout"></div>
 </form>
+<dialog id="resetdlg"><form method="dialog" id="resetf">
+<h2>Reset creatives for <span id="rsname"></span>?</h2>
+<p>The gateway forgets every creative it has seen at this site and starts learning them again from the next play.</p>
+<ul><li>Detection alerts for this site (loop changed, missing creative, frozen, low coverage) are cleared and checked again from now.</li>
+<li>New creatives get new IDs after the highest one used, so they can't be mixed up with earlier records.</li></ul>
+<label class="check"><input type="checkbox" id="rshist"> Also delete this site's stored PoP records, images and alerts, its creative links on the Bookings page, and start IDs again at c-0001</label>
+<label class="f"><span>Type the site ID <code id="rsid"></code> to confirm</span><input type="text" id="rsconfirm" autocomplete="off" spellcheck="false"></label>
+<p id="rsmsg" class="muted" style="min-height:20px;margin:4px 0"></p>
+<div class="bar"><button type="button" class="danger" id="rsgo" disabled>Reset creatives</button><button value="cancel" formnovalidate>Cancel</button></div>
+</form></dialog>
 </main><script>
 const params = new URLSearchParams(location.search), editing = params.get('site') || params.get('camera');
 const copying = !editing && params.get('copy');
@@ -396,7 +431,7 @@ function fillFrom(c, copy) {
   if (current.password_set) { $('pwhint').textContent = 'Password (blank = keep this site’s password)'; $('clearpw').hidden = false; }
   if (current.dayparts) $('rothint').textContent = `This site also has ${current.dayparts} time-of-day profile(s) from the config file; these fields set the default profile.`;
   $('effective').textContent = current.snapshot_url ? 'Snapshots currently use ' + current.snapshot_url + '.' : '';
-  $('save').textContent = 'Save changes'; $('test').hidden = $('region').hidden = $('del').hidden = $('dup').hidden = false;
+  $('save').textContent = 'Save changes'; $('test').hidden = $('region').hidden = $('del').hidden = $('dup').hidden = $('reset').hidden = false;
   sync();
 }
 
@@ -448,6 +483,22 @@ $('test').onclick = async () => {
 };
 $('region').onclick = () => { location.href = '/roi?site=' + encodeURIComponent(current.id); };
 $('dup').onclick = () => { location.href = '/site?copy=' + encodeURIComponent(current.id); };
+$('reset').onclick = () => {
+  $('rsname').textContent = current.name; $('rsid').textContent = current.id;
+  $('rsconfirm').value = ''; $('rshist').checked = false; $('rsgo').disabled = true; $('rsmsg').textContent = '';
+  $('resetdlg').showModal(); $('rsconfirm').focus();
+};
+$('rsconfirm').oninput = () => { $('rsgo').disabled = $('rsconfirm').value.trim() !== current.id; };
+$('rsgo').onclick = async () => {
+  if ($('rsconfirm').value.trim() !== current.id) return;
+  $('rsgo').disabled = true; $('rsmsg').textContent = 'Resetting…'; $('rsmsg').className = 'muted';
+  const r = await fetch('/sites/reset-creatives', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({site_id: current.id, confirm: $('rsconfirm').value.trim(), history: $('rshist').checked})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $('rsmsg').textContent = j.error || 'Reset failed'; $('rsmsg').className = 'bad'; $('rsgo').disabled = false; return; }
+  $('resetdlg').close();
+  msg('Creatives reset.' + (j.history ? ` Deleted ${j.deleted} stored record(s); IDs start again at c-0001.` : ' New creatives continue the ID numbering.'), 'ok');
+};
 $('del').onclick = async () => {
   if (!confirm(`Delete site ${current.name}? PoP records already received are kept.`)) return;
   const r = await fetch('/api/cameras/' + encodeURIComponent(current.id), {method: 'DELETE'});
@@ -1887,6 +1938,45 @@ class H(BaseHTTPRequestHandler):
             load_bookings()
             threading.Thread(target=sync_expectations, daemon=True).start()
             return self.reply(200, {"status": "loaded", "campaigns": len(body["proposals"])})
+        if self.path == "/sites/reset-creatives":  # site settings: forget a site's creatives
+            if not self.authorised():
+                return
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))
+                sid, confirm, history = body["site_id"], body.get("confirm"), bool(body.get("history"))
+            except (ValueError, KeyError, TypeError):
+                return self.reply(400, {"error": "site_id required"})
+            if not sid or confirm != sid:
+                return self.reply(400, {"error": "type the site ID exactly to confirm"})
+            asked = time.time()
+            url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + \
+                f"/api/cameras/{urllib.parse.quote(sid, safe='')}/reset-creatives"
+            try:
+                req = urllib.request.Request(url, data=json.dumps({"restart_numbering": history}).encode(),
+                                             method="POST", headers={"Authorization": f"Bearer {ARGS.api_key}",
+                                                                     "Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10).read()
+            except urllib.error.HTTPError as e:
+                try:
+                    err = json.loads(e.read()).get("error")
+                except ValueError:
+                    err = None
+                return self.reply(e.code, {"error": f"gateway refused: {err or e.reason}"})
+            except Exception as e:
+                return self.reply(502, {"error": f"cannot reach the gateway: {e}"})
+            deleted = 0
+            if history:
+                note_reset(sid, asked)
+                deleted = rewrite_records(lambda r: None if r.get("site_id") == sid else r)
+                with LOCK:
+                    links = load_links()
+                    if links.pop(sid, None) is not None:
+                        tmp = os.path.join(ARGS.out, "creative-links.json.tmp")
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(links, f, indent=1)
+                        os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
+            print(f"creatives reset for site {sid}" + (f"; deleted {deleted} record(s) and its links" if history else ""), flush=True)
+            return self.reply(200, {"reset": True, "history": history, "deleted": deleted})
         if self.path == "/records/delete":         # review page: remove a site's stored records
             if not self.authorised():
                 return
@@ -1933,6 +2023,11 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "bad signature"})
         meta = json.loads(meta_raw)
         eid = meta["event_id"]
+        if meta.get("type") == "creative_change":
+            cut = load_resets().get(meta.get("site_id"))
+            t = iso_to_ts(meta.get("play_started_at"))
+            if cut and t is not None and t < cut:   # played before the site was reset: its ID is reused now
+                return self.reply(200, {"status": "dropped: played before the site's creatives were reset"})
         if self.headers.get("Idempotency-Key") != eid:
             return self.reply(400, {"error": "idempotency key mismatch"})
         with LOCK:

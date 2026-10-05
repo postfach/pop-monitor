@@ -640,6 +640,42 @@ static void handle_expectations(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+/* Forget every creative a site has seen (testing, or a complete change of
+ * campaigns). Body: {"restart_numbering": true} also starts IDs again at
+ * c-0001; otherwise new creatives continue after the highest ID used, so
+ * they can't be confused with earlier records. */
+static void handle_reset_creatives(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body && *body ? body : "{}");
+    int renumber = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(in, "restart_numbering"));
+    cJSON_Delete(in);
+    pthread_mutex_lock(&A->cams_mu);
+    cam_status *s = &A->status[idx];
+    pthread_mutex_lock(&s->mu);
+    s->reset_renumber = renumber;
+    s->reset_version++;
+    pthread_mutex_unlock(&s->mu);
+    LOGI(A->cfg->cameras[idx].name, "resetting creatives%s", renumber ? " and restarting numbering" : "");
+    /* the detection faults start over with the new library; video and PTZ
+     * faults are about the camera and stay as they are */
+    const char *open[PC_FAULT_COUNT + 1];
+    int n = 0;
+    pthread_mutex_lock(&s->mu);
+    for (int k = 0; k < PC_FAULT_COUNT; k++)
+        if (s->fault_active[k]) { open[n++] = pc_fault_name(k); s->fault_active[k] = 0; }
+    if (s->low_coverage) { open[n++] = "low_coverage"; s->low_coverage = 0; }
+    pthread_mutex_unlock(&s->mu);
+    int64_t w = util_wall_ms();
+    for (int i = 0; i < n; i++)
+        alerts_send(A, &A->cfg->cameras[idx], open[i], "cleared", w, w,
+                    "creatives reset; checking again from now", NULL, 0);
+    pthread_mutex_unlock(&A->cams_mu);
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddBoolToObject(ok, "reset", 1);
+    cJSON_AddBoolToObject(ok, "restart_numbering", renumber);
+    respond_json(fd, 200, ok);
+}
+
 static void handle(int fd)
 {
     struct timeval tv = {10, 0};
@@ -716,6 +752,7 @@ static void handle(int fd)
         else if ((!strcmp(method, "PUT") || !strcmp(method, "POST")) && !strcmp(action, "roi"))
             handle_set_roi(fd, idx, body);
         else if (!strcmp(method, "PUT") && !strcmp(action, "expectations")) handle_expectations(fd, idx, body);
+        else if (!strcmp(method, "POST") && !strcmp(action, "reset-creatives")) handle_reset_creatives(fd, idx, body);
         else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
         else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);
         else if (!*action && !strcmp(method, "GET")) {

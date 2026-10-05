@@ -38,6 +38,9 @@ typedef struct {
     int      reconnects;             /* stream (re)connections after the first */
     int      expected_creatives;     /* from bookings (0 = work it out)  */
     unsigned expect_version;         /* bumped when it changes            */
+    unsigned reset_version;          /* bumped to forget the site's creatives */
+    int      reset_renumber;         /* ...and start IDs again at c-0001       */
+    unsigned reset_applied;          /* last reset the camera thread carried out */
     int64_t  coverage_since_wall;    /* coverage data valid from (0 = not counting) */
     float    coverage_window_pct;    /* last check over the alert window, -1 = not yet */
 } cam_status;
