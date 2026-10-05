@@ -66,7 +66,7 @@ def tail_jsonl(path, n):
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="30">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PoP Monitor review</title><style>
 :root{{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f}}}}
@@ -77,13 +77,22 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}}
 .card{{border:1px solid var(--line);border-radius:8px;overflow:hidden}} .card img{{width:100%;display:block;background:#000}}
 .card div{{padding:8px 10px}} .bad{{color:var(--bad)}} .ok{{color:var(--ok)}}
-.wrap{{overflow-x:auto}}</style></head><body><main>
+.wrap{{overflow-x:auto}}
+.toolbar{{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}}
+.refresh{{display:flex;gap:8px;align-items:center}} .refresh select,.refresh button{{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}}
+.refresh button{{cursor:pointer}} #next{{min-width:110px;font-size:12px}}</style></head><body><main>
 <nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="font-weight:600;text-decoration:none">Review</a><a href="/sites" style="color:var(--muted);text-decoration:none">Sites</a></nav>
-<h1>PoP Monitor review</h1><p class="muted">{subtitle} &middot; refreshes every 30 s</p>
-<h2>Cameras</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th>Region</th></tr>{cams}</table></div>
+<div class="toolbar"><div><h1>PoP Monitor review</h1><p class="muted" style="margin:2px 0 0">{subtitle}</p></div>
+<div class="refresh"><label for="every" class="muted">Refresh</label>
+<select id="every"><option value="0">Off</option><option value="5">Every 5 s</option><option value="10">Every 10 s</option>
+<option value="15">Every 15 s</option><option value="30">Every 30 s</option><option value="60">Every minute</option>
+<option value="120">Every 2 min</option><option value="300">Every 5 min</option><option value="600">Every 10 min</option>
+<option value="900">Every 15 min</option><option value="1800">Every 30 min</option><option value="3600">Every hour</option></select>
+<button id="now" type="button">Refresh now</button><span id="next" class="muted"></span></div></div>
+<h2>Cameras</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th></th></tr>{cams}</table></div>
 <h2>Latest PoP images</h2><div class="grid">{pops}</div>
 <h2>Alerts</h2><div class="wrap"><table><tr><th>Time (UTC)</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
-</main></body></html>"""
+</main>{refresh_js}</body></html>"""
 
 
 SITES_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -515,6 +524,52 @@ load();
 '''
 
 
+# Review-page auto refresh: interval chosen from the dropdown, remembered per
+# browser (and overridable with ?refresh=SECONDS). Pauses while the tab is hidden.
+REFRESH_JS = r'''<script>
+(() => {
+  const sel = document.getElementById('every'), next = document.getElementById('next');
+  const fromUrl = new URLSearchParams(location.search).get('refresh');
+  let saved = null;
+  try { saved = localStorage.getItem('pop-review-refresh'); } catch (e) {}
+  let every = Number(fromUrl ?? saved ?? 30);
+  if (![...sel.options].some(o => Number(o.value) === every)) every = 30;
+  sel.value = String(every);
+  let due = every ? Date.now() + every * 1000 : 0;
+  const reload = () => { try { sessionStorage.setItem('pop-review-y', String(scrollY)); } catch (e) {} location.reload(); };
+  try { const y = sessionStorage.getItem('pop-review-y'); if (y) { scrollTo(0, Number(y)); sessionStorage.removeItem('pop-review-y'); } } catch (e) {}
+  const fmt = s => s >= 60 ? Math.floor(s / 60) + ' min ' + String(s % 60).padStart(2, '0') + ' s' : s + ' s';
+  function tick() {
+    if (!every) { next.textContent = 'Auto refresh off'; return; }
+    if (document.hidden) { next.textContent = 'Paused (tab hidden)'; return; }
+    const left = Math.max(0, Math.ceil((due - Date.now()) / 1000));
+    if (left <= 0) { reload(); return; }
+    next.textContent = 'Next in ' + fmt(left);
+  }
+  sel.addEventListener('change', () => {
+    every = Number(sel.value);
+    try { localStorage.setItem('pop-review-refresh', String(every)); } catch (e) {}
+    due = every ? Date.now() + every * 1000 : 0;
+    tick();
+  });
+  document.getElementById('now').addEventListener('click', reload);
+  document.addEventListener('visibilitychange', tick);
+  setInterval(tick, 1000); tick();
+})();
+</script>'''
+
+
+def gateway_cameras():
+    """Live camera status from the gateway (None if it can't be reached)."""
+    url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + "/api/cameras"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {ARGS.api_key}"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
 def esc(v):
     return html.escape(str(v if v is not None else ""))
 
@@ -526,9 +581,17 @@ def render_page(site):
     pops = [r for r in recs if r.get("type") == "creative_change"][-60:][::-1]
     alerts = [r for r in recs if r.get("type") == "fault"][-50:][::-1]
     hb = {}
-    last = tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 1)   # current camera list only
-    for c in (last[0].get("cameras", []) if last else []):
-        hb[c.get("site_id")] = c
+    live = gateway_cameras()                     # live from the gateway when it's reachable
+    if live is not None:
+        for c in live:
+            c = dict(c, camera=c.get("name"))
+            if c.get("expected_per_hour"):
+                c["coverage"] = c.get("plays_last_hour", 0) / c["expected_per_hour"]
+            hb[c.get("site_id")] = c
+    else:                                        # otherwise the latest heartbeat
+        last = tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 1)
+        for c in (last[0].get("cameras", []) if last else []):
+            hb[c.get("site_id")] = c
     cams = "".join(
         f"<tr><td><a href='?site={esc(k)}'>{esc(k)}</a></td>"
         f"<td class='{'ok' if c.get('connected') else 'bad'}'>{'yes' if c.get('connected') else 'no'}</td>"
@@ -554,7 +617,7 @@ def render_page(site):
                    f"<td class='{'ok' if a.get('state') == 'cleared' else 'bad'}'>{esc(a.get('state'))}</td><td>{esc(a.get('detail'))}</td></tr>"
                    for a in alerts) or "<tr><td colspan=5 class='muted'>No alerts</td></tr>"
     sub = f"Site {esc(site)} &middot; <a href='/'>all sites</a>" if site else f"{len(hb)} camera(s)"
-    return PAGE.format(subtitle=sub, cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
+    return PAGE.format(subtitle=sub, refresh_js=REFRESH_JS, cams=cams, pops="".join(cards) or "<p class='muted'>No PoP records yet</p>",
                        alerts=rows)
 
 

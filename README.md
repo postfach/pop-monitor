@@ -66,7 +66,10 @@ Or as a container: `docker build -f gateway/Dockerfile -t pop-gateway .`
    Edit `/opt/pop-monitor/config.json`: camera IPs, ROI, rotation profile.
 2. In Portainer: **Stacks > Add stack > Web editor**, paste `deploy/docker-compose.yml`, and
    add the variables from `deploy/stack.env.example`. Deploy.
-3. Open `http://DOCKER-HOST:8080` to see PoP images, alerts and camera status.
+3. Open `http://DOCKER-HOST:8080` to see PoP images, alerts and camera status. The
+   **Refresh** menu (top right) sets how often the page updates, from every 5 s to every hour
+   or off; the choice is remembered in that browser, and `?refresh=SECONDS` in the address sets
+   it for a bookmark or wall screen.
 4. Change the config: edit the file on the host, then restart the gateway container in Portainer.
 
 Images are built on the host rather than by Portainer because Portainer's "Pull and
