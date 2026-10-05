@@ -107,6 +107,8 @@ def recorded_sites():
     sites = {}
     for r in tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 1000000):
         sid = r.get("site_id")
+        if not sid:                      # gateway-level alerts (gateway_offline) belong to no site
+            continue
         e = sites.setdefault(sid, {"site_id": sid, "name": "", "pops": 0, "alerts": 0, "last": ""})
         e["name"] = disp(r) or e["name"]
         e["pops" if r.get("type") == "creative_change" else "alerts"] += 1
@@ -200,7 +202,7 @@ async function load() {
       const exp = c.expected_per_hour ? ` <span class="muted">of ${c.expected_per_hour}</span>` : '';
       return `<tr><td><b>${esc(c.name)}</b>${c.name !== c.id ? `<br><span class="muted">${esc(c.id)}</span>` : ''}</td>
         <td>${esc(c.model)}</td><td>${hostText(c)}</td>
-        <td class="${!g.online ? 'muted' : c.connected ? 'ok' : 'bad'}">${!g.online ? 'unknown' : c.connected ? 'connected' : 'not connected'}</td>
+        <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
         <td>${rotation(c)}</td><td>${c.plays_last_hour}${exp}</td>
         <td class="bad">${esc(c.active_faults.join(', '))}</td>
         <td class="actions"><a href="/site?site=${q}">Settings</a><a href="/roi?site=${q}">Region</a><a href="/?site=${q}">PoP</a></td></tr>`;
@@ -860,7 +862,7 @@ function gateway(g) {
   const h = g.health || {}, q = g.queue || {}, u = g.uploads || {}, d = g.disk || {};
   const status = g.online ? '<span class="ok">Online</span>' : '<span class="bad">Offline</span>';
   const cams = g.cameras.map(c => `<tr><td><a href="/?site=${encodeURIComponent(c.site_id)}">${esc(c.site_name || c.site_id)}</a></td>
-    <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
+    <td class="${!g.online ? 'muted' : c.connected ? 'ok' : 'bad'}">${!g.online ? 'unknown' : c.connected ? 'connected' : 'not connected'}</td>
     <td>${c.uptime_pct != null ? c.uptime_pct + '%' : '—'}</td><td>${c.reconnects ?? '—'}</td>
     <td>${c.fps != null ? c.fps.toFixed(1) : '—'}</td>
     <td>${c.coverage == null ? '—' : c.coverage_data_min != null && c.coverage_data_min < 60 ? '<span class="muted">warming up</span>' : Math.round(c.coverage * 100) + '%'}</td>
