@@ -79,10 +79,19 @@ void pc_warp_apply_rgb(const pc_warp *w, const pc_frame *f, uint8_t *out_rgb);
 #define PC_THUMB_W 16              /* luma thumbnail used to recognise creatives */
 #define PC_THUMB_H 8
 #define PC_THUMB  (PC_THUMB_W * PC_THUMB_H)
+#define PC_DETAIL_W 32             /* fine luma detail used to tell creatives apart */
+#define PC_DETAIL_H 16
+#define PC_DETAIL (PC_DETAIL_W * PC_DETAIL_H)
 
 typedef struct {
     float    cell_y[PC_CELLS], cell_u[PC_CELLS], cell_v[PC_CELLS];
     float    thumb[PC_THUMB];     /* 16x8 luma means                          */
+    /* 32x16 luma with the low frequencies (glare, vignetting, exposure)
+     * removed, scaled to a fixed contrast: the creative's own detail
+     * (text, edges, layout). has_detail = 0 for fingerprints saved before
+     * this existed; they gain it the next time they are seen. */
+    int8_t   detail[PC_DETAIL];
+    int      has_detail;
     uint64_t dhash;
     float    mean_y, std_y;
     float    sharpness;   /* variance of Laplacian on Y */
@@ -134,9 +143,11 @@ typedef struct {
 } pc_creative;
 
 /* Creatives are recognised by the SHAPE of their brightness pattern
- * (correlation of exposure-normalised 16x8 thumbnails) plus their colour
- * layout relative to the overall tint, so exposure, contrast and white
- * balance drift between plays don't create new IDs. */
+ * (correlation of exposure-normalised 16x8 thumbnails), their fine detail
+ * with glare and vignetting removed (32x16), and their colour layout
+ * relative to the overall tint, so exposure, contrast and white balance
+ * drift between plays don't create new IDs, while two different creatives
+ * of similar colour under the same lighting don't share one. */
 typedef struct {
     pc_creative items[PC_LIBRARY_MAX];
     int         count;
@@ -145,11 +156,14 @@ typedef struct {
     float       chroma_tol;    /* relative colour layout difference (10)       */
     float       tint_tol;      /* overall colour cast difference (30)          */
     float       adapt;         /* how fast a fingerprint follows drift (0.2)   */
+    float       detail_min;    /* fine-detail correlation for a match (0.35)   */
     unsigned    changes;       /* bumped on every add/update (for saving)      */
 } pc_library;
 
 /* Similarity of two fingerprints; returns 1 if they look like the same
  * creative. *score (higher = closer) is set either way. */
+/* Fine-detail correlation of two fingerprints (1 if either has none). */
+float pc_fingerprint_detail(const pc_features *a, const pc_features *b);
 int  pc_fingerprint_match(const pc_library *lib, const pc_features *a, const pc_features *b,
                           int grid_only, float *score);
 void pc_library_init(pc_library *lib);
@@ -218,6 +232,7 @@ typedef struct {
     int64_t         last_motion_ms;      /* most recent frame with motion  */
     double          acc[3][PC_CELLS];    /* cell colour sums during motion */
     double          acc_thumb[PC_THUMB];
+    float           acc_detail[PC_DETAIL];
     int             acc_n;
     int             frames_in_play, motion_frames_in_play; /* video creative? */
     uint64_t        sequence;

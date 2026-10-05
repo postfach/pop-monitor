@@ -173,3 +173,41 @@ void util_log(int level, const char *tag, const char *fmt, ...)
     fputc('\n', stderr);
     pthread_mutex_unlock(&log_mu);
 }
+
+static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int util_base64(const unsigned char *in, size_t n, char *out, size_t cap)
+{
+    size_t need = ((n + 2) / 3) * 4 + 1, o = 0;
+    if (cap < need) { if (cap) out[0] = 0; return -1; }
+    for (size_t i = 0; i < n; i += 3) {
+        unsigned v = (unsigned)in[i] << 16;
+        if (i + 1 < n) v |= (unsigned)in[i + 1] << 8;
+        if (i + 2 < n) v |= in[i + 2];
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = i + 1 < n ? B64[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < n ? B64[v & 63] : '=';
+    }
+    out[o] = 0;
+    return (int)o;
+}
+
+int util_unbase64(const char *in, unsigned char *out, size_t max)
+{
+    unsigned v = 0;
+    int bits = 0;
+    size_t o = 0;
+    for (const char *p = in; *p && *p != '='; p++) {
+        const char *k = strchr(B64, *p);
+        if (!k || !*p) return -1;
+        v = (v << 6) | (unsigned)(k - B64);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o >= max) return -1;
+            out[o++] = (unsigned char)((v >> bits) & 0xff);
+        }
+    }
+    return (int)o;
+}

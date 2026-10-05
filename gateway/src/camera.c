@@ -451,6 +451,12 @@ static void library_save(camera *cm, const pc_library *lib)
         cJSON_AddItemToObject(o, "u", floats(c->fp.cell_u, PC_CELLS));
         cJSON_AddItemToObject(o, "v", floats(c->fp.cell_v, PC_CELLS));
         cJSON_AddItemToObject(o, "thumb", floats(c->fp.thumb, PC_THUMB));
+        if (c->fp.has_detail) {
+            /* base64 of the 512 signed bytes keeps the file small */
+            char b64[((PC_DETAIL + 2) / 3) * 4 + 1];
+            util_base64((const unsigned char *)c->fp.detail, PC_DETAIL, b64, sizeof b64);
+            cJSON_AddStringToObject(o, "detail", b64);
+        }
         cJSON_AddItemToArray(items, o);
     }
     char *txt = cJSON_PrintUnformatted(root);
@@ -494,6 +500,10 @@ static void library_load(camera *cm, pc_library *lib, int64_t now)
         c->fp.mean_y = cJSON_IsNumber(m) ? (float)m->valuedouble : 0;
         c->fp.std_y = cJSON_IsNumber(sd) ? (float)sd->valuedouble : 0;
         c->fp.sharpness = cJSON_IsNumber(sh) ? (float)sh->valuedouble : 0;
+        const cJSON *dt = cJSON_GetObjectItemCaseSensitive(o, "detail");
+        if (cJSON_IsString(dt) &&
+            util_unbase64(dt->valuestring, (unsigned char *)c->fp.detail, PC_DETAIL) == PC_DETAIL)
+            c->fp.has_detail = 1;
         c->first_seen_ms = c->last_seen_ms = now;
         if (c->id >= lib->next_id) lib->next_id = c->id + 1;
         lib->count++;

@@ -36,6 +36,7 @@ void pc_library_init(pc_library *lib)
     lib->chroma_tol = 10.f;
     lib->tint_tol = 30.f;
     lib->adapt = 0.2f;
+    lib->detail_min = 0.35f;
 }
 
 static int fp_is_flat(const pc_features *f) { return f->std_y < 6.f; }
@@ -65,6 +66,31 @@ static float correlation(const float *a, const float *b, int n)
     return (float)(sab / sqrt(saa * sbb));
 }
 
+static float detail_corr(const pc_features *a, const pc_features *b)
+{
+    double ma = 0, mb = 0;
+    for (int i = 0; i < PC_DETAIL; i++) { ma += a->detail[i]; mb += b->detail[i]; }
+    ma /= PC_DETAIL;
+    mb /= PC_DETAIL;
+    double sab = 0, saa = 0, sbb = 0;
+    for (int i = 0; i < PC_DETAIL; i++) {
+        double da = a->detail[i] - ma, db = b->detail[i] - mb;
+        sab += da * db;
+        saa += da * da;
+        sbb += db * db;
+    }
+    if (saa < 1e-6 || sbb < 1e-6) return 0.f;
+    return (float)(sab / sqrt(saa * sbb));
+}
+
+/* Fine-detail correlation, or 1 when either fingerprint has none (saved
+ * before detail existed). */
+float pc_fingerprint_detail(const pc_features *a, const pc_features *b)
+{
+    if (!a->has_detail || !b->has_detail) return 1.f;
+    return detail_corr(a, b);
+}
+
 int pc_fingerprint_match(const pc_library *lib, const pc_features *a, const pc_features *b,
                          int grid_only, float *score)
 {
@@ -85,8 +111,14 @@ int pc_fingerprint_match(const pc_library *lib, const pc_features *a, const pc_f
     rel /= 2.f * PC_CELLS;
     float corr = correlation(a->thumb, b->thumb, PC_THUMB);
     float need = lib->corr_min - (grid_only ? 0.08f : 0.f);   /* video: averaged, looser */
-    *score = corr - rel / 100.f;
-    return corr >= need && rel <= lib->chroma_tol * (grid_only ? 1.5f : 1.f) && tint <= lib->tint_tol;
+    /* The coarse thumbnail is dominated by the site's lighting (glare,
+     * vignetting), so creatives of similar colour can pass it; the fine
+     * detail is what tells them apart. */
+    float det = pc_fingerprint_detail(a, b);
+    float dneed = lib->detail_min * (grid_only ? 0.6f : 1.f);
+    *score = corr - rel / 100.f + 0.5f * det;
+    return corr >= need && det >= dneed &&
+           rel <= lib->chroma_tol * (grid_only ? 1.5f : 1.f) && tint <= lib->tint_tol;
 }
 
 /* Blend a fingerprint towards a new sighting so slow drift is followed. */
@@ -98,6 +130,15 @@ static void adapt_fp(pc_features *dst, const pc_features *src, float a)
         dst->cell_v[i] += a * (src->cell_v[i] - dst->cell_v[i]);
     }
     for (int i = 0; i < PC_THUMB; i++) dst->thumb[i] += a * (src->thumb[i] - dst->thumb[i]);
+    if (src->has_detail) {
+        if (!dst->has_detail) {          /* saved before detail existed: adopt it */
+            memcpy(dst->detail, src->detail, sizeof dst->detail);
+            dst->has_detail = 1;
+        } else {
+            for (int i = 0; i < PC_DETAIL; i++)
+                dst->detail[i] = (int8_t)lrintf(dst->detail[i] + a * (src->detail[i] - dst->detail[i]));
+        }
+    }
     dst->mean_y += a * (src->mean_y - dst->mean_y);
     dst->std_y += a * (src->std_y - dst->std_y);
 }
@@ -123,7 +164,13 @@ int pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t n
         pc_creative *c = &lib->items[best];
         c->last_seen_ms = now;
         c->plays++;
-        if (!grid_only) adapt_fp(&c->fp, fp, lib->adapt);
+        /* Follow drift only on a clear match, so one borderline sighting
+         * can't pull a fingerprint towards a different creative. */
+        if (!grid_only && pc_fingerprint_detail(fp, &c->fp) >= 0.5f) adapt_fp(&c->fp, fp, lib->adapt);
+        else if (!c->fp.has_detail && fp->has_detail && !grid_only) {
+            memcpy(c->fp.detail, fp->detail, sizeof c->fp.detail);
+            c->fp.has_detail = 1;
+        }
         return c->id;
     }
     int slot;
@@ -203,12 +250,14 @@ static void motion_fp(const pc_detector *d, const pc_features *f, pc_features *o
         out->cell_v[i] = (float)(d->acc[2][i] / d->acc_n);
     }
     for (int i = 0; i < PC_THUMB; i++) out->thumb[i] = (float)(d->acc_thumb[i] / d->acc_n);
+    for (int i = 0; i < PC_DETAIL; i++) out->detail[i] = (int8_t)lrintf(d->acc_detail[i] / d->acc_n);
 }
 
 static void acc_reset(pc_detector *d)
 {
     memset(d->acc, 0, sizeof d->acc);
     memset(d->acc_thumb, 0, sizeof d->acc_thumb);
+    memset(d->acc_detail, 0, sizeof d->acc_detail);
     d->acc_n = 0;
 }
 
@@ -249,6 +298,7 @@ int pc_detector_push(pc_detector *d, const pc_features *f, int64_t now, pc_event
             d->acc[2][i] += f->cell_v[i];
         }
         for (int i = 0; i < PC_THUMB; i++) d->acc_thumb[i] += f->thumb[i];
+        for (int i = 0; i < PC_DETAIL; i++) d->acc_detail[i] += f->detail[i];
         d->acc_n++;
     }
     d->frames_in_play++;

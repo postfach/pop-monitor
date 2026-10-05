@@ -14,9 +14,9 @@ int pc_hamming64(uint64_t a, uint64_t b)
 /* Box-average a plane into gw x gh cells. */
 static void box_means(const uint8_t *p, int w, int h, int gw, int gh, float *out)
 {
-    double sum[128];   /* gw*gh <= 128 (8x4 grid, 9x8 hash) */
-    int cnt[128];
-    if (gw * gh > 128) return;
+    double sum[PC_DETAIL];   /* gw*gh <= 512 (8x4 grid, 9x8 hash, 32x16 detail) */
+    int cnt[PC_DETAIL];
+    if (gw * gh > PC_DETAIL) return;
     memset(sum, 0, sizeof(double) * gw * gh);
     memset(cnt, 0, sizeof(int) * gw * gh);
     for (int y = 0; y < h; y++) {
@@ -53,6 +53,36 @@ void pc_features_compute(const uint8_t *y, const uint8_t *u, const uint8_t *v,
             if (th[r * 9 + c] > th[r * 9 + c + 1]) hash |= 1;
         }
     f->dhash = hash;
+
+    /* Fine detail: 32x16 luma minus its 5x5 local mean (removes glare,
+     * vignetting and exposure, which vary smoothly across the board), then
+     * scaled so its spread is fixed (removes contrast). */
+    {
+        float t[PC_DETAIL], hp[PC_DETAIL];
+        box_means(y, w, h, PC_DETAIL_W, PC_DETAIL_H, t);
+        double ss = 0;
+        for (int r = 0; r < PC_DETAIL_H; r++)
+            for (int c = 0; c < PC_DETAIL_W; c++) {
+                double m = 0;
+                for (int dy = -2; dy <= 2; dy++)
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int rr = r + dy, cc = c + dx;
+                        rr = rr < 0 ? 0 : rr >= PC_DETAIL_H ? PC_DETAIL_H - 1 : rr;
+                        cc = cc < 0 ? 0 : cc >= PC_DETAIL_W ? PC_DETAIL_W - 1 : cc;
+                        m += t[rr * PC_DETAIL_W + cc];
+                    }
+                float v = t[r * PC_DETAIL_W + c] - (float)(m / 25.0);
+                hp[r * PC_DETAIL_W + c] = v;
+                ss += (double)v * v;
+            }
+        double sd = sqrt(ss / PC_DETAIL);
+        float k = sd > 0.25 ? (float)(40.0 / sd) : 0.f;   /* featureless: all zero */
+        for (int i = 0; i < PC_DETAIL; i++) {
+            float q = hp[i] * k;
+            f->detail[i] = (int8_t)(q > 127.f ? 127 : q < -127.f ? -127 : lrintf(q));
+        }
+        f->has_detail = 1;
+    }
 
     /* global stats */
     double s = 0, s2 = 0;

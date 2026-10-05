@@ -15,6 +15,7 @@ static const pc_point QUAD[4] = {{0.16f, 0.17f}, {0.88f, 0.25f}, {0.86f, 0.83f},
 
 static uint32_t rng = 12345;
 static double g_gain = 1, g_offset = 0;   /* simulated camera exposure */
+static double g_glare = 0;                /* sun glare towards the top left of the board */
 static int rnd(void) { rng = rng * 1103515245u + 12345u; return (int)((rng >> 16) & 0x7fff); }
 
 /* Creative pattern at board coordinate (u,v) in [0,1]. */
@@ -33,6 +34,20 @@ static void pattern(int k, double u, double v, double t, int *r, int *g, int *b)
     double stripe = sin((u * (10 + k % 7) + v * (4 + k % 3)) * 6.283);
     int d = (int)(30 * stripe);
     *r += d; *g += d; *b += d;
+    /* k == 80, 81: near-flat creatives of similar colour that differ only in
+     * their text: pink with a headline, orange-red with blocks of copy */
+    if (k == 80 || k == 81) {
+        if (k == 80) { *r = 225; *g = 70; *b = 100; } else { *r = 232; *g = 80; *b = 80; }
+        int ink = 0;
+        if (k == 80) ink = (v > 0.38 && v < 0.48 && u > 0.08 && u < 0.92 && fmod(u * 40, 1.0) < 0.6) ||
+                           (v > 0.75 && v < 0.85 && u > 0.42 && u < 0.58);
+        else ink = (v > 0.12 && v < 0.30 && u > 0.25 && u < 0.75 && fmod(u * 30, 1.0) < 0.5) ||
+                   (v > 0.40 && v < 0.55 && u > 0.30 && u < 0.70) ||
+                   (v > 0.62 && v < 0.68 && u > 0.05 && u < 0.95 && fmod(u * 60, 1.0) < 0.5) ||
+                   (v > 0.80 && v < 0.88 && u > 0.35 && u < 0.65);
+        if (ink) { *r -= 45; *g -= 25; *b -= 25; }   /* low-contrast copy */
+        return;
+    }
     /* k == 62: video whose left half is identical to creative 1, so the cut
      * from it into creative 1 changes only about half the board */
     if (k == 62 && u < 0.5) { pattern(1, u, v, t, r, g, b); return; }
@@ -84,6 +99,10 @@ static void render(uint8_t *rgb, int k, int k2, double mix, double t, double blu
                     r = (int)(r * (1 - mix) + r2 * mix);
                     g = (int)(g * (1 - mix) + g2 * mix);
                     b = (int)(b * (1 - mix) + b2 * mix);
+                }
+                if (g_glare > 0) {
+                    double gl = g_glare * exp(-(u * u + v * v) / 0.18);
+                    r += (int)gl; g += (int)gl; b += (int)gl;
                 }
             }
             r = (int)(r * g_gain + g_offset); g = (int)(g * g_gain + g_offset); b = (int)(b * g_gain + g_offset * 0.8);
@@ -257,6 +276,31 @@ static void test_creative_ids_under_exposure_drift(void)
     CHECK(nd == 6, "6 creatives under exposure drift should give 6 IDs, got %d", nd);
     for (int i = 6; i < n; i++)
         CHECK(ids[i] == ids[i - 6], "play %d id %d should repeat play %d id %d", i, ids[i], i - 6, ids[i - 6]);
+}
+
+static void test_similar_creatives_under_glare(void)
+{
+    /* Two near-flat creatives of similar colour, differing only in their
+     * text, under the same glare. The coarse thumbnail is dominated by the
+     * glare; they must still get two IDs, each repeating, through exposure
+     * changes. */
+    g_glare = 70;
+    seg s[13];
+    const double gains[] = {1.0, 0.85, 1.12, 0.9, 1.08, 0.8, 1.15, 0.95, 1.05, 0.88, 1.1, 0.92};
+    const double offs[] = {0, 10, -8, 6, -10, 14, -6, 4, -4, 9, -12, 5};
+    for (int i = 0; i < 12; i++) s[i] = (seg){i % 2 ? 81 : 80, 0, 8, 0, gains[i], offs[i]};
+    s[12] = (seg){2, 0, 3, 0, 1, 0};
+    int ev[32], ids[32];
+    pc_profile prof = {2, 8000};
+    int n = run_sequence(s, 13, 5, &prof, ev, ids, 32, NULL, NULL);
+    g_glare = 0;
+    CHECK(n == 12, "similar creatives: expected 12 plays, got %d", n);
+    if (n == 12) {
+        CHECK(ids[1] != ids[2], "similar creatives under glare share ID %d", ids[1]);
+        for (int i = 3; i < 11; i++)
+            CHECK(ids[i] == ids[i - 2], "similar creatives: play %d id %d should repeat play %d id %d",
+                  i, ids[i], i - 2, ids[i - 2]);
+    }
 }
 
 static void test_faults(void)
@@ -440,6 +484,7 @@ int main(void)
     test_detector_rotation();
     test_video_creative();
     test_creative_ids_under_exposure_drift();
+    test_similar_creatives_under_glare();
     test_faults();
     test_share_of_time();
     test_snapshot_score();

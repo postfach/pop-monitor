@@ -324,9 +324,15 @@ offline can't report itself. The interim receiver does this (see Gateway health)
 `local_creative_id` (`c-0001`, `c-0002`, …) is per site and only groups repeat plays of the
 same artwork, so a 6-slot loop should settle on about six IDs plus one for a blank slot.
 Matching a play to a booked campaign happens on the backend (e.g. against the creative files
-in Vault). The gateway recognises a repeat by correlating a 16×8 thumbnail of the board plus
-its colour layout, which tolerates day/night exposure changes, and slowly adapts each stored
-creative to the conditions it is seen in. Video creatives are fingerprinted from an average
+in Vault). The gateway recognises a repeat by three checks that must all agree: a 16×8
+thumbnail of the board (overall shape), a 32×16 map of fine detail with glare, vignetting and
+exposure removed (text, edges, layout), and the colour layout relative to the overall tint.
+This tolerates day/night exposure changes while keeping apart creatives of similar colour
+under the same glare (the coarse thumbnail alone is dominated by the site's lighting). Each
+stored creative slowly adapts to the conditions it is seen in, but only from clear matches.
+Libraries saved before the detail check gain it the next time each creative is seen; if two
+creatives had been merged into one ID, the first one seen keeps the ID and the other gets a
+new one (earlier records stay under the old ID). Video creatives are fingerprinted from an average
 over their motion. The library (up to 256 creatives per site) is saved every minute to
 `creatives/<site_id>.json` in the gateway volume and reloaded on start, so IDs stay the same
 across restarts and updates. Delete a site's file to restart its numbering, for example

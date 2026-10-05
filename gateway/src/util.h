@@ -18,6 +18,11 @@ char   *util_read_file(const char *path, size_t *len);          /* malloc'd, NUL
 /* "HH:MM-HH:MM" (may wrap midnight; "00:00-24:00" = always). Local time. */
 int     util_in_time_range(const char *range, int64_t epoch_ms);
 
+/* Standard base64. util_base64 returns the length written (out NUL-terminated);
+ * util_unbase64 returns bytes decoded (at most max) or -1 on bad input. */
+int     util_base64(const unsigned char *in, size_t n, char *out, size_t cap);
+int     util_unbase64(const char *in, unsigned char *out, size_t max);
+
 enum { LOG_DEBUG = 0, LOG_INFO, LOG_WARN, LOG_ERROR };
 extern int util_log_level;
 void util_log(int level, const char *tag, const char *fmt, ...)
