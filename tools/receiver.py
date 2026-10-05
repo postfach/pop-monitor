@@ -78,12 +78,254 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 .card{{border:1px solid var(--line);border-radius:8px;overflow:hidden}} .card img{{width:100%;display:block;background:#000}}
 .card div{{padding:8px 10px}} .bad{{color:var(--bad)}} .ok{{color:var(--ok)}}
 .wrap{{overflow-x:auto}}</style></head><body><main>
+<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="font-weight:600;text-decoration:none">Review</a><a href="/sites" style="color:var(--muted);text-decoration:none">Sites</a></nav>
 <h1>PoP Monitor review</h1><p class="muted">{subtitle} &middot; refreshes every 30 s</p>
 <h2>Cameras</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play (UTC)</th><th>Active faults</th><th>Region</th></tr>{cams}</table></div>
 <h2>Latest PoP images</h2><div class="grid">{pops}</div>
 <h2>Alerts</h2><div class="wrap"><table><tr><th>Time (UTC)</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
 </main></body></html>"""
 
+
+SITES_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sites</title><style>
+:root{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32;--accent:#d4237a}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f}}
+*{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:1200px;margin:0 auto;padding:20px 16px 40px} h1{font-size:20px;margin:0} a{color:inherit}
+nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-decoration:none} nav a.on{color:var(--fg);font-weight:600}
+.muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)}
+.head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 12px}
+.btn{display:inline-block;border:1px solid var(--line);background:transparent;color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.wrap{overflow-x:auto} table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top;white-space:nowrap}
+td.actions a{margin-right:12px} .note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:16px}
+</style></head><body><main>
+<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a></nav>
+<div class="head"><div><h1>Sites</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p></div>
+<a class="btn primary" href="/site">Add site</a></div>
+<div class="wrap"><table><thead><tr><th>Site</th><th>Model</th><th>Camera</th><th>Video</th><th>Rotation</th><th>Plays / hour</th><th>Faults</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Loading&hellip;</td></tr></tbody></table></div>
+<p class="note muted" id="note" hidden></p>
+</main><script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function rotation(c) {
+  if (c.takeover) return 'Takeover';
+  if (!c.slot_count && !c.slot_ms) return '<span class="muted">not set</span>';
+  return `${c.slot_count || '?'} × ${c.slot_ms ? (c.slot_ms / 1000) + ' s' : '?'}` + (c.dayparts ? ` <span class="muted">+${c.dayparts} daypart</span>` : '');
+}
+function hostText(c) {
+  if (c.rtsp_url_override) return '<span class="muted">custom URL</span>';
+  const ports = [c.http_port ? 'web ' + c.http_port : '', c.rtsp_transport === 'http' ? 'video over web' : (c.rtsp_port ? 'RTSP ' + c.rtsp_port : '')].filter(Boolean).join(', ');
+  return esc(c.host) + (ports ? ` <span class="muted">(${esc(ports)})</span>` : '');
+}
+async function load() {
+  try {
+    const [r, s] = await Promise.all([fetch('/api/cameras'), fetch('/api/settings')]);
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    const cams = await r.json(), st = s.ok ? await s.json() : {};
+    document.getElementById('sub').textContent = `${cams.length} site(s) on gateway ${st.gateway_id || ''}`;
+    document.getElementById('rows').innerHTML = cams.map(c => {
+      const q = encodeURIComponent(c.name);
+      const exp = c.expected_per_hour ? ` <span class="muted">of ${c.expected_per_hour}</span>` : '';
+      return `<tr><td><b>${esc(c.site_id)}</b>${c.display_name ? `<br><span class="muted">${esc(c.display_name)}</span>` : ''}</td>
+        <td>${esc(c.model)}</td><td>${hostText(c)}</td>
+        <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
+        <td>${rotation(c)}</td><td>${c.plays_last_hour}${exp}</td>
+        <td class="bad">${esc(c.active_faults.join(', '))}</td>
+        <td class="actions"><a href="/site?camera=${q}">Settings</a><a href="/roi?camera=${q}">Region</a><a href="/?site=${encodeURIComponent(c.site_id)}">PoP</a></td></tr>`;
+    }).join('') || '<tr><td colspan="8" class="muted">No sites yet. Click Add site.</td></tr>';
+    if (st.cameras_from_state) {
+      const n = document.getElementById('note'); n.hidden = false;
+      n.textContent = 'Sites are managed here and saved by the gateway. The cameras list in config.json is no longer used.';
+    }
+  } catch (e) {
+    document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>';
+    document.getElementById('rows').innerHTML = '';
+  }
+}
+load(); setInterval(load, 15000);
+</script></body></html>
+'''
+
+SITE_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site settings</title><style>
+:root{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32;--accent:#d4237a;--panel:#ecece8}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f;--panel:#1f1f1d}}
+*{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:860px;margin:0 auto;padding:20px 16px 48px} h1{font-size:20px;margin:0 0 2px} a{color:inherit}
+nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-decoration:none} nav a.on{color:var(--fg);font-weight:600}
+.muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)}
+fieldset{border:0;background:var(--panel);border-radius:10px;padding:14px 16px 6px;margin:14px 0}
+legend{font-weight:600;padding:0;float:left;width:100%;margin-bottom:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px 16px;clear:both}
+label.f{display:flex;flex-direction:column;gap:4px;margin-bottom:8px} label.f span{font-size:12px;color:var(--muted)}
+input[type=text],input[type=number],input[type=password],input[type=time]{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);width:100%}
+input:disabled{opacity:.5} .check{display:flex;gap:8px;align-items:center;margin:4px 0 10px;clear:both}
+[hidden]{display:none!important}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden} .seg label{padding:6px 12px;cursor:pointer}
+.seg input{display:none} .seg input:checked+span{font-weight:600;color:var(--accent)}
+details{clear:both;margin:4px 0 10px} summary{cursor:pointer;color:var(--muted)}
+.hint{font-size:12px;color:var(--muted);margin:-4px 0 10px;clear:both}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:18px}
+button{border:1px solid var(--line);background:transparent;color:var(--fg);padding:8px 14px;border-radius:8px;cursor:pointer;font:inherit}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff} button.danger{color:var(--bad)}
+button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
+#test img{max-width:100%;border-radius:8px;margin-top:10px;display:block}
+</style></head><body><main>
+<nav><a href="/">Review</a><a href="/sites" class="on">Sites</a></nav>
+<h1 id="title">Add site</h1><p class="muted" id="sub">New camera</p>
+<form id="f" autocomplete="off">
+<fieldset><legend>Site</legend><div class="grid">
+  <label class="f"><span>Site ID (required, unique)</span><input type="text" name="site_id" required placeholder="AKL-BRITOMART-01"></label>
+  <label class="f"><span>Display name (optional)</span><input type="text" name="display_name" placeholder="Britomart north face"></label>
+  <label class="f"><span>Camera model</span><input type="text" name="model" list="models" placeholder="M5525-E"></label>
+</div>
+<datalist id="models"><option>M5525-E</option><option>M5526-E</option><option>P3225-LVE Mk II</option><option>P3227-LVE</option><option>P3267-LV</option></datalist>
+</fieldset>
+
+<fieldset><legend>Camera connection</legend><div class="grid">
+  <label class="f"><span>Host (IP or DNS name, no port)</span><input type="text" name="host" placeholder="203.0.113.10"></label>
+  <label class="f"><span>Web port (blank = 80, or 443 with HTTPS)</span><input type="number" name="http_port" min="1" max="65535" placeholder="80"></label>
+  <label class="f"><span>RTSP port (blank = 554)</span><input type="number" name="rtsp_port" min="1" max="65535" placeholder="554"></label>
+</div>
+<div class="check"><span class="muted" style="min-width:110px">Video transport</span>
+  <div class="seg"><label><input type="radio" name="rtsp_transport" value="tcp" checked><span>RTSP</span></label><label><input type="radio" name="rtsp_transport" value="http"><span>Over web port</span></label></div></div>
+<p class="hint">Use "Over web port" when only the web port is forwarded, or if the video connects but no picture arrives.</p>
+<label class="check"><input type="checkbox" name="use_https"> Use HTTPS for snapshots</label>
+<label class="check"><input type="checkbox" name="camera_tls_insecure"> Accept the camera's self-signed certificate</label>
+<div class="grid">
+  <label class="f"><span id="userhint">Camera user (blank = default)</span><input type="text" name="username"></label>
+  <label class="f"><span id="pwhint">Password (blank = default)</span><input type="password" name="password" autocomplete="new-password"></label>
+</div>
+<label class="check" id="clearpw" hidden><input type="checkbox" name="clear_password"> Remove this site's password and use the default</label>
+<details><summary>Advanced: custom URLs</summary><div class="grid" style="margin-top:10px">
+  <label class="f"><span>Video URL override (rtsp://&hellip;)</span><input type="text" name="rtsp_url_override" placeholder="built from the fields above"></label>
+  <label class="f"><span>Snapshot base URL override</span><input type="text" name="vapix_url_override" placeholder="built from the fields above"></label>
+</div><p class="hint">Only for unusual setups. These replace the host, ports and transport above. <span id="effective"></span></p></details>
+</fieldset>
+
+<fieldset><legend>Rotation</legend>
+<label class="check"><input type="checkbox" name="takeover"> Takeover (one creative only, so no frozen or loop alerts)</label>
+<div class="grid">
+  <label class="f"><span>Slots in the rotation</span><input type="number" name="slot_count" min="1" max="200" placeholder="6"></label>
+  <label class="f"><span>Slot length (seconds)</span><input type="number" name="slot_s" min="1" max="3600" step="0.5" placeholder="10"></label>
+</div><p class="hint" id="rothint">Leave blank if unknown. Setting these makes detection and fault alerts fit the loop.</p>
+</fieldset>
+
+<fieldset><legend>Schedule and checks</legend>
+<label class="check"><input type="checkbox" name="allday" checked> Operates 24 hours</label>
+<div class="grid">
+  <label class="f"><span>Screen on from</span><input type="time" name="from" value="05:00"></label>
+  <label class="f"><span>Screen off at</span><input type="time" name="to" value="01:00"></label>
+</div><p class="hint">Black screens outside these hours don't raise alerts.</p>
+<label class="check"><input type="checkbox" name="ptz_check" checked> Alert and pause if a PTZ camera leaves its preset</label>
+</fieldset>
+
+<div class="bar">
+  <button type="submit" class="primary" id="save">Add site</button>
+  <button type="button" id="test" hidden>Test camera</button>
+  <button type="button" id="region" hidden>Edit region</button>
+  <span style="flex:1"></span>
+  <button type="button" class="danger" id="del" hidden>Delete site</button>
+</div>
+<p id="msg"></p><div id="testout"></div>
+</form>
+</main><script>
+const params = new URLSearchParams(location.search), editing = params.get('camera');
+const f = document.getElementById('f'), $ = id => document.getElementById(id);
+const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || 'muted'; };
+let current = null;
+
+function setVal(n, v) { const el = f.elements[n]; if (!el) return; if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? ''; }
+function sync() {
+  const take = f.elements.takeover.checked;
+  f.elements.slot_count.disabled = f.elements.slot_s.disabled = take;
+  const all = f.elements.allday.checked;
+  f.elements.from.disabled = f.elements.to.disabled = all;
+  f.elements.camera_tls_insecure.disabled = !f.elements.use_https.checked;
+}
+f.addEventListener('change', sync);
+
+async function init() {
+  const s = await fetch('/api/settings').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  if (s.default_username) $('userhint').textContent = `Camera user (blank = default "${s.default_username}")`;
+  if (!s.default_password_set) $('pwhint').textContent = 'Password (no default set: enter one)';
+  if (!editing) { sync(); return; }
+  const r = await fetch('/api/cameras/' + encodeURIComponent(editing));
+  if (!r.ok) { msg('Could not load this site: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad'); return; }
+  current = await r.json();
+  $('title').textContent = current.site_id;
+  $('sub').innerHTML = (current.connected ? '<span class="ok">Video connected</span>' : '<span class="bad">Video not connected</span>') +
+    (current.active_faults.length ? ' &middot; <span class="bad">' + current.active_faults.join(', ') + '</span>' : '');
+  for (const k of ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override'])
+    setVal(k, current[k]);
+  setVal('http_port', current.http_port || ''); setVal('rtsp_port', current.rtsp_port || '');
+  f.querySelector(`input[name=rtsp_transport][value=${current.rtsp_transport}]`).checked = true;
+  for (const k of ['use_https','camera_tls_insecure','takeover','ptz_check']) setVal(k, current[k]);
+  setVal('slot_count', current.slot_count || ''); setVal('slot_s', current.slot_ms ? current.slot_ms / 1000 : '');
+  const hrs = current.operating_hours || '00:00-24:00', all = hrs === '00:00-24:00' || hrs.split('-')[0] === hrs.split('-')[1];
+  setVal('allday', all); if (!all) { setVal('from', hrs.split('-')[0]); setVal('to', hrs.split('-')[1]); }
+  if (current.password_set) { $('pwhint').textContent = 'Password (blank = keep this site’s password)'; $('clearpw').hidden = false; }
+  if (current.dayparts) $('rothint').textContent = `This site also has ${current.dayparts} time-of-day profile(s) from the config file; these fields set the default profile.`;
+  $('effective').textContent = current.snapshot_url ? 'Snapshots currently use ' + current.snapshot_url + '.' : '';
+  $('save').textContent = 'Save changes'; $('test').hidden = $('region').hidden = $('del').hidden = false;
+  sync();
+}
+
+function formData() {
+  const e = f.elements, num = v => v === '' ? 0 : Number(v);
+  const d = {
+    site_id: e.site_id.value.trim(), display_name: e.display_name.value.trim(), model: e.model.value.trim(),
+    host: e.host.value.trim(), http_port: num(e.http_port.value), rtsp_port: num(e.rtsp_port.value),
+    rtsp_transport: f.querySelector('input[name=rtsp_transport]:checked').value,
+    use_https: e.use_https.checked, camera_tls_insecure: e.use_https.checked && e.camera_tls_insecure.checked,
+    username: e.username.value.trim(), rtsp_url_override: e.rtsp_url_override.value.trim(),
+    vapix_url_override: e.vapix_url_override.value.trim(),
+    takeover: e.takeover.checked, slot_count: e.takeover.checked ? 0 : num(e.slot_count.value),
+    slot_ms: e.takeover.checked ? 0 : Math.round(num(e.slot_s.value) * 1000),
+    operating_hours: e.allday.checked ? '00:00-24:00' : `${e.from.value}-${e.to.value}`,
+    ptz_check: e.ptz_check.checked,
+  };
+  if (e.password.value) d.password = e.password.value;
+  if (e.clear_password.checked) d.clear_password = true;
+  return d;
+}
+
+f.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const d = formData();
+  if (!d.site_id) { msg('Site ID is required.', 'bad'); return; }
+  if (!d.host && !d.rtsp_url_override) { msg('Enter the camera host (or a custom video URL).', 'bad'); return; }
+  $('save').disabled = true; msg(editing ? 'Saving and restarting this camera…' : 'Adding site…');
+  const r = await fetch(editing ? '/api/cameras/' + encodeURIComponent(editing) : '/api/cameras',
+                        {method: editing ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(d)});
+  const j = await r.json().catch(() => ({}));
+  $('save').disabled = false;
+  if (!r.ok) { msg('Not saved: ' + (j.error || r.statusText), 'bad'); return; }
+  if (!editing) { location.href = '/roi?camera=' + encodeURIComponent(j.name) + '&new=1'; return; }
+  if (j.name !== editing) { history.replaceState(null, '', '/site?camera=' + encodeURIComponent(j.name)); }
+  location.reload();
+});
+
+$('test').onclick = async () => {
+  const name = current.name; $('testout').innerHTML = ''; msg('Asking the camera for a snapshot (saved settings)…');
+  const r = await fetch('/api/cameras/' + encodeURIComponent(name) + '/snapshot?t=' + Date.now());
+  if (!r.ok) { msg((await r.json().catch(() => ({}))).error || 'Snapshot failed', 'bad'); return; }
+  const url = URL.createObjectURL(await r.blob());
+  msg('Snapshot OK. Video status is shown at the top of the page (refresh after a few seconds).', 'ok');
+  $('testout').innerHTML = `<img src="${url}" alt="Snapshot from the camera">`;
+};
+$('region').onclick = () => { location.href = '/roi?camera=' + encodeURIComponent(current.name); };
+$('del').onclick = async () => {
+  if (!confirm(`Delete site ${current.site_id}? PoP records already received are kept.`)) return;
+  const r = await fetch('/api/cameras/' + encodeURIComponent(current.name), {method: 'DELETE'});
+  if (r.ok) location.href = '/sites'; else msg('Not deleted: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad');
+};
+init();
+</script></body></html>
+'''
 
 ROI_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -106,7 +348,7 @@ input[type=number]{width:60px;font:inherit;padding:5px;border:1px solid var(--li
 #msg{min-height:20px} .ok{color:var(--ok)} .bad{color:var(--bad)}
 ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 </style></head><body><main>
-<p class="muted"><a href="/">&larr; Review</a></p>
+<nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="color:var(--muted);text-decoration:none">Review</a><a href="/sites" style="font-weight:600;text-decoration:none">Sites</a></nav>
 <h1>Edit region: <span id="cam"></span></h1>
 <p class="muted" id="sub">Loading&hellip;</p>
 <div class="bar">
@@ -137,6 +379,7 @@ const src = document.createElement('canvas'), sctx = src.getContext('2d', {willR
 let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false;
 const LABELS = ['TL', 'TR', 'BR', 'BL'];
 $('cam').textContent = name;
+if (new URLSearchParams(location.search).get('new')) setTimeout(() => msg('Site added. Now drag the corners onto the screen and save.', 'ok'), 1500);
 
 function msg(t, cls) { $('msg').textContent = t; $('msg').className = cls || 'muted'; }
 function setDirty(d) { dirty = d; $('save').disabled = !d; }
@@ -283,9 +526,9 @@ def render_page(site):
     pops = [r for r in recs if r.get("type") == "creative_change"][-60:][::-1]
     alerts = [r for r in recs if r.get("type") == "fault"][-50:][::-1]
     hb = {}
-    for h in tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 500):
-        for c in h.get("cameras", []):
-            hb[c.get("site_id")] = c
+    last = tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 1)   # current camera list only
+    for c in (last[0].get("cameras", []) if last else []):
+        hb[c.get("site_id")] = c
     cams = "".join(
         f"<tr><td><a href='?site={esc(k)}'>{esc(k)}</a></td>"
         f"<td class='{'ok' if c.get('connected') else 'bad'}'>{'yes' if c.get('connected') else 'no'}</td>"
@@ -293,7 +536,8 @@ def render_page(site):
         f"<td>{esc(round(c['coverage'] * 100)) + '%' if 'coverage' in c else ''}</td>"
         f"<td>{esc((c.get('last_play_at') or '')[:19])}</td>"
         f"<td class='bad'>{esc(', '.join(c.get('active_faults', [])))}</td>"
-        f"<td><a href='/roi?camera={urllib.parse.quote(c.get('camera', ''))}'>Edit region</a></td></tr>"
+        f"<td><a href='/roi?camera={urllib.parse.quote(c.get('camera', ''))}'>Edit region</a> &middot; "
+        f"<a href='/site?camera={urllib.parse.quote(c.get('camera', ''))}'>Settings</a></td></tr>"
         for k, c in sorted(hb.items()) if not site or k == site) or "<tr><td colspan=8 class='muted'>No heartbeat yet</td></tr>"
     cards = []
     for r in pops:
@@ -360,10 +604,16 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_PUT(self):
-        if self.path.startswith("/api/") and self.authorised():
-            return self.proxy("PUT")
         if not self.path.startswith("/api/"):
             return self.reply(404)
+        if self.authorised():
+            return self.proxy("PUT")
+
+    def do_DELETE(self):
+        if not self.path.startswith("/api/"):
+            return self.reply(404)
+        if self.authorised():
+            return self.proxy("DELETE")
 
     def do_GET(self):
         path, _, query = self.path.partition("?")
@@ -373,8 +623,8 @@ class H(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             return self.proxy("GET")
-        if path == "/roi":
-            body = ROI_PAGE.encode()
+        if path in ("/roi", "/sites", "/site"):
+            body = {"/roi": ROI_PAGE, "/sites": SITES_PAGE, "/site": SITE_PAGE}[path].encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
         elif path == "/":
@@ -406,6 +656,10 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path.startswith("/api/"):          # review page -> gateway
+            if self.authorised():
+                self.proxy("POST")
+            return
         if self.path.startswith("/hooks/"):      # stand-in for Teams/Slack webhooks
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             with LOCK, open(os.path.join(ARGS.out, "hooks.jsonl"), "a") as f:

@@ -193,6 +193,15 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
 static int validate_camera(camera_cfg *c, int idx, char *err, size_t n)
 {
     if (!*c->site_id) { snprintf(err, n, "camera %d: site_id is required", idx); return -1; }
+    if (c->http_port < 0 || c->http_port > 65535 || c->rtsp_port < 0 || c->rtsp_port > 65535) {
+        snprintf(err, n, "camera %s: ports must be between 1 and 65535", c->site_id);
+        return -1;
+    }
+    if (c->profile.slot_count < 0 || c->profile.slot_count > 200 || c->profile.slot_ms < 0 ||
+        c->profile.slot_ms > 3600000) {
+        snprintf(err, n, "camera %s: slot count or slot length is out of range", c->site_id);
+        return -1;
+    }
     if (!*c->name) snprintf(c->name, sizeof c->name, "%s", c->site_id);
     if (!*c->rtsp_url && !*c->host) {
         snprintf(err, n, "camera %s: host or rtsp_url is required", c->name);
@@ -288,33 +297,104 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
     size_t L = strlen(g->server_url);
     if (L && g->server_url[L - 1] == '/') g->server_url[L - 1] = 0;
 
+    /* state directory: next to the queue directory */
+    char d[520];
+    snprintf(d, sizeof d, "%s", g->queue_dir);
+    L = strlen(d);
+    while (L > 1 && d[L - 1] == '/') d[--L] = 0;
+    char *slash = strrchr(d, '/');
+    if (slash && slash != d) *slash = 0; else snprintf(d, sizeof d, ".");
+    if (!*g->cameras_file) snprintf(g->cameras_file, sizeof g->cameras_file, "%s/cameras.json", d);
+
     const cJSON *defs = cJSON_GetObjectItemCaseSensitive(root, "defaults");
-    const cJSON *cams = cJSON_GetObjectItemCaseSensitive(root, "cameras");
-    int nc = cJSON_IsArray(cams) ? cJSON_GetArraySize(cams) : 0;
-    if (nc == 0) { snprintf(err, n, "no cameras configured"); cJSON_Delete(root); return -1; }
-    g->cameras = calloc((size_t)nc, sizeof(camera_cfg));
-    for (int i = 0; i < nc; i++) {
-        camera_cfg *c = &g->cameras[i];
-        camera_defaults(c);
-        apply_camera(c, defs);
-        apply_camera(c, cJSON_GetArrayItem(cams, i));
-        if (validate_camera(c, i, err, n) != 0) { cJSON_Delete(root); config_free(g); return -1; }
+    g->defaults_json = defs ? cJSON_Duplicate(defs, 1) : cJSON_CreateObject();
+
+    /* Camera list: cameras.json (managed from the review page) if it exists,
+     * otherwise the "cameras" array in config.json. */
+    cJSON *state = NULL;
+    char *st = util_read_file(g->cameras_file, &len);
+    if (st) {
+        state = cJSON_Parse(st);
+        free(st);
+        if (!cJSON_IsArray(state)) {
+            LOGE("config", "%s is not a JSON array; ignoring it and using config.json", g->cameras_file);
+            cJSON_Delete(state);
+            state = NULL;
+        }
     }
-    g->n_cameras = nc;
-    for (int i = 0; i < nc; i++)
-        for (int k = i + 1; k < nc; k++)
-            if (!strcmp(g->cameras[i].name, g->cameras[k].name)) {
+    const cJSON *cams = state ? state : cJSON_GetObjectItemCaseSensitive(root, "cameras");
+    g->cameras_from_state = state != NULL;
+    int nc = cJSON_IsArray(cams) ? cJSON_GetArraySize(cams) : 0;
+    if (nc > MAX_CAMERAS) { snprintf(err, n, "too many cameras (max %d)", MAX_CAMERAS); goto fail; }
+    g->cameras = calloc(MAX_CAMERAS, sizeof(camera_cfg));
+    for (int i = 0; i < nc; i++) {
+        cJSON *obj = cJSON_Duplicate(cJSON_GetArrayItem(cams, i), 1);
+        char e2[300];
+        if (config_build_camera(g, obj, &g->cameras[i], e2, sizeof e2) != 0) {
+            snprintf(err, n, "%s%s", e2, state ? " (in cameras.json, edited from the review page)" : "");
+            cJSON_Delete(obj);
+            goto fail;
+        }
+        g->cam_json[i] = obj;
+        g->cameras[i].active = 1;
+        g->n_cameras = i + 1;
+        for (int k = 0; k < i; k++)
+            if (!strcmp(g->cameras[k].name, g->cameras[i].name)) {
                 snprintf(err, n, "camera name '%s' is used twice; names must be unique", g->cameras[i].name);
-                cJSON_Delete(root);
-                config_free(g);
-                return -1;
+                goto fail;
             }
+    }
+    cJSON_Delete(state);
     cJSON_Delete(root);
     return 0;
+fail:
+    cJSON_Delete(state);
+    cJSON_Delete(root);
+    config_free(g);
+    return -1;
+}
+
+int config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *c, char *err, size_t n)
+{
+    camera_defaults(c);
+    apply_camera(c, (const cJSON *)g->defaults_json);
+    apply_camera(c, (const cJSON *)obj);
+    return validate_camera(c, 0, err, n);
+}
+
+int config_find_camera(const gateway_cfg *g, const char *name)
+{
+    for (int i = 0; i < g->n_cameras; i++)
+        if (g->cameras[i].active && !strcmp(g->cameras[i].name, name)) return i;
+    return -1;
+}
+
+int config_active_count(const gateway_cfg *g)
+{
+    int k = 0;
+    for (int i = 0; i < g->n_cameras; i++) k += g->cameras[i].active;
+    return k;
+}
+
+int config_save_cameras(const gateway_cfg *g)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < g->n_cameras; i++)
+        if (g->cameras[i].active && g->cam_json[i])
+            cJSON_AddItemToArray(arr, cJSON_Duplicate((const cJSON *)g->cam_json[i], 1));
+    char *txt = cJSON_Print(arr);
+    cJSON_Delete(arr);
+    int rc = util_write_file_atomic(g->cameras_file, txt, strlen(txt));
+    if (rc != 0) LOGE("config", "cannot save cameras to %s", g->cameras_file);
+    free(txt);
+    return rc;
 }
 
 void config_free(gateway_cfg *g)
 {
+    for (int i = 0; i < MAX_CAMERAS; i++) { cJSON_Delete((cJSON *)g->cam_json[i]); g->cam_json[i] = NULL; }
+    cJSON_Delete((cJSON *)g->defaults_json);
+    g->defaults_json = NULL;
     free(g->cameras);
     g->cameras = NULL;
     g->n_cameras = 0;

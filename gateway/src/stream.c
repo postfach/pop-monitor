@@ -29,6 +29,7 @@ struct pop_stream {
 static int interrupt_cb(void *opaque)
 {
     pop_stream *s = opaque;
+    if (s->o.abort && *s->o.abort) return 1;
     return s->deadline_mono && util_mono_ms() > s->deadline_mono;
 }
 

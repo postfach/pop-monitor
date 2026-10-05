@@ -148,7 +148,9 @@ static char *heartbeat_json(void)
     cJSON_AddNumberToObject(q, "records", qcount);
     cJSON_AddNumberToObject(q, "bytes", (double)qbytes);
     cJSON *cams = cJSON_AddArrayToObject(j, "cameras");
+    pthread_mutex_lock(&A->cams_mu);
     for (int i = 0; i < g->n_cameras; i++) {
+        if (!g->cameras[i].active) continue;
         cam_status *s = &A->status[i];
         cJSON *c = cJSON_CreateObject();
         pthread_mutex_lock(&s->mu);
@@ -177,6 +179,7 @@ static char *heartbeat_json(void)
         pthread_mutex_unlock(&s->mu);
         cJSON_AddItemToArray(cams, c);
     }
+    pthread_mutex_unlock(&A->cams_mu);
     char *out = cJSON_PrintUnformatted(j);
     cJSON_Delete(j);
     return out;

@@ -127,6 +127,26 @@ Triggers derived from the rotation profile (N slots of S ms):
 | Missing creative | fewer than N distinct creatives in 2 loops | under 6 |
 | Coverage (heartbeat) | plays per hour vs 3600 / S | out of 360 |
 
+## Managing sites from the review page
+
+The **Sites** page lists every camera with its status, rotation and plays per hour.
+**Add site** opens a form for the site ID, display name, model, host, web and RTSP ports,
+video transport (RTSP, or tunnelled over the web port), HTTPS, camera login, rotation (slot
+count and length, or takeover), operating hours and the PTZ check. Saving starts the camera
+straight away and takes you to the region editor. **Settings** edits an existing site; saving
+restarts only that camera. **Test camera** fetches a snapshot with the saved settings.
+
+The first change made on the Sites or region pages creates `cameras.json` next to the queue
+(in the Docker volume). From then on that file is the camera list and the `cameras` array in
+`config.json` is only used if `cameras.json` is deleted. `defaults` (such as the camera
+user and password) still come from `config.json` and `.env`.
+
+* Back it up: `docker compose cp gateway:/var/lib/pop-gateway/cameras.json .`
+* A password typed on the Settings page is saved in `cameras.json`. Where cameras share a
+  login, leave it blank so the default from `.env` is used instead.
+* Settings the form doesn't show (detector tuning, time-of-day profiles, snapshot options)
+  are kept when a site is edited, and can be set in `config.json` under `defaults`.
+
 ## Editing a camera's region live
 
 On the review page, click **Edit region** next to a camera. The editor fetches a fresh frame
@@ -135,9 +155,7 @@ arrow keys nudge the last corner), set the inset, check the straightened preview
 **Save and apply**. The gateway re-warps from the next frame and restarts detection for that
 camera so the edit itself isn't logged as a play.
 
-Edits are saved by the gateway in `roi-overrides.json` next to its queue (in the Docker volume),
-and override the `roi` / `inset_pct` in `config.json`, including after restarts. To go back to
-the config file's region, delete that camera's entry from the overrides file.
+Region edits are saved by the gateway in `cameras.json` (see above), so they survive restarts.
 
 Behind the page: the gateway serves a small live-settings API on port 8090 (`control_port`,
 0 disables it), reachable only inside the Docker network and protected by the API key; the

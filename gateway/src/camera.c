@@ -17,7 +17,6 @@
 #include <string.h>
 #include <time.h>
 
-#define MAX_CAMS 1024
 #define JOBQ 4
 #define IMGMAP 512
 
@@ -41,10 +40,11 @@ typedef struct {
     struct { int id; int64_t last; } imgmap[IMGMAP];
     float       pan0, tilt0, zoom0;
     int         ptz_baseline, ptz_fail, ptz_unsupported;
+    volatile int stop;          /* this camera is being stopped (edited/removed) */
 } camera;
 
-static camera *cams[MAX_CAMS];
-static int ncams;
+static camera *cams[MAX_CAMERAS];
+#define RUNNING(cm) ((cm)->app->running && !(cm)->stop)
 
 static int64_t mono_to_wall(int64_t mono)
 {
@@ -136,7 +136,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     int ws[8], hs[8], bw = 0, bh = 0, got = 0;
     int64_t walls[8];
     pc_snapshot_quality qs[8];
-    for (int i = 0; i < n && cm->app->running; i++) {
+    for (int i = 0; i < n && RUNNING(cm); i++) {
         if (i) util_sleep_ms(c->snap.interval_ms);
         uint8_t *jpg, *rgb;
         size_t len;
@@ -333,7 +333,7 @@ static void *snapshot_thread(void *arg)
         return NULL;
     }
     int64_t next_ptz = util_mono_ms() + 2000;
-    while (cm->app->running) {
+    while (RUNNING(cm)) {
         snap_job job;
         int have = 0;
         pthread_mutex_lock(&cm->mu);
@@ -403,9 +403,9 @@ static void *stream_thread(void *arg)
     int backoff = 2000, frames_in_window = 0;
     int64_t fps_window_start = util_mono_ms();
 
-    while (cm->app->running) {
+    while (RUNNING(cm)) {
         char err[256] = "";
-        pop_stream_opts so = {c->realtime, c->loop, 15, c->rtsp_transport};
+        pop_stream_opts so = {c->realtime, c->loop, 15, c->rtsp_transport, &cm->stop};
         pop_stream *s = pop_stream_open(c->rtsp_url, &so, err, sizeof err);
         if (!s) {
             int64_t now = util_mono_ms();
@@ -421,7 +421,7 @@ static void *stream_thread(void *arg)
                 alerts_send(cm->app, c, "stream_lost", "raised", mono_to_wall(lost_since), w,
                             "no video from the camera for over 60 s", NULL, 0);
             }
-            for (int t = 0; t < backoff && cm->app->running; t += 250) util_sleep_ms(250);
+            for (int t = 0; t < backoff && RUNNING(cm); t += 250) util_sleep_ms(250);
             backoff = backoff < 30000 ? backoff * 2 : 30000;
             continue;
         }
@@ -441,7 +441,7 @@ static void *stream_thread(void *arg)
         pc_frame f;
         int64_t pts;
         int rc;
-        while (cm->app->running && (rc = pop_stream_read(s, &f, &pts)) == 1) {
+        while (RUNNING(cm) && (rc = pop_stream_read(s, &f, &pts)) == 1) {
             int64_t now = util_mono_ms();
 
             /* housekeeping every 30 s: operating hours, daypart profile */
@@ -541,7 +541,7 @@ static void *stream_thread(void *arg)
             pthread_mutex_unlock(&st->mu);
         }
         pop_stream_close(s);
-        if (!cm->app->running) break;
+        if (!RUNNING(cm)) break;
         LOGW(c->name, "stream ended or failed; reconnecting");
         pthread_mutex_lock(&st->mu);
         st->connected = 0;
@@ -559,7 +559,7 @@ static void *stream_thread(void *arg)
 
 int camera_start(app_ctx *app, int idx)
 {
-    if (ncams >= MAX_CAMS) return -1;
+    if (idx < 0 || idx >= MAX_CAMERAS || cams[idx]) return -1;
     camera *cm = calloc(1, sizeof *cm);
     cm->app = app;
     cm->idx = idx;
@@ -567,18 +567,40 @@ int camera_start(app_ctx *app, int idx)
     cm->st = &app->status[idx];
     pthread_mutex_init(&cm->mu, NULL);
     pthread_cond_init(&cm->cv, NULL);
-    if (pthread_create(&cm->snap_thr, NULL, snapshot_thread, cm) != 0) return -1;
-    if (pthread_create(&cm->stream_thr, NULL, stream_thread, cm) != 0) return -1;
-    cams[ncams++] = cm;
+    if (pthread_create(&cm->snap_thr, NULL, snapshot_thread, cm) != 0) { free(cm); return -1; }
+    if (pthread_create(&cm->stream_thr, NULL, stream_thread, cm) != 0) {
+        cm->stop = 1;
+        pthread_join(cm->snap_thr, NULL);
+        free(cm);
+        return -1;
+    }
+    cams[idx] = cm;
     return 0;
+}
+
+void camera_stop(int idx)
+{
+    if (idx < 0 || idx >= MAX_CAMERAS || !cams[idx]) return;
+    camera *cm = cams[idx];
+    cm->stop = 1;
+    pthread_mutex_lock(&cm->mu);
+    pthread_cond_broadcast(&cm->cv);
+    pthread_mutex_unlock(&cm->mu);
+    pthread_join(cm->stream_thr, NULL);
+    pthread_join(cm->snap_thr, NULL);
+    pthread_mutex_destroy(&cm->mu);
+    pthread_cond_destroy(&cm->cv);
+    cams[idx] = NULL;
+    free(cm);
 }
 
 void camera_join_all(void)
 {
-    for (int i = 0; i < ncams; i++) {
+    for (int i = 0; i < MAX_CAMERAS; i++) {
+        if (!cams[i]) continue;
         pthread_join(cams[i]->stream_thr, NULL);
         pthread_join(cams[i]->snap_thr, NULL);
         free(cams[i]);
+        cams[i] = NULL;
     }
-    ncams = 0;
 }

@@ -57,7 +57,7 @@ int main(int argc, char **argv)
     if (!video || fps < 1) { usage(); return 2; }
 
     char err[256];
-    pop_stream_opts so = {0, 0, 10, NULL};
+    pop_stream_opts so = {0, 0, 10, NULL, NULL};
     pop_stream *s = pop_stream_open(video, &so, err, sizeof err);
     if (!s) { fprintf(stderr, "cannot open %s: %s\n", video, err); return 1; }
     FILE *trace = csv ? fopen(csv, "w") : NULL;

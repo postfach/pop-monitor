@@ -4,6 +4,7 @@
 #include "popcore.h"
 
 #define MAX_DAYPARTS 8
+#define MAX_CAMERAS 256
 
 typedef struct {
     char       from[8], to[8];
@@ -22,6 +23,7 @@ typedef struct {
 } snapshot_cfg;
 
 typedef struct {
+    int  active;                /* slot in use (cameras can be added/removed live) */
     char site_id[64], name[64], model[32];
     char host[128], username[64], password[128];
     char rtsp_url[1024];        /* full URL; built from host if empty  */
@@ -61,12 +63,23 @@ typedef struct {
     int  alert_cooldown_s;
     int  log_level;
     int  control_port;          /* live-settings API for the review page (0 = off) */
-    char state_file[600];       /* region edits made at runtime, kept across restarts */
-    camera_cfg *cameras;
-    int  n_cameras;
+    char state_file[600];       /* legacy region edits (migrated into cameras_file) */
+    char cameras_file[600];     /* camera list managed from the review page */
+    int  cameras_from_state;    /* 1 if cameras came from cameras_file      */
+    void *defaults_json;        /* cJSON: "defaults" from config.json       */
+    void *cam_json[MAX_CAMERAS];/* cJSON: each camera's own settings        */
+    camera_cfg *cameras;        /* MAX_CAMERAS slots; check .active         */
+    int  n_cameras;             /* slots used (high-water mark)             */
 } gateway_cfg;
 
 int  config_load(const char *path, gateway_cfg *g, char *err, size_t errlen);
+/* Build a camera from defaults + its own JSON object (cJSON*); validates. */
+int  config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *out, char *err, size_t errlen);
+/* Write the active cameras' JSON objects to cameras_file. */
+int  config_save_cameras(const gateway_cfg *g);
+/* Slot index of the active camera with this name, or -1. */
+int  config_find_camera(const gateway_cfg *g, const char *name);
+int  config_active_count(const gateway_cfg *g);
 void config_free(gateway_cfg *g);
 /* Profile in force now for this camera (dayparts, else default). */
 pc_profile config_active_profile(const camera_cfg *c, int64_t epoch_ms);

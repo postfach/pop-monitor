@@ -54,9 +54,13 @@ int main(int argc, char **argv)
     }
     util_log_level = verbose ? LOG_DEBUG : cfg.log_level;
     if (check) {
-        printf("config OK: gateway %s, %d camera(s), server %s\n", cfg.gateway_id, cfg.n_cameras, cfg.server_url);
+        printf("config OK: gateway %s, %d camera(s), server %s\n", cfg.gateway_id, config_active_count(&cfg),
+               cfg.server_url);
+        if (cfg.cameras_from_state)
+            printf("  cameras come from %s (managed from the review page)\n", cfg.cameras_file);
         for (int i = 0; i < cfg.n_cameras; i++) {
             camera_cfg *c = &cfg.cameras[i];
+            if (!c->active) continue;
             printf("  %-24s site=%-20s profile=%dx%dms dayparts=%d hours=%s\n", c->name, c->site_id,
                    c->profile.slot_count, c->profile.slot_ms, c->n_dayparts, c->operating_hours);
             /* show where we will connect, with the password masked */
@@ -82,8 +86,9 @@ int main(int argc, char **argv)
 
     app.cfg = &cfg;
     app.running = 1;
-    app.status = calloc((size_t)cfg.n_cameras, sizeof(cam_status));
-    for (int i = 0; i < cfg.n_cameras; i++) pthread_mutex_init(&app.status[i].mu, NULL);
+    app.status = calloc(MAX_CAMERAS, sizeof(cam_status));
+    for (int i = 0; i < MAX_CAMERAS; i++) pthread_mutex_init(&app.status[i].mu, NULL);
+    pthread_mutex_init(&app.cams_mu, NULL);
     control_init_regions(&app);           /* config.json, then edits saved from the review page */
 
     struct sigaction sa;
@@ -94,14 +99,18 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
 
     LOGI("main", "pop-gateway %s starting: %d camera(s), server %s, queue %s",
-         PC_VERSION, cfg.n_cameras, cfg.server_url, cfg.queue_dir);
+         PC_VERSION, config_active_count(&cfg), cfg.server_url, cfg.queue_dir);
+    if (cfg.cameras_from_state)
+        LOGI("main", "cameras are managed from the review page (%s); the cameras list in the config file is not used",
+             cfg.cameras_file);
     if (!util_clock_synced()) LOGW("main", "system clock is not NTP-synchronised; PoP timestamps may be off");
 
     alerts_start(&app);
     uploader_start(&app);
     control_start(&app);
     for (int i = 0; i < cfg.n_cameras; i++)
-        if (camera_start(&app, i) != 0) LOGE("main", "failed to start camera %s", cfg.cameras[i].name);
+        if (cfg.cameras[i].active && camera_start(&app, i) != 0)
+            LOGE("main", "failed to start camera %s", cfg.cameras[i].name);
 
     while (app.running) util_sleep_ms(250);
 

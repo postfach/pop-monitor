@@ -21,8 +21,11 @@ monitors (turn off sleep).
 | To | Do |
 | --- | --- |
 | See logs | Docker Desktop > Containers > pop-monitor > gateway, or `docker compose logs -f gateway` |
-| Change a camera's region | Review page > **Edit region**: drag the corners, Save and apply (live, no restart) |
-| Change cameras or other settings | Edit `config.json`, then `docker compose restart gateway` |
+| Add a site | **Sites** > **Add site**, fill in the form, then set its region |
+| Change a site (ID, host, ports, transport, rotation, hours) | **Sites** > **Settings** > Save (restarts that camera only) |
+| Change a camera's region | **Sites** > **Region**: drag the corners, Save and apply (live) |
+| Back up the site list | `docker compose cp gateway:/var/lib/pop-gateway/cameras.json .` |
+| Change defaults (camera login, alerts, server) | Edit `config.json` / `.env`, then `docker compose restart gateway` |
 | Put a login on the review page | Set `REVIEW_USER` and `REVIEW_PASSWORD` in `.env`, then `docker compose up -d` |
 | Check config and camera URLs | `docker compose run --rm gateway --check` (passwords masked) |
 | Test a camera's video | `docker compose exec gateway ffprobe -rtsp_transport tcp "rtsp://pop-monitor:PASSWORD@CAMERA-IP:RTSP-PORT/axis-media/media.amp"` |

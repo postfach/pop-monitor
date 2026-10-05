@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "control.h"
+#include "camera.h"
 #include "util.h"
 #include "vapix.h"
 
@@ -23,9 +24,8 @@
 static app_ctx *A;
 static pthread_t thr;
 static int listen_fd = -1;
-static pthread_mutex_t save_mu = PTHREAD_MUTEX_INITIALIZER;
 
-/* ---------------- region validation, persistence ---------------- */
+/* ---------------- helpers ---------------- */
 
 static double cross(pc_point o, pc_point a, pc_point b)
 {
@@ -47,41 +47,11 @@ static int roi_valid(const pc_point r[4], char *why, size_t n)
         snprintf(why, n, "corners must form a box in the order top-left, top-right, bottom-right, bottom-left");
         return 0;
     }
-    double area = fabs(s0 + s2) / 2;   /* two triangles of the quad */
-    if (area < 0.0005) {
+    if (fabs(s0 + s2) / 2 < 0.0005) {
         snprintf(why, n, "region is too small");
         return 0;
     }
     return 1;
-}
-
-static void save_overrides(void)
-{
-    const gateway_cfg *g = A->cfg;
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "note", "Regions edited from the review page. These override config.json.");
-    cJSON *cams = cJSON_AddObjectToObject(root, "cameras");
-    for (int i = 0; i < g->n_cameras; i++) {
-        pc_point r[4];
-        float inset;
-        status_get_roi(&A->status[i], r, &inset);
-        cJSON *c = cJSON_AddObjectToObject(cams, g->cameras[i].name);
-        cJSON *arr = cJSON_AddArrayToObject(c, "roi");
-        for (int k = 0; k < 4; k++) {
-            cJSON *pt = cJSON_CreateArray();
-            cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].x * 10000) / 10000));
-            cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].y * 10000) / 10000));
-            cJSON_AddItemToArray(arr, pt);
-        }
-        cJSON_AddNumberToObject(c, "inset_pct", inset);
-    }
-    char *txt = cJSON_Print(root);
-    cJSON_Delete(root);
-    pthread_mutex_lock(&save_mu);
-    if (util_write_file_atomic(g->state_file, txt, strlen(txt)) != 0)
-        LOGE("control", "cannot save region edits to %s", g->state_file);
-    pthread_mutex_unlock(&save_mu);
-    free(txt);
 }
 
 static int parse_roi(const cJSON *arr, pc_point r[4])
@@ -98,14 +68,68 @@ static int parse_roi(const cJSON *arr, pc_point r[4])
     return 0;
 }
 
+static cJSON *roi_json(const pc_point r[4])
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int k = 0; k < 4; k++) {
+        cJSON *pt = cJSON_CreateArray();
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].x * 10000) / 10000));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].y * 10000) / 10000));
+        cJSON_AddItemToArray(arr, pt);
+    }
+    return arr;
+}
+
+static void set_item(cJSON *obj, const char *key, cJSON *val)
+{
+    if (cJSON_GetObjectItemCaseSensitive(obj, key)) cJSON_ReplaceItemInObjectCaseSensitive(obj, key, val);
+    else cJSON_AddItemToObject(obj, key, val);
+}
+
+/* Put the camera's live region into its JSON object (call with cams_mu held). */
+static void sync_roi_to_json(int i)
+{
+    pc_point r[4];
+    float inset;
+    status_get_roi(&A->status[i], r, &inset);
+    cJSON *obj = A->cfg->cam_json[i];
+    set_item(obj, "roi", roi_json(r));
+    set_item(obj, "inset_pct", cJSON_CreateNumber(inset));
+    memcpy(A->cfg->cameras[i].roi, r, sizeof r);
+    A->cfg->cameras[i].inset_pct = inset;
+}
+
+/* Save every camera (with its live region) to cameras.json. cams_mu held. */
+static void save_all(void)
+{
+    for (int i = 0; i < A->cfg->n_cameras; i++)
+        if (A->cfg->cameras[i].active) sync_roi_to_json(i);
+    if (config_save_cameras(A->cfg) == 0 && !A->cfg->cameras_from_state) {
+        A->cfg->cameras_from_state = 1;
+        LOGI("control", "cameras are now managed from the review page (%s)", A->cfg->cameras_file);
+    }
+}
+
+static void status_init_from_cfg(int i)
+{
+    cam_status *s = &A->status[i];
+    status_reset(s);
+    memcpy(s->roi, A->cfg->cameras[i].roi, sizeof s->roi);
+    s->inset_pct = A->cfg->cameras[i].inset_pct;
+}
+
+/* ---------------- start-up ---------------- */
+
 void control_init_regions(app_ctx *app)
 {
     A = app;
-    const gateway_cfg *g = app->cfg;
-    for (int i = 0; i < g->n_cameras; i++) {
-        memcpy(app->status[i].roi, g->cameras[i].roi, sizeof app->status[i].roi);
-        app->status[i].inset_pct = g->cameras[i].inset_pct;
-    }
+    gateway_cfg *g = app->cfg;
+    for (int i = 0; i < g->n_cameras; i++)
+        if (g->cameras[i].active) status_init_from_cfg(i);
+    if (g->cameras_from_state) return;
+
+    /* Region edits saved by the previous version (roi-overrides.json): apply
+     * them now; they move into cameras.json at the next save. */
     size_t len;
     char *txt = util_read_file(g->state_file, &len);
     if (!txt) return;
@@ -114,6 +138,7 @@ void control_init_regions(app_ctx *app)
     const cJSON *cams = root ? cJSON_GetObjectItemCaseSensitive(root, "cameras") : NULL;
     int applied = 0;
     for (int i = 0; cams && i < g->n_cameras; i++) {
+        if (!g->cameras[i].active) continue;
         const cJSON *c = cJSON_GetObjectItemCaseSensitive(cams, g->cameras[i].name);
         pc_point r[4];
         char why[160];
@@ -122,10 +147,11 @@ void control_init_regions(app_ctx *app)
         memcpy(app->status[i].roi, r, sizeof r);
         const cJSON *in = cJSON_GetObjectItemCaseSensitive(c, "inset_pct");
         if (cJSON_IsNumber(in)) app->status[i].inset_pct = (float)in->valuedouble;
+        sync_roi_to_json(i);
         applied++;
     }
     cJSON_Delete(root);
-    if (applied) LOGI("control", "using regions edited on the review page for %d camera(s) (%s)", applied, g->state_file);
+    if (applied) LOGI("control", "applied saved region edits for %d camera(s) from %s", applied, g->state_file);
 }
 
 /* ---------------- tiny HTTP server ---------------- */
@@ -143,8 +169,9 @@ static void send_all(int fd, const void *buf, size_t n)
 
 static void respond(int fd, int code, const char *ctype, const void *body, size_t n)
 {
-    const char *reason = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 401 ? "Unauthorized"
-                       : code == 404 ? "Not Found" : code == 502 ? "Bad Gateway" : "Error";
+    const char *reason = code == 200 ? "OK" : code == 201 ? "Created" : code == 400 ? "Bad Request"
+                       : code == 401 ? "Unauthorized" : code == 404 ? "Not Found" : code == 409 ? "Conflict"
+                       : code == 502 ? "Bad Gateway" : "Error";
     char h[256];
     int hl = snprintf(h, sizeof h,
                       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
@@ -168,13 +195,6 @@ static void respond_error(int fd, int code, const char *msg)
     respond_json(fd, code, j);
 }
 
-static int find_camera(const char *name)
-{
-    for (int i = 0; i < A->cfg->n_cameras; i++)
-        if (!strcmp(A->cfg->cameras[i].name, name)) return i;
-    return -1;
-}
-
 static void url_decode(char *s)
 {
     char *o = s;
@@ -190,48 +210,287 @@ static void url_decode(char *s)
     *o = 0;
 }
 
+/* ---------------- camera JSON for the UI ---------------- */
+
+static const char *raw_str(const cJSON *o, const char *k)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsString(v) && v->valuestring ? v->valuestring : "";
+}
+
+static int raw_int(const cJSON *o, const char *k, int def)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    if (cJSON_IsNumber(v)) return v->valueint;
+    if (cJSON_IsBool(v)) return cJSON_IsTrue(v);
+    return def;
+}
+
+/* One camera for the UI: its own settings (not inherited defaults, never the
+ * password) plus live status. cams_mu held. */
+static cJSON *camera_json(int i)
+{
+    const camera_cfg *c = &A->cfg->cameras[i];
+    const cJSON *o = A->cfg->cam_json[i];
+    cam_status *s = &A->status[i];
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "name", c->name);
+    cJSON_AddStringToObject(j, "site_id", c->site_id);
+    cJSON_AddStringToObject(j, "display_name", raw_str(o, "name"));
+    cJSON_AddStringToObject(j, "model", c->model);
+    cJSON_AddStringToObject(j, "host", raw_str(o, "host"));
+    cJSON_AddNumberToObject(j, "http_port", raw_int(o, "http_port", 0));
+    cJSON_AddNumberToObject(j, "rtsp_port", raw_int(o, "rtsp_port", 0));
+    cJSON_AddBoolToObject(j, "use_https", c->use_https);
+    cJSON_AddBoolToObject(j, "camera_tls_insecure", c->camera_tls_insecure);
+    cJSON_AddStringToObject(j, "rtsp_transport", c->rtsp_transport);
+    cJSON_AddStringToObject(j, "username", raw_str(o, "username"));
+    cJSON_AddBoolToObject(j, "password_set", cJSON_GetObjectItemCaseSensitive(o, "password") != NULL);
+    cJSON_AddStringToObject(j, "rtsp_url_override", raw_str(o, "rtsp_url"));
+    cJSON_AddStringToObject(j, "vapix_url_override", raw_str(o, "vapix_url"));
+    cJSON_AddStringToObject(j, "snapshot_url", c->vapix_url);
+    const cJSON *take = cJSON_GetObjectItemCaseSensitive(o, "takeover");
+    cJSON_AddBoolToObject(j, "takeover", cJSON_IsTrue(take));
+    const cJSON *prof = cJSON_GetObjectItemCaseSensitive(o, "profile");
+    cJSON_AddNumberToObject(j, "slot_count", prof ? raw_int(prof, "slot_count", 0) : 0);
+    cJSON_AddNumberToObject(j, "slot_ms", prof ? raw_int(prof, "slot_ms", 0) : 0);
+    cJSON_AddNumberToObject(j, "dayparts", c->n_dayparts);
+    cJSON_AddStringToObject(j, "operating_hours", c->operating_hours);
+    cJSON_AddBoolToObject(j, "ptz_check", c->ptz_check);
+    pthread_mutex_lock(&s->mu);
+    cJSON_AddBoolToObject(j, "connected", s->connected);
+    cJSON_AddStringToObject(j, "state", pc_state_name(s->state));
+    cJSON_AddNumberToObject(j, "plays_last_hour", status_plays_last_hour(s, util_wall_ms()));
+    cJSON_AddNumberToObject(j, "expected_per_hour", s->expected_per_hour);
+    if (s->last_play_wall) {
+        char ts[64];
+        util_iso8601(s->last_play_wall, ts, sizeof ts);
+        cJSON_AddStringToObject(j, "last_play_at", ts);
+    }
+    cJSON *f = cJSON_AddArrayToObject(j, "active_faults");
+    for (int k = 0; k < PC_FAULT_COUNT; k++)
+        if (s->fault_active[k]) cJSON_AddItemToArray(f, cJSON_CreateString(pc_fault_name(k)));
+    if (s->stream_lost) cJSON_AddItemToArray(f, cJSON_CreateString("stream_lost"));
+    if (s->camera_moved) cJSON_AddItemToArray(f, cJSON_CreateString("camera_moved"));
+    cJSON_AddItemToObject(j, "roi", roi_json(s->roi));
+    cJSON_AddNumberToObject(j, "inset_pct", s->inset_pct);
+    pthread_mutex_unlock(&s->mu);
+    return j;
+}
+
 static void handle_list(int fd)
 {
     cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < A->cfg->n_cameras; i++) {
-        const camera_cfg *c = &A->cfg->cameras[i];
-        cam_status *s = &A->status[i];
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddStringToObject(o, "name", c->name);
-        cJSON_AddStringToObject(o, "site_id", c->site_id);
-        cJSON_AddStringToObject(o, "model", c->model);
-        pthread_mutex_lock(&s->mu);
-        cJSON_AddBoolToObject(o, "connected", s->connected);
-        cJSON *r = cJSON_AddArrayToObject(o, "roi");
-        for (int k = 0; k < 4; k++) {
-            cJSON *pt = cJSON_CreateArray();
-            cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)s->roi[k].x * 10000) / 10000));
-            cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)s->roi[k].y * 10000) / 10000));
-            cJSON_AddItemToArray(r, pt);
-        }
-        cJSON_AddNumberToObject(o, "inset_pct", s->inset_pct);
-        pthread_mutex_unlock(&s->mu);
-        cJSON_AddItemToArray(arr, o);
-    }
+    pthread_mutex_lock(&A->cams_mu);
+    for (int i = 0; i < A->cfg->n_cameras; i++)
+        if (A->cfg->cameras[i].active) cJSON_AddItemToArray(arr, camera_json(i));
+    pthread_mutex_unlock(&A->cams_mu);
     respond_json(fd, 200, arr);
+}
+
+static void handle_settings(int fd)
+{
+    const cJSON *d = A->cfg->defaults_json;
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "gateway_id", A->cfg->gateway_id);
+    cJSON_AddStringToObject(j, "default_username", raw_str(d, "username"));
+    cJSON_AddBoolToObject(j, "default_password_set", cJSON_GetObjectItemCaseSensitive(d, "password") != NULL);
+    cJSON_AddBoolToObject(j, "cameras_from_state", A->cfg->cameras_from_state);
+    cJSON_AddStringToObject(j, "cameras_file", A->cfg->cameras_file);
+    cJSON_AddNumberToObject(j, "max_cameras", MAX_CAMERAS);
+    respond_json(fd, 200, j);
+}
+
+/* Merge the UI's form into a camera's JSON object. Only the fields the UI
+ * edits are touched; anything else (detector tuning, dayparts, region) stays.
+ * An empty value removes the key so the default applies. */
+static void merge_form(cJSON *obj, const cJSON *in)
+{
+    static const char *strs[] = {"site_id", "model", "host", "username", "rtsp_transport",
+                                 "operating_hours", NULL};
+    for (int k = 0; strs[k]; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, strs[k]);
+        if (!cJSON_IsString(v)) continue;
+        if (*v->valuestring) set_item(obj, strs[k], cJSON_CreateString(v->valuestring));
+        else cJSON_DeleteItemFromObjectCaseSensitive(obj, strs[k]);
+    }
+    /* display name maps to "name"; the URL overrides map to rtsp_url / vapix_url */
+    static const char *map[][2] = {{"display_name", "name"}, {"rtsp_url_override", "rtsp_url"},
+                                   {"vapix_url_override", "vapix_url"}};
+    for (int k = 0; k < 3; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, map[k][0]);
+        if (!cJSON_IsString(v)) continue;
+        if (*v->valuestring) set_item(obj, map[k][1], cJSON_CreateString(v->valuestring));
+        else cJSON_DeleteItemFromObjectCaseSensitive(obj, map[k][1]);
+    }
+    const cJSON *pw = cJSON_GetObjectItemCaseSensitive(in, "password");
+    if (cJSON_IsString(pw) && *pw->valuestring) set_item(obj, "password", cJSON_CreateString(pw->valuestring));
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(in, "clear_password")))
+        cJSON_DeleteItemFromObjectCaseSensitive(obj, "password");
+    static const char *ints[] = {"http_port", "rtsp_port", NULL};
+    for (int k = 0; ints[k]; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, ints[k]);
+        if (!v || cJSON_IsNull(v) || (cJSON_IsNumber(v) && v->valueint == 0))
+            { if (v) cJSON_DeleteItemFromObjectCaseSensitive(obj, ints[k]); continue; }
+        if (cJSON_IsNumber(v)) set_item(obj, ints[k], cJSON_CreateNumber(v->valueint));
+    }
+    static const char *bools[] = {"use_https", "camera_tls_insecure", "ptz_check", "takeover", NULL};
+    for (int k = 0; bools[k]; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, bools[k]);
+        if (cJSON_IsBool(v)) set_item(obj, bools[k], cJSON_CreateBool(cJSON_IsTrue(v)));
+    }
+    const cJSON *sc = cJSON_GetObjectItemCaseSensitive(in, "slot_count");
+    const cJSON *sm = cJSON_GetObjectItemCaseSensitive(in, "slot_ms");
+    if (cJSON_IsNumber(sc) || cJSON_IsNumber(sm)) {
+        int n = cJSON_IsNumber(sc) ? sc->valueint : 0, ms = cJSON_IsNumber(sm) ? sm->valueint : 0;
+        if (n <= 0 && ms <= 0) {
+            cJSON_DeleteItemFromObjectCaseSensitive(obj, "profile");
+        } else {
+            cJSON *p = cJSON_CreateObject();
+            cJSON_AddNumberToObject(p, "slot_count", n > 0 ? n : 0);
+            cJSON_AddNumberToObject(p, "slot_ms", ms > 0 ? ms : 0);
+            set_item(obj, "profile", p);
+        }
+    }
+}
+
+/* Validate a camera object for slot `self` (-1 for a new camera). */
+static int check_camera(const cJSON *obj, int self, camera_cfg *out, char *err, size_t n)
+{
+    if (config_build_camera(A->cfg, obj, out, err, n) != 0) return -1;
+    for (int i = 0; i < A->cfg->n_cameras; i++) {
+        if (i == self || !A->cfg->cameras[i].active) continue;
+        if (!strcmp(A->cfg->cameras[i].site_id, out->site_id)) {
+            snprintf(err, n, "site ID '%s' is already used by another site", out->site_id);
+            return -1;
+        }
+        if (!strcmp(A->cfg->cameras[i].name, out->name)) {
+            snprintf(err, n, "another site is already called '%s'", out->name);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void handle_create(int fd, const char *body)
+{
+    cJSON *in = cJSON_Parse(body);
+    if (!cJSON_IsObject(in)) { cJSON_Delete(in); respond_error(fd, 400, "expected a JSON object"); return; }
+    cJSON *obj = cJSON_CreateObject();
+    merge_form(obj, in);
+    pc_point r[4];
+    if (parse_roi(cJSON_GetObjectItemCaseSensitive(in, "roi"), r) != 0) {
+        pc_point full[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};   /* set it on the region page next */
+        memcpy(r, full, sizeof r);
+    }
+    set_item(obj, "roi", roi_json(r));
+    cJSON_Delete(in);
+
+    camera_cfg c;
+    char err[300];
+    pthread_mutex_lock(&A->cams_mu);
+    int slot = -1;
+    for (int i = 0; i < A->cfg->n_cameras; i++)
+        if (!A->cfg->cameras[i].active) { slot = i; break; }
+    if (slot < 0 && A->cfg->n_cameras < MAX_CAMERAS) slot = A->cfg->n_cameras;
+    if (slot < 0) {
+        pthread_mutex_unlock(&A->cams_mu);
+        cJSON_Delete(obj);
+        respond_error(fd, 400, "the gateway is at its camera limit");
+        return;
+    }
+    if (check_camera(obj, -1, &c, err, sizeof err) != 0) {
+        pthread_mutex_unlock(&A->cams_mu);
+        cJSON_Delete(obj);
+        respond_error(fd, 400, err);
+        return;
+    }
+    c.active = 1;
+    A->cfg->cameras[slot] = c;
+    cJSON_Delete(A->cfg->cam_json[slot]);
+    A->cfg->cam_json[slot] = obj;
+    if (slot >= A->cfg->n_cameras) A->cfg->n_cameras = slot + 1;
+    status_init_from_cfg(slot);
+    camera_start(A, slot);
+    save_all();
+    cJSON *j = camera_json(slot);
+    pthread_mutex_unlock(&A->cams_mu);
+    LOGI("control", "site %s added from the review page", c.name);
+    respond_json(fd, 201, j);
+}
+
+static void handle_update(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body);
+    if (!cJSON_IsObject(in)) { cJSON_Delete(in); respond_error(fd, 400, "expected a JSON object"); return; }
+    camera_cfg c;
+    char err[300];
+    pthread_mutex_lock(&A->cams_mu);
+    sync_roi_to_json(idx);                       /* keep the live region */
+    cJSON *obj = cJSON_Duplicate(A->cfg->cam_json[idx], 1);
+    merge_form(obj, in);
+    cJSON_Delete(in);
+    if (check_camera(obj, idx, &c, err, sizeof err) != 0) {
+        pthread_mutex_unlock(&A->cams_mu);
+        cJSON_Delete(obj);
+        respond_error(fd, 400, err);
+        return;
+    }
+    char old[64];
+    snprintf(old, sizeof old, "%s", A->cfg->cameras[idx].name);
+    camera_stop(idx);                            /* restart this camera only */
+    c.active = 1;
+    A->cfg->cameras[idx] = c;
+    cJSON_Delete(A->cfg->cam_json[idx]);
+    A->cfg->cam_json[idx] = obj;
+    status_init_from_cfg(idx);
+    camera_start(A, idx);
+    save_all();
+    cJSON *j = camera_json(idx);
+    pthread_mutex_unlock(&A->cams_mu);
+    LOGI("control", "site %s updated from the review page%s%s", c.name, strcmp(old, c.name) ? " (was " : "",
+         strcmp(old, c.name) ? old : "");
+    respond_json(fd, 200, j);
+}
+
+static void handle_delete(int fd, int idx)
+{
+    pthread_mutex_lock(&A->cams_mu);
+    char name[64];
+    snprintf(name, sizeof name, "%s", A->cfg->cameras[idx].name);
+    camera_stop(idx);
+    A->cfg->cameras[idx].active = 0;
+    cJSON_Delete(A->cfg->cam_json[idx]);
+    A->cfg->cam_json[idx] = NULL;
+    status_reset(&A->status[idx]);
+    save_all();
+    pthread_mutex_unlock(&A->cams_mu);
+    LOGI("control", "site %s removed from the review page", name);
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddStringToObject(ok, "status", "removed");
+    respond_json(fd, 200, ok);
 }
 
 static void handle_snapshot(int fd, int idx)
 {
-    const camera_cfg *c = &A->cfg->cameras[idx];
+    pthread_mutex_lock(&A->cams_mu);
+    camera_cfg c = A->cfg->cameras[idx];        /* copy: the slot may change while we wait */
+    pthread_mutex_unlock(&A->cams_mu);
     vapix vx;
-    if (vapix_init(&vx, c->vapix_url, c->username, c->password,
-                   c->camera_tls_insecure || A->cfg->tls_insecure) != 0) {
+    if (vapix_init(&vx, c.vapix_url, c.username, c.password, c.camera_tls_insecure || A->cfg->tls_insecure) != 0) {
         respond_error(fd, 500, "curl init failed");
         return;
     }
     char q[96];
-    snprintf(q, sizeof q, "compression=25%s%s", *c->snap.resolution ? "&resolution=" : "", c->snap.resolution);
+    snprintf(q, sizeof q, "compression=25%s%s", *c.snap.resolution ? "&resolution=" : "", c.snap.resolution);
     uint8_t *jpg;
     size_t len;
     if (vapix_jpeg(&vx, q, &jpg, &len) != 0) {
         vapix_free(&vx);
-        respond_error(fd, 502, "could not get a snapshot from the camera");
+        char msg[400];
+        snprintf(msg, sizeof msg, "could not get a snapshot from the camera at %s (check host, web port, "
+                 "HTTPS setting and the camera user's password)", c.vapix_url);
+        respond_error(fd, 502, msg);
         return;
     }
     vapix_free(&vx);
@@ -254,6 +513,7 @@ static void handle_set_roi(int fd, int idx, const char *body)
         respond_error(fd, 400, why);
         return;
     }
+    pthread_mutex_lock(&A->cams_mu);
     cam_status *s = &A->status[idx];
     const cJSON *in = cJSON_GetObjectItemCaseSensitive(j, "inset_pct");
     pthread_mutex_lock(&s->mu);
@@ -261,9 +521,10 @@ static void handle_set_roi(int fd, int idx, const char *body)
     if (cJSON_IsNumber(in) && in->valuedouble >= 0 && in->valuedouble <= 20) s->inset_pct = (float)in->valuedouble;
     s->roi_version++;
     pthread_mutex_unlock(&s->mu);
-    cJSON_Delete(j);
-    save_overrides();
+    save_all();
     LOGI(A->cfg->cameras[idx].name, "region changed from the review page");
+    pthread_mutex_unlock(&A->cams_mu);
+    cJSON_Delete(j);
     cJSON *ok = cJSON_CreateObject();
     cJSON_AddStringToObject(ok, "status", "applied");
     respond_json(fd, 200, ok);
@@ -307,7 +568,6 @@ static void handle(int fd)
     }
     body[have < MAX_BODY ? have : MAX_BODY] = 0;
 
-    /* auth: Bearer <api_key> */
     char want[300];
     snprintf(want, sizeof want, "Bearer %s", A->cfg->api_key);
     while (auth && *auth == ' ') auth++;
@@ -320,21 +580,34 @@ static void handle(int fd)
 
     char *q = strchr(path, '?');
     if (q) *q = 0;
-    if (!strcmp(method, "GET") && !strcmp(path, "/api/cameras")) {
-        handle_list(fd);
+    if (!strcmp(path, "/api/cameras")) {
+        if (!strcmp(method, "GET")) handle_list(fd);
+        else if (!strcmp(method, "POST")) handle_create(fd, body);
+        else respond_error(fd, 404, "unknown endpoint");
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/settings")) {
+        handle_settings(fd);
     } else if (!strncmp(path, "/api/cameras/", 13)) {
         char name[512];
         snprintf(name, sizeof name, "%s", path + 13);
         char *slash = strrchr(name, '/');
-        const char *action = slash ? slash + 1 : "";
-        if (slash) *slash = 0;
+        const char *action = "";
+        if (slash) { *slash = 0; action = slash + 1; }
         url_decode(name);
-        int idx = find_camera(name);
-        if (idx < 0) respond_error(fd, 404, "no such camera");
+        pthread_mutex_lock(&A->cams_mu);
+        int idx = config_find_camera(A->cfg, name);
+        pthread_mutex_unlock(&A->cams_mu);
+        if (idx < 0) respond_error(fd, 404, "no such site");
         else if (!strcmp(method, "GET") && !strcmp(action, "snapshot")) handle_snapshot(fd, idx);
         else if ((!strcmp(method, "PUT") || !strcmp(method, "POST")) && !strcmp(action, "roi"))
             handle_set_roi(fd, idx, body);
-        else respond_error(fd, 404, "unknown endpoint");
+        else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
+        else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);
+        else if (!*action && !strcmp(method, "GET")) {
+            pthread_mutex_lock(&A->cams_mu);
+            cJSON *j = camera_json(idx);
+            pthread_mutex_unlock(&A->cams_mu);
+            respond_json(fd, 200, j);
+        } else respond_error(fd, 404, "unknown endpoint");
     } else if (!strcmp(path, "/healthz")) {
         respond(fd, 200, "text/plain", "ok", 2);
     } else {

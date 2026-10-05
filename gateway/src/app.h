@@ -5,6 +5,7 @@
 #include "config.h"
 #include "popcore.h"
 #include <pthread.h>
+#include <string.h>
 #include <stdint.h>
 
 #define PLAY_RING 2048
@@ -33,8 +34,18 @@ typedef struct {
 typedef struct {
     gateway_cfg  *cfg;
     volatile int  running;
-    cam_status   *status;            /* one per camera                   */
+    cam_status   *status;            /* MAX_CAMERAS slots, one per camera */
+    pthread_mutex_t cams_mu;         /* guards the camera list (add/edit/remove) */
 } app_ctx;
+
+/* Clear a camera's status, keeping its (unlocked) mutex. Only call while
+ * the camera's threads are stopped and cams_mu is held. */
+static inline void status_reset(cam_status *s)
+{
+    pthread_mutex_t keep = s->mu;
+    memset(s, 0, sizeof *s);
+    s->mu = keep;
+}
 
 /* copy the live region (takes the status mutex) */
 static inline unsigned status_get_roi(cam_status *s, pc_point roi[4], float *inset)
