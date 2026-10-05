@@ -19,6 +19,8 @@ services:
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
       POP_CAMERA_PASSWORD: ${POP_CAMERA_PASSWORD:?set POP_CAMERA_PASSWORD in .env}
       POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+    expose:
+      - "8090"                  # live-settings API, reachable only by the receiver
     volumes:
       - ./config.json:/etc/pop-gateway/config.json:ro
       - ./recordings:/recordings
@@ -37,6 +39,9 @@ services:
     environment:
       POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+      GATEWAY_URL: http://gateway:8090
+      REVIEW_USER: ${REVIEW_USER:-}
+      REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
     ports:
       - "${POP_REVIEW_PORT:-8080}:8080"
     volumes:

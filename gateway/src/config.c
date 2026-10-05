@@ -261,6 +261,18 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
     get_long(root, "queue_max_mb", &g->queue_max_mb);
     get_int(root, "heartbeat_s", &g->heartbeat_s);
     get_int(root, "tls_insecure", &g->tls_insecure);
+    g->control_port = 8090;
+    get_int(root, "control_port", &g->control_port);
+    get_str(root, "state_file", g->state_file, sizeof g->state_file);
+    if (!*g->state_file) {               /* default: next to the queue directory */
+        char d[520];
+        snprintf(d, sizeof d, "%s", g->queue_dir);
+        size_t L = strlen(d);
+        while (L > 1 && d[L - 1] == '/') d[--L] = 0;
+        char *slash = strrchr(d, '/');
+        if (slash && slash != d) *slash = 0; else snprintf(d, sizeof d, ".");
+        snprintf(g->state_file, sizeof g->state_file, "%s/roi-overrides.json", d);
+    }
     char lvl[16] = "";
     get_str(root, "log_level", lvl, sizeof lvl);
     if (!strcmp(lvl, "debug")) g->log_level = LOG_DEBUG;
@@ -289,6 +301,14 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
         if (validate_camera(c, i, err, n) != 0) { cJSON_Delete(root); config_free(g); return -1; }
     }
     g->n_cameras = nc;
+    for (int i = 0; i < nc; i++)
+        for (int k = i + 1; k < nc; k++)
+            if (!strcmp(g->cameras[i].name, g->cameras[k].name)) {
+                snprintf(err, n, "camera name '%s' is used twice; names must be unique", g->cameras[i].name);
+                cJSON_Delete(root);
+                config_free(g);
+                return -1;
+            }
     cJSON_Delete(root);
     return 0;
 }

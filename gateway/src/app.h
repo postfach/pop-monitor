@@ -25,6 +25,9 @@ typedef struct {
     int      stream_lost, camera_moved;
     pc_profile profile;
     int      expected_per_hour;
+    pc_point roi[4];                 /* live region (editable at runtime) */
+    float    inset_pct;
+    unsigned roi_version;            /* bumped on every change            */
 } cam_status;
 
 typedef struct {
@@ -32,6 +35,17 @@ typedef struct {
     volatile int  running;
     cam_status   *status;            /* one per camera                   */
 } app_ctx;
+
+/* copy the live region (takes the status mutex) */
+static inline unsigned status_get_roi(cam_status *s, pc_point roi[4], float *inset)
+{
+    pthread_mutex_lock(&s->mu);
+    for (int i = 0; i < 4; i++) roi[i] = s->roi[i];
+    *inset = s->inset_pct;
+    unsigned v = s->roi_version;
+    pthread_mutex_unlock(&s->mu);
+    return v;
+}
 
 /* plays in the last hour for a camera (call with status mutex held) */
 static inline int status_plays_last_hour(const cam_status *s, int64_t now_wall)

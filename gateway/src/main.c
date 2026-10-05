@@ -7,6 +7,7 @@
 #include "app.h"
 #include "camera.h"
 #include "config.h"
+#include "control.h"
 #include "queue.h"
 #include "uploader.h"
 #include "util.h"
@@ -83,6 +84,7 @@ int main(int argc, char **argv)
     app.running = 1;
     app.status = calloc((size_t)cfg.n_cameras, sizeof(cam_status));
     for (int i = 0; i < cfg.n_cameras; i++) pthread_mutex_init(&app.status[i].mu, NULL);
+    control_init_regions(&app);           /* config.json, then edits saved from the review page */
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -97,6 +99,7 @@ int main(int argc, char **argv)
 
     alerts_start(&app);
     uploader_start(&app);
+    control_start(&app);
     for (int i = 0; i < cfg.n_cameras; i++)
         if (camera_start(&app, i) != 0) LOGE("main", "failed to start camera %s", cfg.cameras[i].name);
 
@@ -104,6 +107,7 @@ int main(int argc, char **argv)
 
     LOGI("main", "shutting down");
     camera_join_all();
+    control_stop();
     uploader_join();
     alerts_stop();
     curl_global_cleanup();

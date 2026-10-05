@@ -88,7 +88,8 @@ docker exec -it <gateway-container> popreplay /var/lib/pop-gateway/board.mp4 --r
 2. Set each preset so the board fills a good part of the frame, with some surroundings for
    context. Lock focus, use fixed exposure for the board, force day mode, turn WDR off, and
    keep the shutter at 1/100 s or slower to avoid LED banding.
-3. Save a snapshot, open `tools/roi-picker.html`, drag the corners, copy the `roi` into the config.
+3. Set each camera's region on the review page (**Edit region**, see below), or offline with
+   `tools/roi-picker.html` and a saved snapshot.
 4. Copy `gateway/config.example.json` to `/etc/pop-gateway/config.json`. Secrets can be
    written as `${ENV_VAR}` anywhere in a string value.
 5. Check it: `pop-gateway -c /etc/pop-gateway/config.json --check`
@@ -125,6 +126,23 @@ Triggers derived from the rotation profile (N slots of S ms):
 | Loop changed | plays per 2 loops not 2N ± 1 | 11–13 expected |
 | Missing creative | fewer than N distinct creatives in 2 loops | under 6 |
 | Coverage (heartbeat) | plays per hour vs 3600 / S | out of 360 |
+
+## Editing a camera's region live
+
+On the review page, click **Edit region** next to a camera. The editor fetches a fresh frame
+from the camera; drag the four corners onto the lit screen (a magnifier appears while dragging,
+arrow keys nudge the last corner), set the inset, check the straightened preview, and click
+**Save and apply**. The gateway re-warps from the next frame and restarts detection for that
+camera so the edit itself isn't logged as a play.
+
+Edits are saved by the gateway in `roi-overrides.json` next to its queue (in the Docker volume),
+and override the `roi` / `inset_pct` in `config.json`, including after restarts. To go back to
+the config file's region, delete that camera's entry from the overrides file.
+
+Behind the page: the gateway serves a small live-settings API on port 8090 (`control_port`,
+0 disables it), reachable only inside the Docker network and protected by the API key; the
+receiver forwards `/api/*` to it. Set `REVIEW_USER` and `REVIEW_PASSWORD` to require a login
+for the review page.
 
 ## Backend API (what the LUMO backend must implement)
 

@@ -60,6 +60,8 @@ typedef struct {
     char slack_webhook[1024];
     int  alert_cooldown_s;
     int  log_level;
+    int  control_port;          /* live-settings API for the review page (0 = off) */
+    char state_file[600];       /* region edits made at runtime, kept across restarts */
     camera_cfg *cameras;
     int  n_cameras;
 } gateway_cfg;

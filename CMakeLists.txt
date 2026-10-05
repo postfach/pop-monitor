@@ -32,7 +32,7 @@ if(POP_BUILD_GATEWAY)
   add_executable(pop-gateway
     gateway/src/main.c gateway/src/config.c gateway/src/camera.c gateway/src/stream.c
     gateway/src/vapix.c gateway/src/jpeg.c gateway/src/queue.c gateway/src/uploader.c
-    gateway/src/alerts.c gateway/src/util.c)
+    gateway/src/alerts.c gateway/src/util.c gateway/src/control.c)
   target_link_libraries(pop-gateway popcore PkgConfig::GW Threads::Threads)
   install(TARGETS pop-gateway RUNTIME DESTINATION bin)
 endif()
