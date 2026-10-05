@@ -1,0 +1,45 @@
+# PoP Monitor for Docker Desktop (Windows or Mac). From this folder:
+#   1. copy config.example.json to config.json and edit it
+#   2. copy .env.example to .env and fill in the secrets
+#   3. docker compose up -d --build
+#   4. open http://localhost:8080
+name: pop-monitor
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: gateway/Dockerfile
+    image: pop-monitor/gateway:0.1.0
+    restart: unless-stopped
+    depends_on: [receiver]
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+      POP_CAMERA_PASSWORD: ${POP_CAMERA_PASSWORD:?set POP_CAMERA_PASSWORD in .env}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+    volumes:
+      - ./config.json:/etc/pop-gateway/config.json:ro
+      - ./recordings:/recordings
+      - pop-queue:/var/lib/pop-gateway
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  receiver:
+    build:
+      context: ../..
+      dockerfile: deploy/receiver.Dockerfile
+    image: pop-monitor/receiver:0.1.0
+    restart: unless-stopped
+    environment:
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+    ports:
+      - "${POP_REVIEW_PORT:-8080}:8080"
+    volumes:
+      - pop-received:/data
+
+volumes:
+  pop-queue:
+  pop-received:

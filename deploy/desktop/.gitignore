@@ -1,0 +1,4 @@
+config.json
+.env
+recordings/*
+!recordings/.gitkeep

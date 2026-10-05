@@ -1,0 +1,32 @@
+{
+  "gateway_id": "trial-gw-01",
+  "server_url": "http://receiver:8080",
+  "api_key": "${POP_API_KEY}",
+  "hmac_key": "${POP_HMAC_KEY}",
+  "queue_dir": "/var/lib/pop-gateway/queue",
+  "queue_max_mb": 5000,
+  "heartbeat_s": 60,
+
+  "alerts": {
+    "teams_webhook": "${POP_TEAMS_WEBHOOK}",
+    "cooldown_s": 1800
+  },
+
+  "defaults": {
+    "username": "pop-monitor",
+    "password": "${POP_CAMERA_PASSWORD}",
+    "operating_hours": "00:00-24:00",
+    "snapshot": { "burst": 3, "compression": 15 }
+  },
+
+  "cameras": [
+    {
+      "site_id": "TRIAL-01",
+      "name": "trial-01",
+      "model": "M5525-E",
+      "host": "192.168.1.101",
+      "roi": [[0.20, 0.20], [0.80, 0.20], [0.80, 0.80], [0.20, 0.80]],
+      "profile": { "slot_count": 6, "slot_ms": 10000 }
+    }
+  ]
+}
