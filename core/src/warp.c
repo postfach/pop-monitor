@@ -114,6 +114,7 @@ static inline uint8_t clamp8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255
 static void sample_yuv(const pc_frame *f, int32_t fx, int32_t fy, int *Y, int *U, int *V)
 {
     int W = f->width, H = f->height;
+    *Y = 0; *U = *V = 128;
     switch (f->fmt) {
     case PC_FMT_GRAY:
         *Y = bil(f->plane[0], f->stride[0], 1, W - 1, H - 1, fx, fy);

@@ -141,7 +141,7 @@ void util_log(int level, const char *tag, const char *fmt, ...)
 {
     if (level < util_log_level) return;
     static const char *lv[] = {"DEBUG", "INFO", "WARN", "ERROR"};
-    char ts[32];
+    char ts[64];
     util_iso8601(util_wall_ms(), ts, sizeof ts);
     pthread_mutex_lock(&log_mu);
     fprintf(stderr, "%s %-5s [%s] ", ts, lv[level], tag ? tag : "-");

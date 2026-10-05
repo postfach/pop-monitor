@@ -213,7 +213,7 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
 {
     const gateway_cfg *g = app->cfg;
     const char *sev = severity_of(fault);
-    char id[37], since[32], at[32];
+    char id[37], since[64], at[64];
     util_uuid4(id);
     util_iso8601(since_wall, since, sizeof since);
     util_iso8601(at_wall, at, sizeof at);

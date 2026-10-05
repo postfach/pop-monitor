@@ -132,7 +132,7 @@ static char *heartbeat_json(void)
 {
     const gateway_cfg *g = A->cfg;
     int64_t now = util_wall_ms();
-    char ts[32];
+    char ts[64];
     util_iso8601(now, ts, sizeof ts);
     int qcount;
     uint64_t qbytes;

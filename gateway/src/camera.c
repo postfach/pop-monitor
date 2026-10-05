@@ -198,7 +198,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     }
 
     /* metadata */
-    char id[37], ts[32], hash[17], sha[65];
+    char id[37], ts[64], hash[17], sha[65];
     util_uuid4(id);
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "event_id", id);
