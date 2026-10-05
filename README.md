@@ -216,19 +216,25 @@ leaving out house and unbooked fill.
 2. Set each site's **Vault screen** on its Settings page (the list is filled from the pull),
    or in the `vault_screen` column of the CSV import.
 3. The page lists the campaigns booked on that screen this week with their plays per loop,
-   and the creatives seen with their share of the loop. Creatives are matched to campaigns
-   by share (Vault doesn't say which artwork belongs to which campaign). Check each match
-   and confirm it, or mark a creative as house; confirmed links are kept.
+   and every creative seen with its share of the loop. Nothing is matched automatically:
+   Vault doesn't say which artwork belongs to which campaign, and programmatic slots play
+   artwork that is in no booking. Each new creative starts as **Unassigned**; set it to its
+   campaign, **Programmatic** or **House**. Links are kept for later weeks (a creative linked
+   to a campaign that isn't booked that week is counted with house).
 
-Each card shows true coverage, booked vs available slots, house and blank slots, and how much
-of the week has been monitored, with warnings for booked campaigns not seen, under-delivery,
-and more plays booked than the loop has slots.
+Each card shows true coverage (booked slots delivered ÷ booked slots, over the certain
+bookings that have creatives linked), booked vs available slots, programmatic, house,
+unassigned and blank slots per loop, and how much of the week has been monitored. Campaigns
+with no creative linked show as "not linked" and aren't judged. Warnings cover unassigned
+creatives, linked campaigns whose creatives weren't seen or are under-delivering, and more
+plays booked than the loop has slots. The review page shows a creative's campaign (or
+Programmatic / House) only once it is linked.
 
 Limits of the Vault data: it gives each booking's first week, last week and number of weeks,
 not which weeks, so a booking with gaps is shown as "may be booked this week" (and left out of
 true coverage) unless this is its first or last week. `plays_per_loop` is the most in any
 week. Vault or Doohly API access would remove both limits, and Doohly's playlist would also
-say which creative belongs to which campaign. The receiver also tells the gateway how many
+say which creative belongs to which campaign, so the links could then be made automatically. The receiver also tells the gateway how many
 campaigns are certainly booked, which the missing-creative check uses.
 
 ## Adding many sites

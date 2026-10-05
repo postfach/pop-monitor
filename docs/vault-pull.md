@@ -55,8 +55,8 @@ What Vault gives, and its limits:
   week-by-week figure. `weeks` lower than the span from `first_week` to `last_week`
   means some weeks in between aren't booked; the Bookings page marks these "some weeks".
 * Where in the loop the slots fall (back to back or spread), and which artwork belongs
-  to which campaign, aren't in Vault. The page matches creatives to campaigns by their
-  share of the loop and lets you confirm each match. Doohly's playlist would give both.
+  to which campaign, aren't in Vault. Each creative is assigned on the Bookings page by hand
+  (a campaign, Programmatic or House); nothing is guessed. Doohly's playlist would give both.
 
 ## The scheduled task
 

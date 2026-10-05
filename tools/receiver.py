@@ -930,6 +930,7 @@ th{white-space:nowrap;font-weight:600} td.n{text-align:right;white-space:nowrap}
 .thumb{width:72px;height:40px;object-fit:contain;background:#000;border-radius:4px;display:block}
 select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);max-width:260px}
 .pill{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted);white-space:nowrap}
+.pill.warn{border-color:var(--warn);color:var(--warn)}
 .note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
@@ -941,8 +942,8 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 <p>Vault lists, for each booked campaign, the screens it books with its weeks and plays per loop. For each site linked to a Vault screen, this page adds up that week's bookings and compares them with what the gateway saw.</p>
 <p><b>Per loop</b> figures are slots held per loop of the site's rotation. A creative on screen for two slots back to back counts as two; a longer run than that creative usually holds (a missed change, hold-over or freeze) only counts its usual length.</p>
 <p>Vault gives each booking's first and last week and how many weeks it books, but not which ones. A booking with gaps is only <b>certain</b> in its first and last week; in between it shows as <i>may be booked this week</i> and isn't counted in true coverage (it can still be matched to a creative). Week-by-week data from a Vault API would remove this.</p>
-<p>Creatives are matched to campaigns by their share of the loop. Matches marked <span class="pill">auto</span> are a best guess; pick the right campaign to confirm it, and confirmed links are kept for later weeks. Creatives that match no booking count as house or unbooked content.</p>
-<p><b>Delivery</b> is slots delivered per loop ÷ slots booked per loop, over the time the gateway was watching. <b>True coverage</b> is all booked slots delivered ÷ all booked slots. <b>Monitored</b> is the share of the week so far with verified plays.</p></details>
+<p>Vault doesn't say which artwork belongs to which campaign, and programmatic slots play artwork that is in no booking, so nothing is matched automatically. Each new creative starts as <b>unassigned</b>; set it to its campaign, <b>Programmatic</b> or <b>House</b>. Links are kept for later weeks. A campaign with no creative linked shows as <i>not linked</i> and isn't judged.</p>
+<p><b>Delivery</b> is slots delivered per loop ÷ slots booked per loop, over the time the gateway was watching. <b>True coverage</b> is booked slots delivered ÷ booked slots, over the certain bookings that have creatives linked. <b>Monitored</b> is the share of the week so far with verified plays.</p></details>
 </main><script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct = v => v == null ? '—' : Math.round(v * 100) + '%';
@@ -952,6 +953,7 @@ const params = new URLSearchParams(location.search);
 let week = params.get('week') || '';
 const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s || ''}</div></div>`;
 function meter(c) {
+  if (c.status === 'not linked') return '<span class="muted" title="Link this campaign\'s creative(s) under Creatives seen to measure it">not linked</span>';
   const d = c.delivery ?? 0, cls = c.status === 'not seen' ? 'none' : c.status === 'under' ? 'under' : '';
   if (c.status === 'maybe') return '<span class="muted" title="Vault doesn\'t say which weeks of this booking are live">may be booked this week</span>';
   if (c.status === 'seen') return `<span class="muted">seen, ${one(c.delivered)} / loop</span>`;
@@ -963,22 +965,28 @@ function site(s, rep) {
   const camp = s.campaigns.map(c => `<tr${c.certain ? '' : ' style="opacity:.7"'}><td>${c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}<br><span class="muted">${esc(c.advertiser)} · ${esc(c.campaign_id)}</span></td>
      <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
      <td>${c.creatives.map(esc).join(', ') || '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
-  const opts = (sel) => `<option value="">Auto</option>` + s.campaigns.map(c => `<option value="${esc(c.campaign_id)}" ${sel === c.campaign_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') +
-     `<option value="house" ${sel === 'house' ? 'selected' : ''}>House / unbooked</option>`;
-  const cname = id => (s.campaigns.find(c => c.campaign_id === id) || {}).name;
+  const opt = (v, label, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
+  const opts = (sel) => opt('', 'Unassigned', sel) + opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
+     `<optgroup label="Booked this week">` + s.campaigns.map(c => opt(c.campaign_id, c.name, sel)).join('') + `</optgroup>` +
+     (sel && sel !== 'programmatic' && sel !== 'house' && !s.campaigns.some(c => c.campaign_id === sel) ? opt(sel, sel + ' (not booked this week)', sel) : '');
   const crs = s.creatives.map(cr => `<tr><td>${cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt=""></a>` : ''}</td>
      <td><b>${esc(cr.creative_id)}</b>${cr.video ? ' <span class="pill">video</span>' : ''}${cr.blank ? ' <span class="pill">blank</span>' : ''}</td>
      <td class="n">${cr.plays}</td><td class="n">${one(cr.share)}</td>
-     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link === 'confirmed' ? cr.campaign_id : '')}</select>
-       ${cr.link === 'auto' ? `<span class="pill">auto: ${esc(cr.campaign_id === 'house' ? 'house' : cname(cr.campaign_id) || cr.campaign_id)}</span>` : '<span class="pill ok">confirmed</span>'}`}</td></tr>`).join('');
+     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link)}</select>
+       ${cr.assigned === 'unassigned' ? '<span class="pill warn">unassigned</span>' : ''}`}</td></tr>`).join('');
   const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
+  const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < s.booked_per_loop
+       ? `of ${s.booked_linked_per_loop} linked booked slot(s); ${s.booked_per_loop - s.booked_linked_per_loop} not linked yet` : 'booked slots delivered')
+       : 'link creatives to campaigns to measure';
   return `<div class="site"><div class="top"><h2><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></h2>
      <span class="muted">Vault screen: ${esc(s.vault_screen)} · loop ${s.slot_count} × ${s.slot_s} s</span></div>
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
-       ${tile('True coverage', pct(tc), 'booked slots delivered', tcls)}
+       ${tile('True coverage', pct(tc), tsub, tcls)}
        ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} maybe` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
-       ${tile('House / unbooked', one(s.house_per_loop), 'slots per loop')}
+       ${tile('Programmatic', one(s.programmatic_per_loop), 'slots per loop')}
+       ${tile('House', one(s.house_per_loop), 'slots per loop' + (s.unbooked_per_loop > 0.05 ? ` · plus ${one(s.unbooked_per_loop)} from campaigns not booked this week` : ''))}
+       ${tile('Unassigned', one(s.unassigned_per_loop), 'slots per loop, not yet marked', s.unassigned_per_loop > 0.05 ? 'warn' : '')}
        ${tile('Blank', one(s.blank_per_loop), 'slots per loop', s.blank_per_loop > 0.2 ? 'warn' : '')}
        ${tile('Monitored', hrs(s.seen_s), `of ${hrs(s.elapsed_s)} this week so far · ${Math.floor(s.loops_seen || 0)} loops`)}
      </div>
@@ -1464,33 +1472,26 @@ def save_link(site_id, creative_id, campaign_id):
         os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
 
 
+LINK_KINDS = ("programmatic", "house")
+
+
 def match(creatives, campaigns, links):
-    """Assign creatives to campaigns. Confirmed links first; then each remaining
-    creative (largest share first) goes to the campaign whose unfilled booking
-    it fits best, so a campaign rotating several artworks can collect them.
-    Returns {creative_id: (campaign_id or "house", "confirmed" | "auto")}."""
-    left = {c["campaign_id"]: c["per_loop"] for c in campaigns}
+    """Creatives are assigned only by a link someone has set on the Bookings page
+    (a campaign, programmatic or house). Nothing is guessed: Vault doesn't say
+    which artwork belongs to which campaign, and programmatic slots carry
+    artwork that is in no booking. Returns {creative_id: assignment}, where an
+    assignment is a booked campaign_id, "programmatic", "house", "unbooked"
+    (linked to a campaign not booked this week) or "unassigned"."""
+    booked = {c["campaign_id"] for c in campaigns}
     out = {}
     for cr in creatives:
         cid = links.get(cr["creative_id"])
-        if cid and (cid == "house" or cid in left):
-            out[cr["creative_id"]] = (cid, "confirmed")
-            if cid in left:
-                left[cid] -= cr["share"]
-    for cr in sorted(creatives, key=lambda c: -c["share"]):
-        if cr["creative_id"] in out or cr["blank"]:
-            continue
-        best, gap = None, None
-        for cid, rem in left.items():
-            if cr["share"] <= rem + 0.5:
-                g = abs(rem - cr["share"])
-                if gap is None or g < gap - 1e-9:
-                    best, gap = cid, g
-        if best:
-            out[cr["creative_id"]] = (best, "auto")
-            left[best] -= cr["share"]
+        if not cid:
+            out[cr["creative_id"]] = "unassigned"
+        elif cid in LINK_KINDS or cid in booked:
+            out[cr["creative_id"]] = cid
         else:
-            out[cr["creative_id"]] = ("house", "auto")
+            out[cr["creative_id"]] = "unbooked"
     return out
 
 
@@ -1516,43 +1517,58 @@ def site_bookings(cam, week, links_all):
         c["share"] = c["slots"] / loops if loops else 0
     for c in campaigns:
         c["per_loop"] = c["plays_per_loop"]
-    # match certain bookings first, then ones that may be on this week
     sure = [c for c in campaigns if c["certain"]]
-    m = match(crs, sure + [c for c in campaigns if not c["certain"]], links_all.get(sid, {}))
+    site_links = links_all.get(sid, {})
+    m = match(crs, campaigns, site_links)
     by_c = {c["campaign_id"]: c for c in campaigns}
     for c in campaigns:
-        c.update(creatives=[], delivered=0.0)
-    house = 0.0
+        c.update(creatives=[], delivered=0.0,
+                 linked=[k for k, v in site_links.items() if v == c["campaign_id"]])
+    tally = {"programmatic": 0.0, "house": 0.0, "unbooked": 0.0, "unassigned": 0.0}
     for cr in crs:
-        cid, how = m.get(cr["creative_id"], ("blank", "auto")) if not cr["blank"] else ("blank", "auto")
-        cr["campaign_id"], cr["link"] = cid, how
-        if cid in by_c:
-            by_c[cid]["creatives"].append(cr["creative_id"])
-            by_c[cid]["delivered"] += cr["share"]
-        elif cid == "house":
-            house += cr["share"]
+        a = "blank" if cr["blank"] else m.get(cr["creative_id"], "unassigned")
+        cr["assigned"] = a
+        cr["link"] = site_links.get(cr["creative_id"], "")
+        if a in by_c:
+            by_c[a]["creatives"].append(cr["creative_id"])
+            by_c[a]["delivered"] += cr["share"]
+        elif a in tally:
+            tally[a] += cr["share"]
     booked = sum(c["plays_per_loop"] for c in sure)
+    booked_linked = 0
     delivered = 0.0
     for c in campaigns:
         c["delivery"] = c["delivered"] / c["plays_per_loop"] if c["plays_per_loop"] else None
+        if not c["linked"]:
+            c["status"] = "not linked"      # no creative assigned to it yet: can't tell
+            continue
         if not c["certain"]:
             c["status"] = "maybe" if not c["creatives"] else "seen"
             continue
+        booked_linked += c["plays_per_loop"]
         c["status"] = ("not seen" if not c["creatives"] else "ok" if (c["delivery"] or 0) >= 0.9
                        else "under")
         delivered += min(c["delivered"], c["plays_per_loop"])
         if loops >= 1 and c["status"] == "not seen":
-            res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but hasn't been seen.")
+            res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but "
+                                   "none of its linked creatives has been seen.")
+    if tally["unassigned"] > 0.05 and loops >= 1:
+        n = len([cr for cr in crs if cr["assigned"] == "unassigned"])
+        res["warnings"].append(f"{n} creative(s) not assigned yet ({tally['unassigned']:.1f} slot(s) per loop): "
+                               "mark each as a campaign, programmatic or house below.")
     if booked > N:
         res["warnings"].append(f"Vault has {booked} plays per loop booked but the site's rotation has {N} slots: "
                                "check the slot count, or the screen runs a longer loop.")
     blank = sum(c["share"] for c in crs if c["blank"])
     elapsed = max(0.0, t1 - start)
     res.update(campaigns=campaigns, creatives=sorted(crs, key=lambda c: -c["share"]),
-               booked_per_loop=booked, unsold_per_loop=max(0, N - booked), house_per_loop=house,
-               blank_per_loop=blank, loops_seen=loops, monitored=(seen_s / elapsed) if elapsed else None,
+               booked_per_loop=booked, unsold_per_loop=max(0, N - booked),
+               programmatic_per_loop=tally["programmatic"], house_per_loop=tally["house"], unbooked_per_loop=tally["unbooked"],
+               unassigned_per_loop=tally["unassigned"], blank_per_loop=blank,
+               booked_linked_per_loop=booked_linked, loops_seen=loops, monitored=(seen_s / elapsed) if elapsed else None,
                seen_s=seen_s, elapsed_s=elapsed,
-               true_coverage=(delivered / booked) if booked and loops else None,
+               # over the certain bookings that have creatives linked; the rest can't be judged yet
+               true_coverage=(delivered / booked_linked) if booked_linked and loops else None,
                week=week.isoformat(), from_ts=start, to_ts=t1)
     return res
 
@@ -1585,8 +1601,11 @@ def campaign_for_record(r, cache):
             rep = site_bookings(cam, week, cache.setdefault("_links", load_links()))
             names = {c["campaign_id"]: c for c in rep["campaigns"]}
             for cr in rep["creatives"]:
-                if cr.get("campaign_id") in names:
-                    cache[key][cr["creative_id"]] = (names[cr["campaign_id"]], cr["link"])
+                a = cr.get("assigned")
+                if a in names:
+                    cache[key][cr["creative_id"]] = names[a]["name"]
+                elif a in ("programmatic", "house"):
+                    cache[key][cr["creative_id"]] = "Programmatic" if a == "programmatic" else "House"
     return cache[key].get(cid)
 
 
@@ -1622,9 +1641,6 @@ def bookings_loop():
             print(f"bookings: sync failed: {e}", flush=True)
         time.sleep(300)
 
-
-
-GUESS_MARK = " <span class='muted'>(auto)</span>"
 
 
 def connected_cell(c):
@@ -1696,9 +1712,7 @@ def render_page(site):
         cm = campaign_for_record(r, camp_cache)
         camp = ""
         if cm:
-            guess = cm[1] == "auto"
-            camp = (f"<br><span title='{esc(cm[0]['campaign_id'])}{' (best guess)' if guess else ''}'>"
-                    f"{esc(cm[0]['name'])}{GUESS_MARK if guess else ''}</span>")
+            camp = f"<br><span>{esc(cm)}</span>"
         cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}{camp}<br>"
                      f"<span class='muted'>{esc(local_time(r.get('play_started_at'), True))} &middot; after "
                      f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}{more}</div></div>")
