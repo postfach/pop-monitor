@@ -3,6 +3,8 @@
 #   gateway   watches the cameras, sends PoP records and alerts
 #   receiver  interim backend + review page on port 8080, until the real
 #             LUMO backend exists (then point server_url at that instead)
+#   creatives-sync  keeps the booked-artwork library current from SharePoint
+#             (needs the AZ_* variables: docs/sharepoint-setup.md)
 #
 # Before deploying:
 #   1. Build the images on the Docker host:  sh deploy/build-images.sh
@@ -41,18 +43,48 @@ services:
       POP_HMAC_KEY: ${POP_HMAC_KEY:-}
       GATEWAY_URL: http://gateway:8090
       BOOKINGS_FILE: /bookings/vault-bookings.json
-      CREATIVES_DIR: /bookings/creatives        # vault-creatives.json + images (artwork matching)
+      CREATIVES_DIR: /creatives,/bookings/creatives   # artwork library: creatives-sync's, or a hand-made pull (newest wins)
+      SYNC_URL: http://creatives-sync:8091
       REVIEW_USER: ${REVIEW_USER:-}
       REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
     ports:
       - "${POP_REVIEW_PORT:-8080}:8080"
     volumes:
       - pop-received:/data
+      - pop-creatives:/creatives:ro
       - ${POP_BOOKINGS_DIR:-./bookings}:/bookings:ro   # weekly Vault pull (vault-bookings.json)
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
 
+  creatives-sync:               # booked artwork from SharePoint for the Bookings page
+    image: pop-monitor/creatives-sync:${POP_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on: [receiver]
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+      POP_SLACK_WEBHOOK: ${POP_SLACK_WEBHOOK:-}
+      RECEIVER_URL: http://receiver:8080
+      AZ_TENANT_ID: ${AZ_TENANT_ID:-}           # from deploy/sharepoint/setup-sharepoint-app.ps1
+      AZ_CLIENT_ID: ${AZ_CLIENT_ID:-}
+      AZ_CLIENT_SECRET: ${AZ_CLIENT_SECRET:-}
+      AZ_SECRET_EXPIRES: ${AZ_SECRET_EXPIRES:-}   # warns 30 days before the secret runs out
+      SP_SITE: ${SP_SITE:-lumodigital.sharepoint.com:/sites/LUMO}
+      SP_LIBRARY: ${SP_LIBRARY:-Sales}
+      SP_ROOT: ${SP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-240}
+      SYNC_SCREENS: ${SYNC_SCREENS:-}           # blank = the Vault screens of the monitored sites
+    expose:
+      - "8091"                  # status and "Sync now", reachable only by the receiver
+    volumes:
+      - pop-creatives:/creatives
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
 volumes:
   pop-queue:
   pop-received:
+  pop-creatives:

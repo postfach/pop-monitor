@@ -28,3 +28,10 @@ jobs:
           file: deploy/receiver.Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/pop-receiver:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+      - name: Build and push creatives-sync (runs its unit tests during the build)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sync/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/pop-creatives-sync:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}

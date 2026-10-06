@@ -1,3 +1,5 @@
 The weekly Vault pull writes vault-bookings.json here.
-The creatives pull writes creatives/vault-creatives.json and creatives/<screen>/images/...
-The receiver reads both (this folder is mounted read-only). See docs/vault-pull.md.
+The booked artwork is pulled from SharePoint by the creatives-sync container into its own
+Docker volume (docs/sharepoint-setup.md). A hand-made pull can still go in
+creatives/vault-creatives.json + creatives/<screen>/images/... (the newest library wins).
+The receiver reads this folder read-only. See docs/vault-pull.md.

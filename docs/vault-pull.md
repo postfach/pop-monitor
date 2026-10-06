@@ -79,6 +79,12 @@ writes into the folder above. Its instructions:
 
 ## Creatives pull (artwork matching)
 
+**This is now automatic**: the `creatives-sync` container does it with Microsoft Graph,
+on its own schedule and whenever a new Vault pull arrives. Set-up and behaviour are in
+[`docs/sharepoint-setup.md`](sharepoint-setup.md). The rest of this section describes the
+format it writes (also accepted as a zip upload on the Bookings page) and the manual pull
+it replaced.
+
 The booked artwork lives in SharePoint: Sales site, `00_Sales (NEW FOLDER)/Booked Campaigns/
 Creative+MIs/<year>/<month>/LUMO_<id> <name>` (animated campaigns under `<year>/Subtle/`).
 Each campaign folder has the artwork for each screen size and usually a Material
@@ -133,8 +139,11 @@ Steps, per monitored Vault screen and per campaign booked on it this week (from
 
 The first pull for three screens took about 220 connector calls (most of them folder
 listings). Next weeks can reuse files already pulled when the folder hasn't changed.
-In production, a small service with Microsoft Graph access (`Sites.Read.All`) can do the
-same pull directly and keep the library current; the receiver only needs the folder.
+`creatives-sync` now does this directly with Microsoft Graph (`Sites.Selected`, read on the
+LUMO site only), reusing unchanged files and parsed Material Instructions between runs.
+
+Fields `creatives-sync` adds: `note` (why the file was chosen), `hours` (day-parting from the
+MI's Start/End Time, e.g. `09:00-17:00`), and per missing entry `name` and `folder_url`.
 
 What was learned from the first pull (week of 5 Oct, Curletts In / Albany Expressway In /
 Beach): 91 of 96 campaign-screen pairs had artwork; missing were campaigns with no

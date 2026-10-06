@@ -32,6 +32,8 @@ Axis camera ──RTSP 720p──▶ pop-gateway (one worker per camera)
 | `tools/popreplay.c` | Runs the core over a recorded video: the field-trial tuning tool |
 | `tools/roi-picker.html` | Open in a browser, load a camera snapshot, drag the four corners |
 | `tools/receiver.py` | Interim backend + review page (checks token, HMAC, hashes) |
+| `sync/` | `creatives-sync`: booked artwork from SharePoint via Microsoft Graph, with tests and a mock Graph |
+| `deploy/sharepoint/` | One-off PowerShell set-up of the app registration and site grant |
 | `deploy/` | Portainer / Docker Compose stack, trial config, image build script |
 | `tools/fake_camera.py`, `sim_scene.py`, `make_test_video.py` | Synthetic billboard for end-to-end tests |
 | `acap/` | On-camera ACAP scaffold (phase 2): builds with ACAP Native SDK 12.5, not yet run on a camera |
@@ -51,12 +53,14 @@ Or as a container: `docker build -f gateway/Dockerfile -t pop-gateway .`
 
 ## Run with Docker / Portainer (recommended for the trial)
 
-`deploy/docker-compose.yml` is a two-container stack:
+`deploy/docker-compose.yml` is a three-container stack:
 
 * **gateway**: the PoP monitor itself.
 * **receiver**: an interim backend that stores PoP images and alerts and shows them on a
   review page at `http://DOCKER-HOST:8080`. Use it until the real backend exists, then point
   `server_url` at the backend and drop it.
+* **creatives-sync**: keeps the booked-artwork library for the Bookings page current from
+  SharePoint (optional: without its `AZ_*` settings it stays idle and says so on the page).
 
 1. On the Docker host (any Linux x86-64 host that can reach the cameras on ports 80 and 554):
    ```sh
@@ -215,10 +219,14 @@ leaving out house and unbooked fill.
    `docs/vault-pull.md`.
 2. Set each site's **Vault screen** on its Settings page (the list is filled from the pull),
    or in the `vault_screen` column of the CSV import.
-3. A pull of the booked artwork from SharePoint (Booked Campaigns / Creative+MIs, using each
-   campaign's Material Instructions to pick the file for the screen and its dates) is saved as
-   `creatives/vault-creatives.json` plus images in the same folder, or uploaded as a zip with
-   the same button. See "Creatives pull" in `docs/vault-pull.md`.
+3. The booked artwork comes from SharePoint (Booked Campaigns / Creative+MIs, using each
+   campaign's Material Instructions to pick the file for the screen and its dates). The
+   **creatives-sync** container keeps it current automatically: at start, within 5 minutes
+   of a new Vault pull or a site's Vault screen changing, every 4 hours, and on **Sync now**
+   on the Bookings page. It needs a one-off app registration with read access to the LUMO
+   site only: run `deploy/sharepoint/setup-sharepoint-app.ps1` (see
+   `docs/sharepoint-setup.md`). A library can still be uploaded as a zip with the same
+   button (the newest wins). Format: "Creatives pull" in `docs/vault-pull.md`.
 4. The page lists the campaigns booked on that screen this week with their plays per loop and
    artwork, and every creative seen with its share of the loop. Each creative's PoP images
    are compared with the booked artwork for the screen (fine detail with the camera's glare,

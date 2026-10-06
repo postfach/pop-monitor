@@ -991,6 +991,7 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
 <h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
+<p class="muted" id="sync" style="margin:4px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap" hidden><span id="synctxt"></span><button class="btn" id="syncnow" style="padding:2px 9px">Sync now</button></p>
 <div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
 <span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
 <div id="out"></div>
@@ -1023,7 +1024,8 @@ function artCell(c, s) {
   if (!files.length) {
     const miss = (s.artwork.missing || []).find(m => m.campaign_id === c.campaign_id);
     const vids = c.artwork.filter(a => a.kind === 'video').length;
-    return `<span class="muted" title="${esc(miss ? miss.reason : '')}">${vids ? vids + ' video(s), not matched' : s.artwork.library ? 'none in SharePoint' : '—'}</span>`;
+    return `<span class="muted" title="${esc(miss ? miss.reason : '')}">${vids ? vids + ' video(s), not matched' : s.artwork.library ? 'none in SharePoint' : '—'}</span>` +
+      (miss && miss.folder_url ? ` <a class="muted" href="${esc(miss.folder_url)}" target="_blank" title="Open the campaign folder in SharePoint">folder</a>` : '');
   }
   return files.slice(0, 4).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}${a.from || a.to ? ' · ' + fmtd(a.from) + '–' + fmtd(a.to) : ''}${a.rotation ? ' · ' + a.rotation + '%' : ''}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('') +
      (files.length > 4 ? ` <span class="muted">+${files.length - 4}</span>` : '');
@@ -1108,6 +1110,46 @@ document.getElementById('out').addEventListener('change', async e => {
     body: JSON.stringify({site_id: s.dataset.site, creative_id: s.dataset.cr, campaign_id: s.value})});
   load();
 });
+const fmtT = iso => iso ? new Date(iso).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : '';
+let syncTimer = null, wasRunning = false;
+async function loadSync() {
+  const box = document.getElementById('sync'), txt = document.getElementById('synctxt'), btn = document.getElementById('syncnow');
+  let st = {};
+  try { st = await (await fetch('/bookings/sync')).json(); } catch (e) { st = {error: String(e)}; }
+  if (!st.version) {                     // no creatives-sync service in this stack (or it is down)
+    box.hidden = !(st.error && /cannot reach/.test(st.error));
+    document.getElementById('synctxt').innerHTML = `<span class="warn">${esc(st.error || '')}</span>`;
+    btn.hidden = true; return;
+  }
+  box.hidden = false;
+  btn.hidden = st.configured === false;
+  btn.disabled = !!st.running;
+  let h;
+  if (st.configured === false) h = '<span class="warn">Artwork sync from SharePoint isn\'t set up yet</span> (AZ_TENANT_ID, AZ_CLIENT_ID and AZ_CLIENT_SECRET; see docs/sharepoint-setup.md). Upload a creatives zip instead.';
+  else if (st.running) h = `Syncing artwork from SharePoint&hellip; (started ${esc(fmtT(st.started))})`;
+  else if (st.last_success) h = `Artwork synced from SharePoint ${esc(fmtT(st.last_success))}: ${st.files ?? 0} file(s) for ` +
+    `${st.pairs_ok ?? 0} of ${st.pairs ?? 0} bookings on ${(st.screens || []).length} screen(s)` +
+    (st.missing ? ` · <span class="warn">${st.missing} without artwork</span>` : '') +
+    (st.next_refresh ? ` · next check ${esc(fmtT(st.next_refresh))}` : '');
+  else h = st.configured === false ? '' : 'Artwork sync has not run yet.';
+  if (st.secret_days_left != null && st.secret_days_left <= 30)
+    h += ` <span class="${st.secret_days_left <= 7 ? 'bad' : 'warn'}">SharePoint app secret expires in ${st.secret_days_left} day(s): run setup-sharepoint-app.ps1 again.</span>`;
+  if (st.configured === false) {}
+  else if (st.ok === false && st.error) h += ` <span class="bad">Last sync failed ${esc(fmtT(st.last_run))}: ${esc(st.error)}</span>`;
+  else if (st.error && !st.last_run) h += ` <span class="bad">${esc(st.error)}</span>`;
+  txt.innerHTML = h;
+  clearTimeout(syncTimer);
+  if (st.running) syncTimer = setTimeout(loadSync, 4000);
+  else if (wasRunning) load();
+  wasRunning = !!st.running;
+}
+document.getElementById('syncnow').onclick = async () => {
+  const r = await fetch('/bookings/sync', {method: 'POST'});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || 'Could not start the sync');
+  wasRunning = true; setTimeout(loadSync, 800);
+};
+loadSync();
 document.getElementById('up').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   const zip = /\.zip$/i.test(f.name);
@@ -1615,10 +1657,12 @@ ART_RESULTS = {}                 # memo of per-creative results
 
 
 def creatives_paths():
-    """(manifest, image root) candidates: mounted folder, then an upload."""
-    mounted = os.environ.get("CREATIVES_DIR", "/bookings/creatives")
+    """(manifest, image root) candidates: the folders in CREATIVES_DIR (comma
+    separated: the creatives-sync library, a hand-made pull), then an upload.
+    The newest manifest wins."""
+    mounted = [d.strip() for d in os.environ.get("CREATIVES_DIR", "/bookings/creatives").split(",") if d.strip()]
     up = os.path.join(ARGS.out, "creatives")
-    return [(os.path.join(d, "vault-creatives.json"), d) for d in (mounted, up) if d]
+    return [(os.path.join(d, "vault-creatives.json"), d) for d in mounted + [up]]
 
 
 def load_creatives():
@@ -1990,6 +2034,47 @@ def sync_expectations():
             print(f"bookings: could not update {cam['id']}: {e}", flush=True)
 
 
+def sync_url():
+    return os.environ.get("SYNC_URL", "").rstrip("/")
+
+
+def sync_call(method, path, timeout=5):
+    """Talk to the creatives-sync service. Returns (status code, JSON)."""
+    if not sync_url():
+        return 404, {"configured": False, "error": "no artwork sync service (SYNC_URL is not set)"}
+    req = urllib.request.Request(sync_url() + path, method=method, data=b"" if method == "POST" else None,
+                                 headers={"Authorization": f"Bearer {ARGS.api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read())
+        except ValueError:
+            return e.code, {"error": str(e)}
+    except Exception as e:
+        return 502, {"error": f"cannot reach the artwork sync service at {sync_url()}: {e}"}
+
+
+def nudge_sync(why):
+    """Ask creatives-sync to check its inputs now rather than within 5 minutes:
+    it re-syncs only if the Vault pull or the sites' Vault screens changed."""
+    if sync_url():
+        def go():
+            code, _ = sync_call("POST", "/check")
+            print(f"creatives-sync asked to refresh ({why}): {code}", flush=True)
+        threading.Thread(target=go, daemon=True).start()
+
+
+def sync_inputs():
+    """What creatives-sync needs: the latest Vault pull and each site's Vault screen."""
+    cams = gateway_cameras()
+    return {"bookings": load_bookings(), "bookings_file": BOOKINGS["path"],
+            "screens": None if cams is None else sorted({c["vault_screen"] for c in cams if c.get("vault_screen")}),
+            "sites": None if cams is None else [{"site_id": c.get("id"), "name": c.get("name"),
+                                                 "vault_screen": c.get("vault_screen", "")} for c in cams]}
+
+
 def bookings_loop():
     while True:
         try:
@@ -2122,6 +2207,8 @@ class H(BaseHTTPRequestHandler):
                     if "Name or service not known" in str(e) or "not known" in str(e)
                     else "check that the gateway is running and control_port is 8090")
             return self.reply(502, {"error": f"cannot reach the gateway at {base}: {hint} ({e})"})
+        if method in ("PUT", "POST", "DELETE") and re.match(r"/api/cameras", self.path) and 200 <= code < 300:
+            nudge_sync("sites changed")           # only re-syncs if a Vault screen changed
         m = re.fullmatch(r"/api/cameras/([^/?]+)", self.path)
         if method == "PUT" and m and 200 <= code < 300:
             old_id = urllib.parse.unquote(m.group(1))
@@ -2162,6 +2249,10 @@ class H(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         if path == "/healthz":
             return self.reply(200, {"status": "ok"})
+        if path == "/sync/inputs":                # creatives-sync (API key, not the review login)
+            if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {ARGS.api_key}"):
+                return self.reply(401, {"error": "bad token"})
+            return self.reply(200, sync_inputs())
         if not self.authorised():
             return
         if path.startswith("/api/"):
@@ -2176,6 +2267,10 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, bookings_report(wk))
         if path == "/bookings/screens":
             return self.reply(200, vault_screens())
+        if path == "/bookings/sync":              # artwork sync status for the Bookings page
+            code, st = sync_call("GET", "/status")
+            st.setdefault("configured", code != 404 and bool(sync_url()))
+            return self.reply(200, st)
         if path in ("/roi", "/sites", "/site", "/sites/import", "/health", "/bookings"):
             body = {"/roi": ROI_PAGE, "/sites": SITES_PAGE, "/site": SITE_PAGE, "/sites/import": IMPORT_PAGE,
                     "/health": HEALTH_PAGE, "/bookings": BOOKINGS_PAGE}[path].encode()
@@ -2230,6 +2325,11 @@ class H(BaseHTTPRequestHandler):
             if self.authorised():
                 self.proxy("POST")
             return
+        if self.path == "/bookings/sync":          # Bookings page: "Sync now"
+            if not self.authorised():
+                return
+            code, body = sync_call("POST", "/sync", timeout=10)
+            return self.reply(code if code >= 400 else 202, body)
         if self.path == "/bookings/creatives":     # upload a creatives library (zip)
             if not self.authorised():
                 return
@@ -2263,6 +2363,7 @@ class H(BaseHTTPRequestHandler):
             os.replace(tmp, os.path.join(ARGS.out, "vault-bookings.json"))
             load_bookings()
             threading.Thread(target=sync_expectations, daemon=True).start()
+            nudge_sync("new Vault pull uploaded")
             return self.reply(200, {"status": "loaded", "campaigns": len(body["proposals"])})
         if self.path == "/sites/reset-creatives":  # site settings: forget a site's creatives
             if not self.authorised():

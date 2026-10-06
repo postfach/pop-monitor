@@ -12,11 +12,18 @@ monitors (turn off sleep).
    copy .env.example .env
    ```
    (`cp` on Mac.) Edit `.env` (secrets) and `config.json` (cameras: `host`, `roi`, `profile`).
-4. Build and start (the first build takes 5–10 minutes and runs the unit tests):
+4. Optional but recommended: let it pull the booked artwork from SharePoint by itself.
+   As a Microsoft 365 admin, in this folder:
+   ```
+   powershell -ExecutionPolicy Bypass -File ..\sharepoint\setup-sharepoint-app.ps1 -EnvFile .env
+   ```
+   It creates a read-only app for the LUMO site and fills in the `AZ_*` lines in `.env`
+   (details: `docs/sharepoint-setup.md`).
+5. Build and start (the first build takes 5–10 minutes and runs the unit tests):
    ```
    docker compose up -d --build
    ```
-5. Open http://localhost:8080 to see PoP images, alerts and camera status.
+6. Open http://localhost:8080 to see PoP images, alerts and camera status.
 
 | To | Do |
 | --- | --- |
@@ -31,5 +38,8 @@ monitors (turn off sleep).
 | Test a camera's video | `docker compose exec gateway ffprobe -rtsp_transport tcp "rtsp://pop-monitor:PASSWORD@CAMERA-IP:RTSP-PORT/axis-media/media.amp"` |
 | Record 10 min for tuning | `docker compose exec gateway ffmpeg -rtsp_transport tcp -i "rtsp://pop-monitor:PASSWORD@CAMERA-IP/axis-media/media.amp?resolution=1280x720&fps=10" -t 600 -c copy /recordings/site1.mp4` (lands in `recordings\`) |
 | Replay a recording | `docker compose exec gateway popreplay /recordings/site1.mp4 --roi 0.2,0.2 0.8,0.2 0.8,0.8 0.2,0.8 --slots 6 --slot-ms 10000` |
+| Re-pull the booked artwork now | **Bookings** > **Sync now** (it also runs by itself) |
+| See the artwork sync's log | `docker compose logs -f creatives-sync` |
+| Renew the SharePoint secret (warned 30 days ahead) | Run the setup script again with `-EnvFile .env`, then `docker compose up -d` |
 | Update after new code | `docker compose up -d --build` |
 | Stop | `docker compose down` (PoP data is kept in Docker volumes) |
