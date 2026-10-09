@@ -250,6 +250,18 @@ artwork or linked to the same campaign are bundled, and unassigned IDs whose PoP
 alike are bundled too. The row's campaign list sets all its IDs at once; "N IDs" opens the
 individual IDs, each of which can still be set on its own.
 
+**Merging IDs at the gateway.** When the receiver is sure two IDs are one artwork, it merges
+them: both match the same booked image, or (unassigned) several good PoP images of each look
+alike (median at least 0.75), and each has at least 3 plays this week. The newer ID is then read
+as the older one everywhere (history included; the review cards show the older ID, with the
+reported one on hover), any hand-set link moves to the older ID, and the gateway is told
+(`POST /api/cameras/<site_id>/merge-creatives` with `{"merges": [{"from": "c-0042", "into":
+"c-0005"}]}`). The gateway keeps the merged ID's fingerprint as another look of the older one
+(up to 3 looks per creative, saved in its creative library), so later plays, day or night,
+report one ID. Merges are listed in `creative-merges.json` in the receiver's data folder and
+shown as "+N merged" on the Bookings page. Set `AUTO_MERGE=0` on the receiver to turn this off;
+**Reset creatives** on a site clears its merges.
+
 The report behind the page is worked out in the background about once a minute and when links
 or set-up change, so the page and the review cards open straight away. Each creative's artwork
 match is worked out once and kept (in `art-matches.json` in the data folder), re-checked every

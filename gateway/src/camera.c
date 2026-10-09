@@ -424,6 +424,48 @@ static int read_floats(const cJSON *a, float *v, int n)
     return 0;
 }
 
+/* One fingerprint as JSON (shared by a creative's main look and its variants). */
+static void fp_to_json(cJSON *o, const pc_features *f)
+{
+    char h[17];
+    snprintf(h, sizeof h, "%016llx", (unsigned long long)f->dhash);
+    cJSON_AddStringToObject(o, "dhash", h);
+    cJSON_AddNumberToObject(o, "mean_y", round((double)f->mean_y * 10) / 10);
+    cJSON_AddNumberToObject(o, "std_y", round((double)f->std_y * 10) / 10);
+    cJSON_AddNumberToObject(o, "sharpness", round((double)f->sharpness));
+    cJSON_AddItemToObject(o, "y", floats(f->cell_y, PC_CELLS));
+    cJSON_AddItemToObject(o, "u", floats(f->cell_u, PC_CELLS));
+    cJSON_AddItemToObject(o, "v", floats(f->cell_v, PC_CELLS));
+    cJSON_AddItemToObject(o, "thumb", floats(f->thumb, PC_THUMB));
+    if (f->has_detail) {
+        /* base64 of the 512 signed bytes keeps the file small */
+        char b64[((PC_DETAIL + 2) / 3) * 4 + 1];
+        util_base64((const unsigned char *)f->detail, PC_DETAIL, b64, sizeof b64);
+        cJSON_AddStringToObject(o, "detail", b64);
+    }
+}
+
+static int fp_from_json(const cJSON *o, pc_features *f)
+{
+    if (read_floats(cJSON_GetObjectItemCaseSensitive(o, "y"), f->cell_y, PC_CELLS) ||
+        read_floats(cJSON_GetObjectItemCaseSensitive(o, "u"), f->cell_u, PC_CELLS) ||
+        read_floats(cJSON_GetObjectItemCaseSensitive(o, "v"), f->cell_v, PC_CELLS) ||
+        read_floats(cJSON_GetObjectItemCaseSensitive(o, "thumb"), f->thumb, PC_THUMB))
+        return -1;
+    const cJSON *dh = cJSON_GetObjectItemCaseSensitive(o, "dhash");
+    if (cJSON_IsString(dh)) f->dhash = strtoull(dh->valuestring, NULL, 16);
+    const cJSON *m = cJSON_GetObjectItemCaseSensitive(o, "mean_y"), *sd = cJSON_GetObjectItemCaseSensitive(o, "std_y");
+    const cJSON *sh = cJSON_GetObjectItemCaseSensitive(o, "sharpness");
+    f->mean_y = cJSON_IsNumber(m) ? (float)m->valuedouble : 0;
+    f->std_y = cJSON_IsNumber(sd) ? (float)sd->valuedouble : 0;
+    f->sharpness = cJSON_IsNumber(sh) ? (float)sh->valuedouble : 0;
+    const cJSON *dt = cJSON_GetObjectItemCaseSensitive(o, "detail");
+    if (cJSON_IsString(dt) &&
+        util_unbase64(dt->valuestring, (unsigned char *)f->detail, PC_DETAIL) == PC_DETAIL)
+        f->has_detail = 1;
+    return 0;
+}
+
 /* Save a site's creative library so creative IDs survive restarts. */
 static void library_save(camera *cm, const pc_library *lib)
 {
@@ -439,23 +481,16 @@ static void library_save(camera *cm, const pc_library *lib)
     for (int i = 0; i < lib->count; i++) {
         const pc_creative *c = &lib->items[i];
         cJSON *o = cJSON_CreateObject();
-        char h[17];
-        snprintf(h, sizeof h, "%016llx", (unsigned long long)c->fp.dhash);
         cJSON_AddNumberToObject(o, "id", c->id);
         cJSON_AddNumberToObject(o, "plays", c->plays);
-        cJSON_AddStringToObject(o, "dhash", h);
-        cJSON_AddNumberToObject(o, "mean_y", round((double)c->fp.mean_y * 10) / 10);
-        cJSON_AddNumberToObject(o, "std_y", round((double)c->fp.std_y * 10) / 10);
-        cJSON_AddNumberToObject(o, "sharpness", round((double)c->fp.sharpness));
-        cJSON_AddItemToObject(o, "y", floats(c->fp.cell_y, PC_CELLS));
-        cJSON_AddItemToObject(o, "u", floats(c->fp.cell_u, PC_CELLS));
-        cJSON_AddItemToObject(o, "v", floats(c->fp.cell_v, PC_CELLS));
-        cJSON_AddItemToObject(o, "thumb", floats(c->fp.thumb, PC_THUMB));
-        if (c->fp.has_detail) {
-            /* base64 of the 512 signed bytes keeps the file small */
-            char b64[((PC_DETAIL + 2) / 3) * 4 + 1];
-            util_base64((const unsigned char *)c->fp.detail, PC_DETAIL, b64, sizeof b64);
-            cJSON_AddStringToObject(o, "detail", b64);
+        fp_to_json(o, &c->fp);
+        if (c->nvar) {                   /* other looks, from IDs merged into this one */
+            cJSON *vs = cJSON_AddArrayToObject(o, "variants");
+            for (int v = 0; v < c->nvar; v++) {
+                cJSON *vo = cJSON_CreateObject();
+                fp_to_json(vo, &c->var[v]);
+                cJSON_AddItemToArray(vs, vo);
+            }
         }
         cJSON_AddItemToArray(items, o);
     }
@@ -480,36 +515,29 @@ static void library_load(camera *cm, pc_library *lib, int64_t now)
     lib->count = 0;
     lib->next_id = next->valueint > 0 ? next->valueint : 1;
     const cJSON *o;
+    int nvar = 0;
     cJSON_ArrayForEach(o, items) {
         if (lib->count >= PC_LIBRARY_MAX) break;
         pc_creative *c = &lib->items[lib->count];
         memset(c, 0, sizeof *c);
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id"), *pl = cJSON_GetObjectItemCaseSensitive(o, "plays");
-        const cJSON *dh = cJSON_GetObjectItemCaseSensitive(o, "dhash");
-        if (!cJSON_IsNumber(id) ||
-            read_floats(cJSON_GetObjectItemCaseSensitive(o, "y"), c->fp.cell_y, PC_CELLS) ||
-            read_floats(cJSON_GetObjectItemCaseSensitive(o, "u"), c->fp.cell_u, PC_CELLS) ||
-            read_floats(cJSON_GetObjectItemCaseSensitive(o, "v"), c->fp.cell_v, PC_CELLS) ||
-            read_floats(cJSON_GetObjectItemCaseSensitive(o, "thumb"), c->fp.thumb, PC_THUMB))
+        if (!cJSON_IsNumber(id) || fp_from_json(o, &c->fp) != 0)
             continue;
         c->id = id->valueint;
         c->plays = cJSON_IsNumber(pl) ? pl->valueint : 0;
-        if (cJSON_IsString(dh)) c->fp.dhash = strtoull(dh->valuestring, NULL, 16);
-        const cJSON *m = cJSON_GetObjectItemCaseSensitive(o, "mean_y"), *sd = cJSON_GetObjectItemCaseSensitive(o, "std_y");
-        const cJSON *sh = cJSON_GetObjectItemCaseSensitive(o, "sharpness");
-        c->fp.mean_y = cJSON_IsNumber(m) ? (float)m->valuedouble : 0;
-        c->fp.std_y = cJSON_IsNumber(sd) ? (float)sd->valuedouble : 0;
-        c->fp.sharpness = cJSON_IsNumber(sh) ? (float)sh->valuedouble : 0;
-        const cJSON *dt = cJSON_GetObjectItemCaseSensitive(o, "detail");
-        if (cJSON_IsString(dt) &&
-            util_unbase64(dt->valuestring, (unsigned char *)c->fp.detail, PC_DETAIL) == PC_DETAIL)
-            c->fp.has_detail = 1;
+        const cJSON *vs = cJSON_GetObjectItemCaseSensitive(o, "variants"), *vo;
+        cJSON_ArrayForEach(vo, vs) {
+            if (c->nvar >= PC_VARIANTS) break;
+            memset(&c->var[c->nvar], 0, sizeof c->var[0]);
+            if (fp_from_json(vo, &c->var[c->nvar]) == 0) { c->nvar++; nvar++; }
+        }
         c->first_seen_ms = c->last_seen_ms = now;
         if (c->id >= lib->next_id) lib->next_id = c->id + 1;
         lib->count++;
     }
     cJSON_Delete(root);
-    LOGI(cm->cfg->name, "loaded %d known creatives (next ID c-%04d)", lib->count, lib->next_id);
+    LOGI(cm->cfg->name, "loaded %d known creatives with %d merged look(s) (next ID c-%04d)",
+         lib->count, nvar, lib->next_id);
 }
 
 /* ---------------- stream thread ---------------- */
@@ -585,9 +613,29 @@ static void *stream_thread(void *arg)
         }                                                                        \
     } while (0)
 
+#define APPLY_MERGES() do {                                                      \
+        int mf[MERGEQ], mi[MERGEQ], nm;                                          \
+        pthread_mutex_lock(&st->mu);                                             \
+        nm = st->nmerge;                                                         \
+        memcpy(mf, st->merge_from, sizeof(int) * nm);                            \
+        memcpy(mi, st->merge_into, sizeof(int) * nm);                            \
+        st->nmerge = 0;                                                          \
+        pthread_mutex_unlock(&st->mu);                                           \
+        for (int k_ = 0; k_ < nm; k_++) {                                        \
+            if (pc_library_merge(&det.library, mf[k_], mi[k_]) == 0)             \
+                LOGI(c->name, "creative c-%04d merged into c-%04d (same artwork)", mf[k_], mi[k_]); \
+        }                                                                        \
+        if (nm) {                                                                \
+            library_save(cm, &det.library);                                      \
+            lib_saved = det.library.changes;                                     \
+            lib_saved_at = util_mono_ms();                                       \
+        }                                                                        \
+    } while (0)
+
     while (RUNNING(cm)) {
         char err[256] = "";
         APPLY_RESET();
+        APPLY_MERGES();
         pop_stream_opts so = {c->realtime, c->loop, 15, c->rtsp_transport, &cm->stop};
         pop_stream *s = pop_stream_open(c->rtsp_url, &so, err, sizeof err);
         if (!s) {
@@ -604,7 +652,7 @@ static void *stream_thread(void *arg)
                 alerts_send(cm->app, c, "stream_lost", "raised", mono_to_wall(lost_since), w,
                             "no video from the camera for over 60 s", NULL, 0);
             }
-            for (int t = 0; t < backoff && RUNNING(cm); t += 250) { util_sleep_ms(250); APPLY_RESET(); }
+            for (int t = 0; t < backoff && RUNNING(cm); t += 250) { util_sleep_ms(250); APPLY_RESET(); APPLY_MERGES(); }
             backoff = backoff < 30000 ? backoff * 2 : 30000;
             continue;
         }
@@ -672,6 +720,7 @@ static void *stream_thread(void *arg)
             int roi_changed = st->roi_version != roi_ver;
             pthread_mutex_unlock(&st->mu);
             APPLY_RESET();
+            APPLY_MERGES();
             if (roi_changed) {
                 /* region edited from the review page: re-warp and start the
                  * detector afresh so the change itself isn't counted as a play */
@@ -786,7 +835,12 @@ int camera_start(app_ctx *app, int idx)
     pthread_mutex_init(&cm->mu, NULL);
     pthread_cond_init(&cm->cv, NULL);
     if (pthread_create(&cm->snap_thr, NULL, snapshot_thread, cm) != 0) { free(cm); return -1; }
-    if (pthread_create(&cm->stream_thr, NULL, stream_thread, cm) != 0) {
+    pthread_attr_t at;                   /* the detector (with its creative library) is on this stack */
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 16u << 20);
+    int rc = pthread_create(&cm->stream_thr, &at, stream_thread, cm);
+    pthread_attr_destroy(&at);
+    if (rc != 0) {
         cm->stop = 1;
         pthread_join(cm->snap_thr, NULL);
         free(cm);

@@ -1084,7 +1084,7 @@ function site(s, rep) {
     const ids = g.members.map(m => m.creative_id), many = ids.length > 1, open = OPEN_GROUPS.has(s.site_id + '|' + g.key);
     const label = many ? `<b>${esc(g.creative_id)}</b> <button type="button" class="link" data-group="${esc(s.site_id + '|' + g.key)}" title="${esc(ids.join(', '))}">${open ? '&#9662;' : '&#9656;'} ${ids.length} IDs</button>` : `<b>${esc(g.creative_id)}</b>`;
     const head = `<tr class="grp${open ? ' open' : ''}"><td>${pop(g)}</td><td>${refThumb(g)}</td>
-     <td>${label}${g.video ? ' <span class="pill">video</span>' : ''}${g.blank ? ' <span class="pill">blank</span>' : ''}</td>
+     <td>${label}${(g.merged || []).length ? ` <span class="muted" style="font-size:12px" title="Merged into ${esc(ids.join(', '))} as the same artwork (the gateway now reports them as one ID): ${esc(g.merged.join(', '))}">+${g.merged.length} merged</span>` : ''}${g.video ? ' <span class="pill">video</span>' : ''}${g.blank ? ' <span class="pill">blank</span>' : ''}</td>
      <td class="n">${g.plays}</td><td class="n">${one(g.share)}</td><td>${pick(g, ids)}</td></tr>`;
     if (!many || !open) return head;
     return head + g.members.map(m => `<tr class="sub"><td>${pop(m)}</td><td></td><td class="muted">${esc(m.creative_id)}</td>
@@ -1620,9 +1620,170 @@ def _between(plays, t0, t1):
     return plays[bisect.bisect_left(plays, t0, key=lambda p: p[0]):bisect.bisect_left(plays, t1, key=lambda p: p[0])]
 
 
+# ---------------------------------------------------------------- creative merges
+# The gateway can give one artwork several creative IDs (it looks different by
+# day and by night). When the receiver can tell they are the same artwork (both
+# match the same booked image, or their PoP images look alike) it merges them:
+# the receiver reads the older ID wherever the newer one appears, and the
+# gateway is told, so the newer ID's look becomes part of the older one and
+# later plays report one ID.
+MERGES = {"loaded": False, "sites": {}, "mtime": None}
+MERGE_MIN_PLAYS = 3                # each ID needs this many plays this week before it is merged
+MERGE_LOOKALIKE = 0.75             # unassigned IDs: PoP images this alike (median of several) to merge
+
+
+def _merges_path():
+    return os.path.join(ARGS.out, "creative-merges.json")
+
+
+def merges():
+    if not MERGES["loaded"]:
+        try:
+            with open(_merges_path(), encoding="utf-8") as f:
+                MERGES["sites"] = json.load(f).get("sites", {})
+            MERGES["mtime"] = os.path.getmtime(_merges_path())
+        except (OSError, ValueError):
+            MERGES["sites"] = {}
+        MERGES["loaded"] = True
+    return MERGES["sites"]
+
+
+def save_merges():
+    tmp = _merges_path() + ".tmp"
+    with LOCK:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"sites": merges()}, f, indent=1)
+        os.replace(tmp, _merges_path())
+    MERGES["mtime"] = time.time()
+
+
+def canon(site_id, cid):
+    """The ID a creative ID was merged into (following chains), or itself."""
+    m = merges().get(site_id)
+    seen = 0
+    while m and cid in m and seen < 20:
+        cid = m[cid]["into"]
+        seen += 1
+    return cid
+
+
+def site_plays(site_id, t0, t1):
+    """A site's plays in [t0, t1), with merged IDs read as the ID they were merged into."""
+    ps = _between(index_records().get(site_id, []), t0, t1)
+    if not merges().get(site_id):
+        return ps
+    return [(p[0], canon(site_id, p[1])) + tuple(p[2:]) for p in ps]
+
+
+def _cnum(cid):
+    m = re.fullmatch(r"c-(\d+)", cid or "")
+    return int(m.group(1)) if m else None
+
+
+def _usable_samples(site_id, cid, t0, t1, n=3):
+    ps = [p for p in site_plays(site_id, t0, t1) if p[1] == cid and not p[2] and p[5] and (len(p) < 7 or p[6])]
+    return [f for f in (_pop_fp(p[4]) for p in _spread(ps, n)) if f is not None]
+
+
+def _surely_alike(site_id, a, b, t0, t1):
+    """Stricter than bundling for display: several good PoP images of each,
+    compared pairwise, must agree (one odd image can't merge two creatives)."""
+    fa, fb = _usable_samples(site_id, a, t0, t1), _usable_samples(site_id, b, t0, t1)
+    if len(fa) < 2 or len(fb) < 2:
+        return False
+    vals = sorted(float(v) for f in fa for v in _scores(f, _np.stack(fb)))
+    return vals[len(vals) // 2] >= MERGE_LOOKALIKE
+
+
+def plan_merges(report):
+    """Find bundles that are certainly one artwork and record them as merges:
+    IDs matched to the same booked image, or unassigned lookalikes. Returns how
+    many were added."""
+    if os.environ.get("AUTO_MERGE", "1").lower() in ("0", "no", "false", "off") or not ART_OK:
+        return 0
+    links = load_links()
+    added = 0
+    for site in report.get("sites", []):
+        sid = site["site_id"]
+        for g in site.get("groups") or []:
+            kind, _, rest = g["key"].partition("|")
+            same_art = kind == "a" and rest.partition("|")[2]       # matched to one booked image
+            if not (same_art or kind == "u") or len(g["members"]) < 2:
+                continue
+            ms = [m for m in g["members"] if (m.get("plays") or 0) >= MERGE_MIN_PLAYS and _cnum(m["creative_id"])]
+            if len(ms) < 2:
+                continue
+            hand = {links.get(sid, {}).get(m["creative_id"]) for m in ms} - {None, ""}
+            if len(hand) > 1:            # set by hand to different things: not ours to merge
+                continue
+            into = min(ms, key=lambda m: _cnum(m["creative_id"]))["creative_id"]
+            if kind == "u":                  # lookalikes: check properly before merging
+                ms = [m for m in ms if m["creative_id"] == into or
+                      _surely_alike(sid, into, m["creative_id"], site.get("from_ts", 0), site.get("to_ts", time.time()))]
+            why = (f"same booked artwork: {(g.get('art') or {}).get('name')}" if same_art
+                   else "PoP images look alike")
+            site_m = merges().setdefault(sid, {})
+            for m in ms:
+                cid = m["creative_id"]
+                if cid == into or cid in site_m:
+                    continue
+                site_m[cid] = {"into": into, "at": time.time(), "pushed": None, "why": why}
+                link = links.get(sid, {}).get(cid)
+                if link and not links.get(sid, {}).get(into):
+                    save_link(sid, into, link)            # keep a hand-set link on the surviving ID
+                if link:
+                    save_link(sid, cid, "")
+                st = art_state().get(sid, {})
+                if st.pop(cid, None) is not None:
+                    ART_STATE["dirty"] = True
+                print(f"creatives: {sid} {cid} merged into {into} ({why})", flush=True)
+                added += 1
+    if added:
+        save_merges()
+        save_art_state()
+        REPORTS["gen"] += 1
+    return added
+
+
+def push_merges():
+    """Tell the gateway about merges it hasn't confirmed: new ones, and old ones
+    whose merged ID still turns up in new plays (e.g. the gateway restarted
+    before applying them)."""
+    changed = False
+    for sid, site_m in merges().items():
+        plays = index_records().get(sid, [])
+        recent = {p[1] for p in plays[-500:]}
+        todo = [(cid, m) for cid, m in site_m.items()
+                if not m.get("pushed") or (cid in recent and any(p[1] == cid and p[0] > m["pushed"] + 600 for p in plays[-500:]))]
+        if not todo:
+            continue
+        url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + \
+            f"/api/cameras/{urllib.parse.quote(sid, safe='')}/merge-creatives"
+        body = {"merges": [{"from": cid, "into": canon(sid, cid)} for cid, _ in todo]}
+        try:
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                         headers={"Authorization": f"Bearer {ARGS.api_key}",
+                                                  "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5).read()
+            for _, m in todo:
+                m["pushed"] = time.time()
+            changed = True
+            print(f"creatives: told the gateway about {len(todo)} merge(s) at {sid}", flush=True)
+        except Exception as e:
+            print(f"creatives: could not send merges for {sid}: {e}", flush=True)
+    if changed:
+        save_merges()
+
+
+def forget_merges(site_id):
+    if merges().pop(site_id, None) is not None:
+        save_merges()
+
+
+
 def observed(site_id, t0, t1, S, N):
     """What the screen showed in [t0, t1): per creative slots credited, plays, latest image."""
-    plays = _between(index_records().get(site_id, []), t0 - N * S, t1)
+    plays = site_plays(site_id, t0 - N * S, t1)
     cap = max(1, N - 1) if N > 1 else 1
     typ = runs_typical(plays, S, cap)
     out, seen_s = {}, 0.0
@@ -1973,7 +2134,7 @@ def artwork_matches(cam, t0, t1):
     lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}"
     sid = cam.get("id")
     state = art_state().setdefault(sid, {})
-    plays = _between(index_records().get(sid, []), t0, t1)
+    plays = site_plays(sid, t0, t1)
     by_cid = {}
     for p in plays:                                  # usable images in this period, oldest first
         if not p[2] and p[5] and (len(p) < 7 or p[6]):
@@ -2077,7 +2238,9 @@ def group_creatives(site_id, crs):
                     "assigned": head.get("assigned"), "art": head.get("art"),
                     "by": head.get("by") if len({c.get("by") for c in ms}) == 1 else "mixed",
                     "link": links.pop() if len(links) == 1 else "", "mixed": len(links) > 1,
-                    "off_schedule": any((c.get("art") or {}).get("off_schedule") for c in ms)})
+                    "off_schedule": any((c.get("art") or {}).get("off_schedule") for c in ms),
+                    "merged": sorted(a for a, m in merges().get(site_id, {}).items()
+                                     if canon(site_id, a) in {c["creative_id"] for c in ms})})
     out.sort(key=lambda g: -g["share"])
     return out
 
@@ -2197,7 +2360,7 @@ def _mtime(path):
 def report_version(cams):
     """What a cached report depends on besides new plays (which a minute's
     staleness covers): links, the Vault pull, the artwork library, site setup."""
-    return (REPORTS["gen"], _mtime(os.path.join(ARGS.out, "creative-links.json")), BOOKINGS.get("mtime"),
+    return (REPORTS["gen"], MERGES.get("mtime"), _mtime(os.path.join(ARGS.out, "creative-links.json")), BOOKINGS.get("mtime"),
             CRE.get("mtime"), None if cams is None else tuple(
                 (c.get("id"), c.get("name"), c.get("vault_screen"), c.get("slot_count"), c.get("slot_ms"),
                  c.get("inset_pct")) for c in cams))
@@ -2232,7 +2395,10 @@ def report_warmer():
     """Keep this week's Bookings report fresh so the page and review cards load at once."""
     while True:
         try:
-            cached_report(monday(datetime.now(LOCAL_TZ).date()), max_age=REPORT_MAX_AGE - 15)
+            rep = cached_report(monday(datetime.now(LOCAL_TZ).date()), max_age=REPORT_MAX_AGE - 15)
+            if plan_merges(rep):
+                cached_report(monday(datetime.now(LOCAL_TZ).date()))
+            push_merges()
         except Exception as e:   # never let the helper thread die
             print(f"bookings: report refresh failed: {e}", flush=True)
         time.sleep(30)
@@ -2257,7 +2423,7 @@ def bookings_report(week, cams=None):
 
 def campaign_for_record(r, cache):
     """Campaign a PoP record's creative is linked to (for the review cards)."""
-    sid, cid = r.get("site_id"), r.get("local_creative_id")
+    sid, cid = r.get("site_id"), canon(r.get("site_id"), r.get("local_creative_id"))
     t = iso_to_ts(r.get("play_started_at"))
     if not sid or not cid or t is None or not load_bookings():
         return None
@@ -2424,7 +2590,10 @@ def render_page(site):
         camp = ""
         if cm:
             camp = f"<br><span>{esc(cm)}</span>"
-        cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {esc(r.get('local_creative_id'))}{flags}{camp}<br>"
+        cid = canon(r.get("site_id"), r.get("local_creative_id"))
+        shown = esc(cid) if cid == r.get("local_creative_id") else \
+            f"<span title='reported as {esc(r.get('local_creative_id'))}, merged into {esc(cid)} (same artwork)'>{esc(cid)}</span>"
+        cards.append(f"<div class='card'>{img}<div><b>{esc(disp(r))}</b> {shown}{flags}{camp}<br>"
                      f"<span class='muted'>{esc(local_time(r.get('play_started_at'), True))} &middot; after "
                      f"{esc(round(r.get('previous_creative_ms', 0) / 1000, 1))} s{full}</span>{verdict}{more}</div></div>")
     rows = "".join(f"<tr><td>{esc(local_time(a.get('at')))}</td><td>{esc(disp(a))}</td><td>{esc(a.get('fault'))}</td>"
@@ -2663,6 +2832,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(502, {"error": f"cannot reach the gateway: {e}"})
             deleted = 0
             forget_art(sid)
+            forget_merges(sid)
             REPORTS["gen"] += 1
             if history:
                 note_reset(sid, asked)

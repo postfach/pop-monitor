@@ -150,26 +150,31 @@ int pc_library_match_or_add(pc_library *lib, const pc_features *fp, int64_t now)
 
 int pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t now, int grid_only)
 {
-    int best = -1;
+    int best = -1, best_v = -1;          /* best_v: -1 = main fingerprint, else variant */
     float best_score = -1e9f;
     for (int i = 0; i < lib->count; i++) {
-        float sc;
-        if (pc_fingerprint_match(lib, fp, &lib->items[i].fp, grid_only, &sc) && sc > best_score) {
-            best = i;
-            best_score = sc;
+        pc_creative *c = &lib->items[i];
+        for (int v = -1; v < c->nvar; v++) {
+            float sc;
+            if (pc_fingerprint_match(lib, fp, v < 0 ? &c->fp : &c->var[v], grid_only, &sc) && sc > best_score) {
+                best = i;
+                best_v = v;
+                best_score = sc;
+            }
         }
     }
     lib->changes++;
     if (best >= 0) {
         pc_creative *c = &lib->items[best];
+        pc_features *m = best_v < 0 ? &c->fp : &c->var[best_v];
         c->last_seen_ms = now;
         c->plays++;
         /* Follow drift only on a clear match, so one borderline sighting
          * can't pull a fingerprint towards a different creative. */
-        if (!grid_only && pc_fingerprint_detail(fp, &c->fp) >= 0.5f) adapt_fp(&c->fp, fp, lib->adapt);
-        else if (!c->fp.has_detail && fp->has_detail && !grid_only) {
-            memcpy(c->fp.detail, fp->detail, sizeof c->fp.detail);
-            c->fp.has_detail = 1;
+        if (!grid_only && pc_fingerprint_detail(fp, m) >= 0.5f) adapt_fp(m, fp, lib->adapt);
+        else if (!m->has_detail && fp->has_detail && !grid_only) {
+            memcpy(m->detail, fp->detail, sizeof m->detail);
+            m->has_detail = 1;
         }
         return c->id;
     }
@@ -184,9 +189,38 @@ int pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t n
     pc_creative *c = &lib->items[slot];
     c->id = lib->next_id++;
     c->fp = *fp;
+    c->nvar = 0;
     c->first_seen_ms = c->last_seen_ms = now;
     c->plays = 1;
     return c->id;
+}
+
+static void add_variant(pc_creative *c, const pc_features *f)
+{
+    if (c->nvar == PC_VARIANTS) {        /* full: keep the newest looks */
+        memmove(&c->var[0], &c->var[1], sizeof c->var[0] * (PC_VARIANTS - 1));
+        c->nvar--;
+    }
+    c->var[c->nvar++] = *f;
+}
+
+int pc_library_merge(pc_library *lib, int from_id, int into_id)
+{
+    int fi = -1, ti = -1;
+    for (int i = 0; i < lib->count; i++) {
+        if (lib->items[i].id == from_id) fi = i;
+        if (lib->items[i].id == into_id) ti = i;
+    }
+    if (fi < 0 || ti < 0 || fi == ti) return -1;
+    pc_creative *f = &lib->items[fi], *t = &lib->items[ti];
+    for (int v = 0; v < f->nvar; v++) add_variant(t, &f->var[v]);
+    add_variant(t, &f->fp);              /* newest last: the look it had most recently */
+    t->plays += f->plays;
+    if (f->first_seen_ms < t->first_seen_ms) t->first_seen_ms = f->first_seen_ms;
+    if (f->last_seen_ms > t->last_seen_ms) t->last_seen_ms = f->last_seen_ms;
+    lib->items[fi] = lib->items[--lib->count];   /* drop from_id */
+    lib->changes++;
+    return 0;
 }
 
 /* ---------------- detector ---------------- */

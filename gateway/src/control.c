@@ -676,6 +676,48 @@ static void handle_reset_creatives(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+static int creative_num(const cJSON *v)
+{
+    int n = 0;
+    if (cJSON_IsNumber(v)) return v->valueint;
+    if (cJSON_IsString(v) && (sscanf(v->valuestring, "c-%d", &n) == 1 || sscanf(v->valuestring, "%d", &n) == 1)) return n;
+    return 0;
+}
+
+/* Merge creative IDs that are the same artwork (the receiver finds these by
+ * matching PoP images to the booked artwork). Body:
+ * {"merges": [{"from": "c-0042", "into": "c-0005"}, ...]}. Applied by the
+ * camera thread: from-IDs become extra looks of the into-ID. */
+static void handle_merge_creatives(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body && *body ? body : "{}");
+    const cJSON *ms = cJSON_GetObjectItemCaseSensitive(in, "merges"), *m;
+    if (!cJSON_IsArray(ms)) {
+        cJSON_Delete(in);
+        respond_error(fd, 400, "expected {\"merges\": [{\"from\": \"c-0042\", \"into\": \"c-0005\"}]}");
+        return;
+    }
+    cam_status *s = &A->status[idx];
+    int queued = 0, bad = 0;
+    pthread_mutex_lock(&s->mu);
+    cJSON_ArrayForEach(m, ms) {
+        int f = creative_num(cJSON_GetObjectItemCaseSensitive(m, "from"));
+        int t = creative_num(cJSON_GetObjectItemCaseSensitive(m, "into"));
+        if (f <= 0 || t <= 0 || f == t || s->nmerge >= MERGEQ) { bad++; continue; }
+        s->merge_from[s->nmerge] = f;
+        s->merge_into[s->nmerge] = t;
+        s->nmerge++;
+        queued++;
+    }
+    pthread_mutex_unlock(&s->mu);
+    cJSON_Delete(in);
+    if (queued) LOGI(A->cfg->cameras[idx].name, "%d creative merge(s) queued", queued);
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddNumberToObject(ok, "queued", queued);
+    cJSON_AddNumberToObject(ok, "rejected", bad);
+    respond_json(fd, 200, ok);
+}
+
 static void handle(int fd)
 {
     struct timeval tv = {10, 0};
@@ -753,6 +795,7 @@ static void handle(int fd)
             handle_set_roi(fd, idx, body);
         else if (!strcmp(method, "PUT") && !strcmp(action, "expectations")) handle_expectations(fd, idx, body);
         else if (!strcmp(method, "POST") && !strcmp(action, "reset-creatives")) handle_reset_creatives(fd, idx, body);
+        else if (!strcmp(method, "POST") && !strcmp(action, "merge-creatives")) handle_merge_creatives(fd, idx, body);
         else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
         else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);
         else if (!*action && !strcmp(method, "GET")) {

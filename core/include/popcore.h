@@ -134,12 +134,18 @@ void pc_profile_triggers(const pc_profile *p, pc_triggers *t);
 /* ------------------------------------------------------------------ */
 
 #define PC_LIBRARY_MAX 256
+#define PC_VARIANTS    3       /* extra looks of one creative (night, glare) */
 
 typedef struct {
     int         id;            /* local creative id, 1..             */
     pc_features fp;            /* adapts slowly as the creative is seen again */
     int64_t     first_seen_ms, last_seen_ms;
     int         plays;
+    /* Other looks of the same artwork, from IDs merged into this one (the
+     * camera can see one creative differently by day and by night). A
+     * sighting matching any of them gets this ID. */
+    pc_features var[PC_VARIANTS];
+    int         nvar;
 } pc_creative;
 
 /* Creatives are recognised by the SHAPE of their brightness pattern
@@ -173,6 +179,11 @@ int  pc_library_match_or_add(pc_library *lib, const pc_features *fp, int64_t now
  * varies from frame to frame). */
 int  pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t now_ms,
                                 int grid_only);
+/* Merge creative from_id into into_id (same artwork, e.g. confirmed by the
+ * booked artwork): from_id's fingerprints become variants of into_id and
+ * from_id is removed, so later sightings of either look get into_id.
+ * Returns 0, or -1 if either id is unknown or they are the same. */
+int  pc_library_merge(pc_library *lib, int from_id, int into_id);
 
 /* ------------------------------------------------------------------ */
 /* Change detector                                                     */

@@ -303,6 +303,45 @@ static void test_similar_creatives_under_glare(void)
     }
 }
 
+static void features_of(int k, double gain, double offset, pc_features *fe)
+{
+    static pc_warp w;
+    static int init = 0;
+    if (!init) { pc_warp_init(&w, FW, FH, QUAD, 3.f, 192, 96); init = 1; }
+    uint8_t *rgb = malloc((size_t)FW * FH * 3), y[192 * 96], u[192 * 96], v[192 * 96];
+    g_gain = gain; g_offset = offset;
+    render(rgb, k, 0, 0, 0, 0);
+    g_gain = 1; g_offset = 0;
+    pc_frame f = frame_of(rgb);
+    pc_warp_apply(&w, &f, y, u, v);
+    pc_features_compute(y, u, v, 192, 96, fe);
+    free(rgb);
+}
+
+static void test_library_merge(void)
+{
+    /* One artwork that the camera sees two ways (night: dark with a strong
+     * warm cast) gets two IDs; merging them makes both looks report one ID,
+     * and a different creative still gets its own. */
+    static pc_library lib;
+    pc_library_init(&lib);
+    pc_features day, night, other;
+    features_of(1, 1.0, 0, &day);
+    features_of(1, 0.35, 60, &night);
+    features_of(2, 1.0, 0, &other);
+    int a = pc_library_match_or_add(&lib, &day, 1000);
+    int b = pc_library_match_or_add(&lib, &night, 2000);
+    CHECK(a != b, "test needs the two looks to start as two IDs (got %d and %d)", a, b);
+    CHECK(pc_library_merge(&lib, b, a) == 0, "merge failed");
+    CHECK(pc_library_merge(&lib, b, a) == -1, "merging a removed id should fail");
+    CHECK(lib.count == 1, "merged library should hold 1 creative, has %d", lib.count);
+    CHECK(pc_library_match_or_add(&lib, &night, 3000) == a, "night look should now report id %d", a);
+    CHECK(pc_library_match_or_add(&lib, &day, 4000) == a, "day look should still report id %d", a);
+    int c = pc_library_match_or_add(&lib, &other, 5000);
+    CHECK(c != a && c > b, "a different creative should get a new id (got %d)", c);
+    CHECK(lib.items[0].plays == 4, "plays carried over: %d", lib.items[0].plays);
+}
+
 static void test_faults(void)
 {
     pc_faults fm;
@@ -485,6 +524,7 @@ int main(void)
     test_video_creative();
     test_creative_ids_under_exposure_drift();
     test_similar_creatives_under_glare();
+    test_library_merge();
     test_faults();
     test_share_of_time();
     test_snapshot_score();
