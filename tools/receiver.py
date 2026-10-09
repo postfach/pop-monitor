@@ -34,6 +34,7 @@ import threading
 import time
 import uuid
 import shutil
+import bisect
 import zipfile
 import io
 from datetime import datetime, timezone
@@ -972,7 +973,20 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 .muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)} .warn{color:var(--warn)}
 .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
 .btn{display:inline-block;border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 11px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
-.site{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:14px 0}
+.site{border:1px solid var(--line);border-radius:10px;padding:0;margin:10px 0}
+.site > summary{list-style:none;cursor:pointer;display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;padding:11px 16px}
+.site > summary::-webkit-details-marker{display:none}
+.site > summary::before{content:'\25B8';color:var(--muted);width:10px} .site[open] > summary::before{content:'\25BE'}
+.site[open] > summary{border-bottom:1px solid var(--line)} details.site > :not(summary){margin-left:16px;margin-right:16px}
+.site[open]{padding-bottom:12px} .site.plain{padding:11px 16px;display:flex;gap:14px;flex-wrap:wrap}
+.sname{font-weight:600;font-size:15px} .sname a{text-decoration:none}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.chip.warn{border-color:var(--warn);color:var(--warn)} .chip.bad{border-color:var(--bad);color:var(--bad)} .chip.ok{border-color:var(--ok);color:var(--ok)}
+.chip.warn .muted,.chip.bad .muted,.chip.ok .muted{color:inherit;opacity:.8}
+button.link{background:none;border:0;padding:0 0 0 4px;color:var(--muted);cursor:pointer;font:inherit;font-size:12px}
+button.link:hover{color:var(--fg);text-decoration:underline}
+tr.sub td{background:var(--panel);padding-top:3px;padding-bottom:3px} tr.sub .thumb{width:54px;height:30px}
 .top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px;margin:12px 0}
 .tile{background:var(--panel);border-radius:8px;padding:9px 11px} .tile .k{font-size:12px;color:var(--muted)} .tile .v{font-size:18px;font-weight:600} .tile .s{font-size:12px;color:var(--muted)}
@@ -993,6 +1007,7 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 <h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
 <p class="muted" id="sync" style="margin:4px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap" hidden><span id="synctxt"></span><button class="btn" id="syncnow" style="padding:2px 9px">Sync now</button></p>
 <div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
+<button class="btn" id="all">Expand / collapse all</button><span class="muted" id="built" style="font-size:12px"></span>
 <span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
 <div id="out"></div>
 <details class="note muted"><summary>How this is worked out</summary>
@@ -1044,31 +1059,50 @@ function artPill(cr, s, cname) {
   if (a.status === 'possible') return `<span class="pill" title="${esc(sc)}">looks like ${esc(cname(a.campaign_id))}?</span>`;
   return `<span class="pill" title="${esc(sc)}">matches no booked artwork</span>`;
 }
+const remember = (k, set) => { try { localStorage.setItem(k, JSON.stringify([...set])); } catch (e) {} };
+const recall = k => { try { return new Set(JSON.parse(localStorage.getItem(k) || '[]')); } catch (e) { return new Set(); } };
+const OPEN_SITES = recall('pop-bookings-open'), OPEN_GROUPS = recall('pop-bookings-groups');
 function site(s, rep) {
-  if (!s.vault_screen) return `<div class="site"><div class="top"><h2>${esc(s.name)}</h2></div>
-     <p class="muted" style="margin:6px 0 0">Not linked to a Vault screen. <a href="/site?site=${encodeURIComponent(s.site_id)}">Set its Vault screen name</a> to compare bookings.</p></div>`;
+  if (!s.vault_screen) return `<div class="site plain"><span class="sname">${esc(s.name)}</span>
+     <span class="muted">Not linked to a Vault screen. <a href="/site?site=${encodeURIComponent(s.site_id)}">Set its Vault screen name</a> to compare bookings.</span></div>`;
   const camp = s.campaigns.map(c => `<tr${c.certain ? '' : ' style="opacity:.7"'}><td>${c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}<br><span class="muted">${esc(c.advertiser)} · ${esc(c.campaign_id)}</span></td>
      <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
      <td>${artCell(c, s)}</td>
-     <td>${c.creatives.map(esc).join(', ') || '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
+     <td>${c.creatives.length ? `<span title="${esc(c.creatives.join(', '))}">${c.creatives.length === 1 ? esc(c.creatives[0]) : c.creatives.length + ' IDs'}</span>` : '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
   const opt = (v, label, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
   const cname = id => (s.campaigns.find(c => c.campaign_id === id) || {}).name || id;
-  const opts = (sel, cr) => opt('', cr.art && cr.art.status === 'matched' && !cr.link ? 'Auto: ' + cname(cr.art.campaign_id) : 'Unassigned', sel) +
+  const opts = (sel, cr) => (sel === '\u0000' ? opt('\u0000', 'Mixed: pick one to set them all', sel) : '') + opt('', cr.art && cr.art.status === 'matched' && !cr.link ? 'Auto: ' + cname(cr.art.campaign_id) : 'Unassigned', sel) +
      opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
      `<optgroup label="Booked this week">` + s.campaigns.map(c => opt(c.campaign_id, c.name, sel)).join('') + `</optgroup>` +
      (sel && sel !== 'programmatic' && sel !== 'house' && !s.campaigns.some(c => c.campaign_id === sel) ? opt(sel, sel + ' (not booked this week)', sel) : '');
-  const crs = s.creatives.map(cr => `<tr><td>${cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt="PoP image"></a>` : ''}</td>
-     <td>${refThumb(cr)}</td>
-     <td><b>${esc(cr.creative_id)}</b>${cr.video ? ' <span class="pill">video</span>' : ''}${cr.blank ? ' <span class="pill">blank</span>' : ''}</td>
-     <td class="n">${cr.plays}</td><td class="n">${one(cr.share)}</td>
-     <td>${cr.blank ? '<span class="muted">blank screen</span>' : `<select data-site="${esc(s.site_id)}" data-cr="${esc(cr.creative_id)}">${opts(cr.link, cr)}</select>
-       ${artPill(cr, s, cname)}${cr.assigned === 'unassigned' ? ' <span class="pill warn">unassigned</span>' : ''}`}</td></tr>`).join('');
+  const pop = cr => cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt="PoP image"></a>` : '';
+  const pick = (cr, ids) => cr.blank ? '<span class="muted">blank screen</span>'
+     : `<select data-site="${esc(s.site_id)}" data-ids="${esc(ids.join(','))}">${opts(cr.mixed ? '\u0000' : cr.link, cr)}</select>
+       ${cr.mixed ? '<span class="pill">mixed</span>' : artPill(cr, s, cname)}${cr.assigned === 'unassigned' ? ' <span class="pill warn">unassigned</span>' : ''}${cr.off_schedule && !(cr.art || {}).off_schedule ? ' <span class="pill warn">off schedule</span>' : ''}`;
+  const groups = s.groups || [];
+  const crs = groups.map(g => {
+    const ids = g.members.map(m => m.creative_id), many = ids.length > 1, open = OPEN_GROUPS.has(s.site_id + '|' + g.key);
+    const label = many ? `<b>${esc(g.creative_id)}</b> <button type="button" class="link" data-group="${esc(s.site_id + '|' + g.key)}" title="${esc(ids.join(', '))}">${open ? '&#9662;' : '&#9656;'} ${ids.length} IDs</button>` : `<b>${esc(g.creative_id)}</b>`;
+    const head = `<tr class="grp${open ? ' open' : ''}"><td>${pop(g)}</td><td>${refThumb(g)}</td>
+     <td>${label}${g.video ? ' <span class="pill">video</span>' : ''}${g.blank ? ' <span class="pill">blank</span>' : ''}</td>
+     <td class="n">${g.plays}</td><td class="n">${one(g.share)}</td><td>${pick(g, ids)}</td></tr>`;
+    if (!many || !open) return head;
+    return head + g.members.map(m => `<tr class="sub"><td>${pop(m)}</td><td></td><td class="muted">${esc(m.creative_id)}</td>
+     <td class="n">${m.plays}</td><td class="n">${one(m.share)}</td><td>${pick(m, [m.creative_id])}</td></tr>`).join('');
+  }).join('');
+  const nIds = groups.reduce((n, g) => n + g.members.length, 0);
   const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
   const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < s.booked_per_loop
        ? `of ${s.booked_linked_per_loop} linked booked slot(s); ${s.booked_per_loop - s.booked_linked_per_loop} not linked yet` : 'booked slots delivered')
        : 'link creatives to campaigns to measure';
-  return `<div class="site"><div class="top"><h2><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></h2>
-     <span class="muted">Vault screen: ${esc(s.vault_screen)} · loop ${s.slot_count} × ${s.slot_s} s</span></div>
+  const notSeen = s.campaigns.filter(c => c.status === 'not seen').length;
+  const chip = (k, v, cls) => `<span class="chip ${cls || ''}"><span class="muted">${k}</span> ${v}</span>`;
+  return `<details class="site" data-site="${esc(s.site_id)}"${OPEN_SITES.has(s.site_id) ? ' open' : ''}><summary>
+     <span class="sname"><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></span>
+     <span class="muted">${esc(s.vault_screen)} · ${s.slot_count} × ${s.slot_s} s</span>
+     <span class="chips">${chip('True coverage', pct(tc), tcls)}${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}
+       ${s.unassigned_per_loop > 0.05 ? chip('Unassigned', one(s.unassigned_per_loop) + ' / loop', 'warn') : ''}${notSeen ? chip('Not seen', notSeen + ' campaign(s)', 'bad') : ''}
+       ${s.warnings.length ? chip('', s.warnings.length + ' warning(s)', 'warn') : ''}</span></summary>
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
        ${tile('True coverage', pct(tc), tsub, tcls)}
@@ -1082,9 +1116,9 @@ function site(s, rep) {
      <h3>Booked campaigns</h3>
      <div class="wrap"><table><thead><tr><th>Campaign</th><th class="n">Booked / loop</th><th>Slot type</th><th>Artwork</th><th>Creatives</th><th class="n">Seen / loop</th><th>Delivery</th></tr></thead>
      <tbody>${camp || '<tr><td colspan="7" class="muted">Nothing booked on this screen this week in the Vault pull.</td></tr>'}</tbody></table></div>
-     <h3>Creatives seen</h3>
+     <h3>Creatives seen <span class="muted" style="font-weight:400">${groups.length} artwork(s)${nIds > groups.length ? `, from ${nIds} gateway IDs` : ''}</span></h3>
      <div class="wrap"><table><thead><tr><th>PoP</th><th>Booked artwork</th><th>Creative</th><th class="n">Plays</th><th class="n">Slots / loop</th><th>Campaign</th></tr></thead>
-     <tbody>${crs || '<tr><td colspan="6" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></div>`;
+     <tbody>${crs || '<tr><td colspan="6" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></details>`;
 }
 async function load() {
   const r = await fetch('/bookings.json' + (week ? '?week=' + week : ''));
@@ -1096,20 +1130,43 @@ async function load() {
       (rep.creatives ? ` · artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : ' · <span class="warn">no artwork library yet</span>') +
       (rep.artwork_enabled === false ? ' · <span class="warn">artwork matching unavailable (needs numpy and Pillow)</span>' : '')
     : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>';
+  last = rep;
+  render();
+}
+let last = null;
+function render() {
+  const rep = last; if (!rep) return;
   document.getElementById('out').innerHTML = !rep.gateway ? '<p class="bad">Cannot reach the gateway, so the sites are unknown.</p>'
     : rep.sites.map(s => site(s, rep)).join('') || '<p class="muted">No sites.</p>';
+  document.getElementById('built').textContent = rep.built_at ? `Worked out ${rep.built_at.split(' ')[1] || rep.built_at}` : '';
 }
 function shift(days) { const d = new Date(week + 'T00:00'); d.setDate(d.getDate() + days); week = d.toISOString().slice(0, 10);
   history.replaceState(null, '', '?week=' + week); load(); }
 document.getElementById('prev').onclick = () => shift(-7);
 document.getElementById('next').onclick = () => shift(7);
 document.getElementById('out').addEventListener('change', async e => {
-  const s = e.target.closest('select[data-cr]'); if (!s) return;
+  const s = e.target.closest('select[data-ids]'); if (!s || s.value === '\u0000') return;
   s.disabled = true;
   await fetch('/bookings/link', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({site_id: s.dataset.site, creative_id: s.dataset.cr, campaign_id: s.value})});
+    body: JSON.stringify({site_id: s.dataset.site, creative_ids: s.dataset.ids.split(','), campaign_id: s.value})});
   load();
 });
+document.getElementById('out').addEventListener('toggle', e => {      // remember which sites are open
+  const d = e.target; if (!d.matches || !d.matches('details.site')) return;
+  if (d.open) OPEN_SITES.add(d.dataset.site); else OPEN_SITES.delete(d.dataset.site);
+  remember('pop-bookings-open', OPEN_SITES);
+}, true);
+document.getElementById('out').addEventListener('click', e => {       // show / hide a row's gateway IDs
+  const b = e.target.closest('button[data-group]'); if (!b) return;
+  const k = b.dataset.group;
+  if (OPEN_GROUPS.has(k)) OPEN_GROUPS.delete(k); else OPEN_GROUPS.add(k);
+  remember('pop-bookings-groups', OPEN_GROUPS);
+  render();
+});
+document.getElementById('all').onclick = () => {
+  const ds = [...document.querySelectorAll('details.site')], open = !ds.every(d => d.open);
+  ds.forEach(d => { d.open = open; });
+};
 const fmtT = iso => iso ? new Date(iso).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : '';
 let syncTimer = null, wasRunning = false;
 async function loadSync() {
@@ -1558,9 +1615,14 @@ def runs_typical(plays, S, cap):
     return {cid: min(h, key=lambda r: (-h[r], r)) for cid, h in hist.items()}
 
 
+def _between(plays, t0, t1):
+    """The plays (sorted by time) with t0 <= start < t1, by binary search."""
+    return plays[bisect.bisect_left(plays, t0, key=lambda p: p[0]):bisect.bisect_left(plays, t1, key=lambda p: p[0])]
+
+
 def observed(site_id, t0, t1, S, N):
     """What the screen showed in [t0, t1): per creative slots credited, plays, latest image."""
-    plays = [p for p in index_records().get(site_id, []) if t0 - N * S <= p[0] < t1]
+    plays = _between(index_records().get(site_id, []), t0 - N * S, t1)
     cap = max(1, N - 1) if N > 1 else 1
     typ = runs_typical(plays, S, cap)
     out, seen_s = {}, 0.0
@@ -1591,14 +1653,20 @@ def load_links():
         return {}
 
 
-def save_link(site_id, creative_id, campaign_id):
+def save_link(site_id, creative_ids, campaign_id):
+    """Link one creative ID or a list of them (a bundled row) to a campaign,
+    programmatic or house; an empty campaign_id removes the links."""
+    if isinstance(creative_ids, str):
+        creative_ids = [creative_ids]
     with LOCK:
         links = load_links()
         site = links.setdefault(site_id, {})
-        if campaign_id:
-            site[creative_id] = campaign_id
-        else:
-            site.pop(creative_id, None)
+        for creative_id in creative_ids:
+            if campaign_id:
+                site[creative_id] = campaign_id
+            else:
+                site.pop(creative_id, None)
+        REPORTS["gen"] += 1
         tmp = os.path.join(ARGS.out, "creative-links.json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(links, f, indent=1)
@@ -1823,9 +1891,74 @@ def _pop_fp(eid):
     return ART_CACHE[key]
 
 
+def _scores(f, refs):
+    """Fine-detail correlation of one fingerprint with a stack of them (n, H, W),
+    best over small offsets; one numpy pass per offset instead of per pair."""
+    H, W = f.shape
+    best = _np.full(len(refs), -1.0)
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            A = f[max(0, dy):H + min(0, dy), max(0, dx):W + min(0, dx)]
+            B = refs[:, max(0, -dy):H + min(0, -dy), max(0, -dx):W + min(0, -dx)]
+            A0 = A - A.mean()
+            B0 = B - B.mean(axis=(1, 2), keepdims=True)
+            den = _np.sqrt(float((A0 * A0).sum()) * (B0 * B0).sum(axis=(1, 2)))
+            c = _np.where(den > 1e-9, (B0 * A0).sum(axis=(1, 2)) / _np.maximum(den, 1e-9), 0.0)
+            best = _np.maximum(best, c)
+    return best
+
+
+ART_STATE = {"loaded": False, "dirty": False, "sites": {}}   # site -> creative -> cached match
+ART_RECHECK_MATCHED = 6 * 3600     # a confident match is re-checked this often (new artwork, drift)
+ART_RECHECK_OTHER = 1800           # an unmatched creative is retried this often
+
+
+def _art_state_path():
+    return os.path.join(ARGS.out, "art-matches.json")
+
+
+def art_state():
+    """Per-creative artwork matches, kept on disk so a restart doesn't redo them."""
+    if not ART_STATE["loaded"]:
+        try:
+            with open(_art_state_path(), encoding="utf-8") as f:
+                ART_STATE["sites"] = json.load(f).get("sites", {})
+        except (OSError, ValueError):
+            ART_STATE["sites"] = {}
+        ART_STATE["loaded"] = True
+    return ART_STATE["sites"]
+
+
+def save_art_state():
+    if not ART_STATE["dirty"]:
+        return
+    tmp = _art_state_path() + ".tmp"
+    with LOCK:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"sites": ART_STATE["sites"]}, f)
+        os.replace(tmp, _art_state_path())
+    ART_STATE["dirty"] = False
+
+
+def forget_art(site_id):
+    """Drop a site's cached matches (its creatives were reset)."""
+    if art_state().pop(site_id, None) is not None:
+        ART_STATE["dirty"] = True
+        save_art_state()
+
+
+def _spread(ps, n):
+    """Up to n plays spread evenly over the list (day and night, old and new)."""
+    if len(ps) <= n:
+        return ps
+    return [ps[round(i * (len(ps) - 1) / (n - 1))] for i in range(n)]
+
+
 def artwork_matches(cam, t0, t1):
     """For each creative the site showed in [t0, t1): the booked artwork it
-    matches. Returns {creative_id: {...}} or {} when matching isn't possible."""
+    matches. A creative's match is worked out once and kept (on disk too); it
+    is re-checked only when the artwork library changes or after a while, so
+    new plays don't make every page load redo it. Returns {creative_id: {...}}."""
     if not ART_OK or not cam.get("vault_screen"):
         return {}
     cands = [c for c in screen_creatives(cam["vault_screen"]) if c.get("file") and c.get("kind", "image") == "image"]
@@ -1834,41 +1967,118 @@ def artwork_matches(cam, t0, t1):
     inset = max(0.0, min(0.4, float(cam.get("inset_pct") or 0) / 100.0))
     refs = [(c, _ref_fp(c["file"], inset)) for c in cands]
     refs = [(c, f) for c, f in refs if f is not None]
-    plays = index_records().get(cam.get("id"), [])
-    samples = {}
-    for p in reversed(plays):                       # newest first, this period, usable images
-        if t0 <= p[0] < t1 and not p[2] and p[5] and (len(p) < 7 or p[6]):
-            lst = samples.setdefault(p[1], [])
-            if len(lst) < ART_SAMPLES:
-                lst.append(p)
+    if not refs:
+        return {}
+    stack = _np.stack([f for _, f in refs])
+    lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}"
+    sid = cam.get("id")
+    state = art_state().setdefault(sid, {})
+    plays = _between(index_records().get(sid, []), t0, t1)
+    by_cid = {}
+    for p in plays:                                  # usable images in this period, oldest first
+        if not p[2] and p[5] and (len(p) < 7 or p[6]):
+            by_cid.setdefault(p[1], []).append(p)
+    now = time.time()
     out = {}
-    for cid, ps in samples.items():
-        key = (cam.get("id"), cid, tuple(p[4] for p in ps), CRE["mtime"], round(inset, 3))
-        if key in ART_RESULTS:
-            out[cid] = ART_RESULTS[key]
-            continue
-        fps = [f for f in (_pop_fp(p[4]) for p in ps) if f is not None]
-        if not fps:
-            continue
-        scored = []
-        for c, rf in refs:
-            vals = sorted(_shift_corr(f, rf) for f in fps)
-            scored.append((vals[len(vals) // 2], c))       # median over the samples
-        scored.sort(key=lambda x: -x[0])
-        best, bc = scored[0]
-        other = max([v for v, c in scored if c["campaign_id"] != bc["campaign_id"]] or [0.0])
-        status = ("matched" if best >= ART_MATCH and best - other >= ART_MARGIN
-                  else "possible" if best >= ART_POSSIBLE else "none")
-        res = {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"), "file": bc.get("file"),
-               "score": round(best, 2), "next": round(other, 2), "from": bc.get("from"), "to": bc.get("to"),
-               "samples": len(fps), "candidates": len(refs), "last_play": ps[0][0]}
+    for cid, ps in by_cid.items():
+        st = state.get(cid)
+        fresh = st and st.get("lib") == lib and now - st.get("at", 0) < (
+            ART_RECHECK_MATCHED if st["res"]["status"] == "matched" else ART_RECHECK_OTHER)
+        if not fresh:
+            sample = _spread(ps, ART_SAMPLES)
+            fps = [f for f in (_pop_fp(p[4]) for p in sample) if f is not None]
+            if not fps:
+                continue
+            per = _np.median(_np.stack([_scores(f, stack) for f in fps]), axis=0)   # per booked image
+            order = _np.argsort(-per)
+            best, bc = float(per[order[0]]), refs[order[0]][0]
+            other = max([float(per[i]) for i in range(len(refs)) if refs[i][0]["campaign_id"] != bc["campaign_id"]] or [0.0])
+            status = ("matched" if best >= ART_MATCH and best - other >= ART_MARGIN
+                      else "possible" if best >= ART_POSSIBLE else "none")
+            st = {"lib": lib, "at": now, "eid": sample[-1][4],
+                  "res": {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"),
+                          "file": bc.get("file"), "score": round(best, 2), "next": round(other, 2),
+                          "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(refs)}}
+            state[cid] = st
+            ART_STATE["dirty"] = True
+        res = dict(st["res"])
         # played outside the dates its Material Instructions give it (e.g. a teaser left on)
-        if status == "matched":
-            late = bc.get("to") and datetime.fromtimestamp(ps[0][0], LOCAL_TZ).date().isoformat() > bc["to"]
-            early = bc.get("from") and datetime.fromtimestamp(ps[-1][0], LOCAL_TZ).date().isoformat() < bc["from"]
-            res["off_schedule"] = "late" if late else "early" if early else ""
-        ART_RESULTS[key] = res
+        if res["status"] == "matched":
+            last = datetime.fromtimestamp(ps[-1][0], LOCAL_TZ).date().isoformat()
+            first = datetime.fromtimestamp(ps[0][0], LOCAL_TZ).date().isoformat()
+            res["off_schedule"] = ("late" if res.get("to") and last > res["to"] else
+                                   "early" if res.get("from") and first < res["from"] else "")
+        res["eid"] = st.get("eid")
         out[cid] = res
+    save_art_state()
+    return out
+
+
+def lookalikes(site_id, cids, eids):
+    """Group creatives whose PoP images look like the same artwork (the gateway
+    can give one artwork several IDs, e.g. by day and by night). Returns a list
+    of groups (lists of creative IDs)."""
+    parent = {c: c for c in cids}
+    if not ART_OK or len(cids) < 2:
+        return [[c] for c in cids]
+    fps = [(c, _pop_fp(eids[c])) for c in cids if eids.get(c)]
+    fps = [(c, f) for c, f in fps if f is not None]
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    if len(fps) >= 2:
+        stack = _np.stack([f for _, f in fps])
+        for i, (c, f) in enumerate(fps[:-1]):
+            sc = _scores(f, stack[i + 1:])
+            for j, v in enumerate(sc):
+                if v >= ART_LOOKALIKE:
+                    parent[find(fps[i + 1 + j][0])] = find(c)
+    groups = {}
+    for c in cids:
+        groups.setdefault(find(c), []).append(c)
+    return list(groups.values())
+
+
+ART_LOOKALIKE = 0.55               # two PoP images this alike show the same artwork
+
+
+def group_creatives(site_id, crs):
+    """Bundle the creative IDs that are the same thing: matched to the same booked
+    artwork, linked to the same campaign, or (unassigned) lookalike PoP images.
+    One row per group on the Bookings page instead of one per gateway ID."""
+    keyed, loose = {}, []
+    for cr in crs:
+        a = cr.get("assigned")
+        art = cr.get("art") or {}
+        if cr.get("blank"):
+            keyed.setdefault(("blank",), []).append(cr)
+        elif a and a != "unassigned":
+            keyed.setdefault(("a", a, art.get("file") if art.get("status") == "matched" else ""), []).append(cr)
+        else:
+            loose.append(cr)
+    by_id = {c["creative_id"]: c for c in loose}
+    for g in lookalikes(site_id, [c["creative_id"] for c in loose],
+                        {c["creative_id"]: c.get("image") for c in loose}):
+        keyed[("u", min(g))] = [by_id[c] for c in g]
+    out = []
+    for key, ms in keyed.items():
+        ms = sorted(ms, key=lambda c: (-c["plays"], c["creative_id"]))
+        head = ms[0]
+        links = {c.get("link") or "" for c in ms}
+        out.append({"key": "|".join(str(k) for k in key), "creative_id": head["creative_id"],
+                    "members": [{k: c.get(k) for k in ("creative_id", "plays", "share", "image", "link", "by",
+                                                       "assigned", "art", "video", "blank")} for c in ms],
+                    "plays": sum(c["plays"] for c in ms), "share": sum(c["share"] for c in ms),
+                    "image": next((c["image"] for c in ms if c.get("image")), None),
+                    "blank": key[0] == "blank", "video": all(c.get("video") for c in ms),
+                    "assigned": head.get("assigned"), "art": head.get("art"),
+                    "by": head.get("by") if len({c.get("by") for c in ms}) == 1 else "mixed",
+                    "link": links.pop() if len(links) == 1 else "", "mixed": len(links) > 1,
+                    "off_schedule": any((c.get("art") or {}).get("off_schedule") for c in ms)})
+    out.sort(key=lambda g: -g["share"])
     return out
 
 
@@ -1876,7 +2086,7 @@ def site_bookings(cam, week, links_all):
     """Booked vs delivered for one site in the week starting `week` (date)."""
     sid, S, N = cam.get("id"), (cam.get("slot_ms") or 0) / 1000.0, cam.get("slot_count") or 0
     res = {"site_id": sid, "name": cam.get("name"), "vault_screen": cam.get("vault_screen") or "",
-           "slot_count": N, "slot_s": S, "campaigns": [], "creatives": [], "warnings": []}
+           "slot_count": N, "slot_s": S, "campaigns": [], "creatives": [], "groups": [], "warnings": []}
     if not res["vault_screen"]:
         res["warnings"].append("No Vault screen set for this site (Settings).")
     if not S or N < 1:
@@ -1938,21 +2148,24 @@ def site_bookings(cam, week, links_all):
         if loops >= 1 and c["status"] == "not seen":
             res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but "
                                    "none of its creatives has been seen.")
+    offs = {}
     for cr in crs:
         a = cr.get("art") or {}
         if a.get("off_schedule"):
-            when = f"after its end date ({a['to']})" if a["off_schedule"] == "late" else f"before its start date ({a['from']})"
-            res["warnings"].append(f"{cr['creative_id']} is {a.get('name')} ({a['campaign_id']}), which played {when} "
-                                   "in its Material Instructions.")
+            offs.setdefault((a["campaign_id"], a.get("name"), a["off_schedule"], a.get("from"), a.get("to")), []).append(cr["creative_id"])
+    for (camp, name, kind, frm, to), ids in offs.items():
+        when = f"after its end date ({to})" if kind == "late" else f"before its start date ({frm})"
+        res["warnings"].append(f"{name} ({camp}) played {when} in its Material Instructions"
+                               f" (seen as {', '.join(sorted(ids))}).")
     if tally["unassigned"] > 0.05 and loops >= 1:
-        n = len([cr for cr in crs if cr["assigned"] == "unassigned"])
-        res["warnings"].append(f"{n} creative(s) not assigned yet ({tally['unassigned']:.1f} slot(s) per loop): "
-                               "mark each as a campaign, programmatic or house below.")
+        res["warnings"].append(f"{tally['unassigned']:.1f} slot(s) per loop show creatives not assigned yet: "
+                               "mark them as a campaign, programmatic or house below.")
     if booked > N:
         res["warnings"].append(f"Vault has {booked} plays per loop booked but the site's rotation has {N} slots: "
                                "check the slot count, or the screen runs a longer loop.")
     blank = sum(c["share"] for c in crs if c["blank"])
     elapsed = max(0.0, t1 - start)
+    res["groups"] = group_creatives(sid, crs)
     res.update(campaigns=campaigns, creatives=sorted(crs, key=lambda c: -c["share"]),
                booked_per_loop=booked, unsold_per_loop=max(0, N - booked),
                programmatic_per_loop=tally["programmatic"], house_per_loop=tally["house"], unbooked_per_loop=tally["unbooked"],
@@ -1969,8 +2182,64 @@ def site_bookings(cam, week, links_all):
     return res
 
 
-def bookings_report(week):
+REPORTS = {"gen": 0, "weeks": {}}
+REPORT_LOCK = threading.Lock()
+REPORT_MAX_AGE = 60                # seconds a Bookings report is served from cache
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path) if path else None
+    except OSError:
+        return None
+
+
+def report_version(cams):
+    """What a cached report depends on besides new plays (which a minute's
+    staleness covers): links, the Vault pull, the artwork library, site setup."""
+    return (REPORTS["gen"], _mtime(os.path.join(ARGS.out, "creative-links.json")), BOOKINGS.get("mtime"),
+            CRE.get("mtime"), None if cams is None else tuple(
+                (c.get("id"), c.get("name"), c.get("vault_screen"), c.get("slot_count"), c.get("slot_ms"),
+                 c.get("inset_pct")) for c in cams))
+
+
+def cached_report(week, max_age=REPORT_MAX_AGE):
+    """The Bookings report for a week, rebuilt at most once a minute (a background
+    thread keeps this week's warm) or as soon as links or set-up change."""
+    load_bookings()
+    load_creatives()
     cams = gateway_cameras()
+    ver = report_version(cams)
+    key = week.isoformat()
+    hit = REPORTS["weeks"].get(key)
+    if hit and hit[1] == ver and time.time() - hit[0] < max_age:
+        return hit[2]
+    with REPORT_LOCK:                              # one build at a time; others wait and reuse it
+        hit = REPORTS["weeks"].get(key)
+        if hit and hit[1] == ver and time.time() - hit[0] < max_age:
+            return hit[2]
+        t = time.time()
+        rep = bookings_report(week, cams)
+        rep["built_at"] = local_time(iso(t), True)
+        rep["build_s"] = round(time.time() - t, 2)
+        REPORTS["weeks"][key] = (t, ver, rep)
+        for k in [k for k, v in REPORTS["weeks"].items() if time.time() - v[0] > 3600]:
+            REPORTS["weeks"].pop(k, None)
+        return rep
+
+
+def report_warmer():
+    """Keep this week's Bookings report fresh so the page and review cards load at once."""
+    while True:
+        try:
+            cached_report(monday(datetime.now(LOCAL_TZ).date()), max_age=REPORT_MAX_AGE - 15)
+        except Exception as e:   # never let the helper thread die
+            print(f"bookings: report refresh failed: {e}", flush=True)
+        time.sleep(30)
+
+
+def bookings_report(week, cams=None):
+    cams = gateway_cameras() if cams is None else cams
     data = load_bookings()
     links = load_links()
     out = {"week": week.isoformat(), "pulled_at": local_time((data or {}).get("generated_at"), True),
@@ -1995,11 +2264,11 @@ def campaign_for_record(r, cache):
     week = monday(datetime.fromtimestamp(t, LOCAL_TZ).date())
     key = (sid, week)
     if key not in cache:
-        cams = cache.setdefault("_cams", gateway_cameras() or [])
-        cam = next((c for c in cams if c.get("id") == sid), None)
         cache[key] = {}
-        if cam and cam.get("vault_screen"):
-            rep = site_bookings(cam, week, cache.setdefault("_links", load_links()))
+        if week not in cache:
+            cache[week] = {s["site_id"]: s for s in cached_report(week)["sites"]}
+        rep = cache[week].get(sid)
+        if rep and rep.get("campaigns") is not None:
             names = {c["campaign_id"]: c for c in rep["campaigns"]}
             for cr in rep["creatives"]:
                 a = cr.get("assigned")
@@ -2264,7 +2533,7 @@ class H(BaseHTTPRequestHandler):
         if path == "/bookings.json":
             m = re.search(r"(?:^|&)week=(\d{4}-\d\d-\d\d)", query)
             wk = monday(datetime.fromisoformat(m.group(1)).date()) if m else monday(datetime.now(LOCAL_TZ).date())
-            return self.reply(200, bookings_report(wk))
+            return self.reply(200, cached_report(wk))
         if path == "/bookings/screens":
             return self.reply(200, vault_screens())
         if path == "/bookings/sync":              # artwork sync status for the Bookings page
@@ -2348,11 +2617,12 @@ class H(BaseHTTPRequestHandler):
             except ValueError:
                 return self.reply(400, {"error": "not a JSON file"})
             if self.path == "/bookings/link":
-                sid, cr = body.get("site_id"), body.get("creative_id")
-                if not sid or not cr:
-                    return self.reply(400, {"error": "site_id and creative_id required"})
-                save_link(sid, cr, body.get("campaign_id") or "")
-                return self.reply(200, {"status": "saved"})
+                sid = body.get("site_id")
+                ids = body.get("creative_ids") or ([body["creative_id"]] if body.get("creative_id") else [])
+                if not sid or not ids or not all(isinstance(i, str) for i in ids):
+                    return self.reply(400, {"error": "site_id and creative_id(s) required"})
+                save_link(sid, ids, body.get("campaign_id") or "")
+                return self.reply(200, {"status": "saved", "creatives": len(ids)})
             if not isinstance(body, dict) or not isinstance(body.get("proposals"), list):
                 return self.reply(400, {"error": "not a Vault pull: expected an object with a proposals list"})
             body.setdefault("generated_at", iso(time.time()))
@@ -2392,6 +2662,8 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.reply(502, {"error": f"cannot reach the gateway: {e}"})
             deleted = 0
+            forget_art(sid)
+            REPORTS["gen"] += 1
             if history:
                 note_reset(sid, asked)
                 deleted = rewrite_records(lambda r: None if r.get("site_id") == sid else r)
@@ -2504,6 +2776,7 @@ def main():
         note_heartbeat(hb, received=t)
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=bookings_loop, daemon=True).start()
+    threading.Thread(target=report_warmer, daemon=True).start()
     print(f"receiver on {ARGS.bind}:{ARGS.port}, storing in {ARGS.out}", flush=True)
     ThreadingHTTPServer((ARGS.bind, ARGS.port), H).serve_forever()
 

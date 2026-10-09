@@ -242,6 +242,19 @@ leaving out house and unbooked fill.
    and is kept for later weeks (a creative linked to a campaign that isn't booked that week is
    counted with house). Video creatives aren't matched yet.
 
+Each site is a collapsed line on load (true coverage, booked vs available slots, unassigned
+slots, campaigns not seen, warnings); click it to open the full card (the page remembers which
+are open). The gateway often gives one artwork several creative IDs (day and night exposure,
+for example), so **Creatives seen** shows one row per artwork: IDs matched to the same booked
+artwork or linked to the same campaign are bundled, and unassigned IDs whose PoP images look
+alike are bundled too. The row's campaign list sets all its IDs at once; "N IDs" opens the
+individual IDs, each of which can still be set on its own.
+
+The report behind the page is worked out in the background about once a minute and when links
+or set-up change, so the page and the review cards open straight away. Each creative's artwork
+match is worked out once and kept (in `art-matches.json` in the data folder), re-checked every
+6 hours (30 minutes while unmatched) or when the artwork library changes.
+
 Each card shows true coverage (booked slots delivered ÷ booked slots, over the certain
 bookings that have artwork or creatives linked), booked vs available slots, programmatic, house,
 unassigned and blank slots per loop, and how much of the week has been monitored. Campaigns
