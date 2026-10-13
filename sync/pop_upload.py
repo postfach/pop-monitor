@@ -120,6 +120,7 @@ class PopUploader:
         return out
 
     def loop(self, configured):
+        time.sleep(float(ENV("START_DELAY_S", "20")) + 10)    # let the receiver start first
         while True:
             try:
                 if ENABLED and configured():
@@ -167,59 +168,76 @@ class PopUploader:
                 raise
 
     # ------------------------------------------------------------ one run
-    def run(self, phase, since=None, until=None):
+    def start(self, phase):
+        """Run now in the background (the Bookings page button). False if one is running."""
+        if self.lock.locked():
+            return False
+        threading.Thread(target=self.run, args=(phase,), kwargs={"manual": True}, daemon=True).start()
+        return True
+
+    def run(self, phase, since=None, until=None, manual=False):
         with self.lock:
-            now = time.time()
-            last = self.st["runs"].get(phase, {}).get("until")
-            until = until or now
-            since = since or max(last or (until - 86400), until - CATCHUP_DAYS * 86400)
-            started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            self.log(f"pop-upload: {phase} photos from {datetime.fromtimestamp(since, self.tz):%a %d %b %H:%M} "
-                     f"to {datetime.fromtimestamp(until, self.tz):%a %d %b %H:%M}")
-            up = kept = 0
-            errors = []
+            self.st["status"]["running"] = phase
             try:
-                current = {f"{v.get('site_id')}|{k.split('|')[0]}|{v.get('version')}": v["event_id"]
-                           for k, v in self.st["items"].items() if k.endswith("|" + phase) and v.get("event_id")}
-                r = requests.post(f"{self.receiver}/pop/best", timeout=900,
-                                  headers={"Authorization": f"Bearer {self.key}"},
-                                  json={"since": since, "until": until, "phase": phase, "current": current})
-                r.raise_for_status()
-                best = r.json()
-                if best.get("error"):
-                    raise RuntimeError(best["error"])
-                for it in best.get("items", []):
-                    try:
-                        if self.consider(it, phase):
-                            up += 1
-                        else:
-                            kept += 1
-                    except Exception as e:
-                        errors.append(f"{it.get('campaign_id')} at {it.get('screen')}: {e}")
-                        self.log(f"pop-upload: {errors[-1]}")
-                        if re.search(r"Graph 40[13] |not set|sign-in failed", str(e)):
-                            break                       # access problem: every file would fail the same way
-                ok = not errors
-                self.st["runs"][phase] = {"at": now, "until": until if ok else since, "since": since, "ok": ok}
-                msg = f"{up} new or better {phase} photo(s), {kept} kept"
-                self.st["status"].update({f"last_{phase}": started, f"last_{phase}_result": msg, "ok": ok,
-                                          "error": "; ".join(errors[:3]) if errors else None})
-                self.log(f"pop-upload: {msg}" + (f", {len(errors)} failed" if errors else ""))
-            except Exception as e:
-                ok = False
-                self.st["runs"][phase] = {"at": now, "until": since, "since": since, "ok": False}   # retried
-                self.st["status"].update(ok=False, error=f"{phase} run: {e}", **{f"last_{phase}": started})
-                self.log(f"pop-upload: {phase} run failed: {e}")
-            was_ok = self.st["status"].get("notified_ok", True)
-            if not ok and was_ok:
-                self.notify(f"PoP photo upload ({phase}) failed: {self.st['status'].get('error')}",
-                            title="Warning: PoP photo upload failed")
-            elif ok and not was_ok:
-                self.notify(f"PoP photo uploads are working again ({phase}: {msg}).", ok=True,
-                            title="Recovered: PoP photo upload")
-            self.st["status"]["notified_ok"] = ok
-            self.save()
-            return ok
+                return self._run(phase, since, until, manual)
+            finally:
+                self.st["status"]["running"] = None
+                self.save()
+
+    def _run(self, phase, since, until, manual):
+        now = time.time()
+        last = self.st["runs"].get(phase, {}).get("until")
+        until = until or now
+        since = since or max(last or (until - 86400), until - CATCHUP_DAYS * 86400)
+        started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.log(f"pop-upload: {phase} photos from {datetime.fromtimestamp(since, self.tz):%a %d %b %H:%M} "
+                 f"to {datetime.fromtimestamp(until, self.tz):%a %d %b %H:%M}")
+        up = kept = 0
+        errors = []
+        try:
+            current = {f"{v.get('site_id')}|{k.split('|')[0]}|{v.get('version')}": v["event_id"]
+                       for k, v in self.st["items"].items() if k.endswith("|" + phase) and v.get("event_id")}
+            r = requests.post(f"{self.receiver}/pop/best", timeout=900,
+                              headers={"Authorization": f"Bearer {self.key}"},
+                              json={"since": since, "until": until, "phase": phase, "current": current})
+            r.raise_for_status()
+            best = r.json()
+            if best.get("error"):
+                raise RuntimeError(best["error"])
+            for it in best.get("items", []):
+                try:
+                    if self.consider(it, phase):
+                        up += 1
+                    else:
+                        kept += 1
+                except Exception as e:
+                    errors.append(f"{it.get('campaign_id')} at {it.get('screen')}: {e}")
+                    self.log(f"pop-upload: {errors[-1]}")
+                    if re.search(r"Graph 40[13] |not set|sign-in failed", str(e)):
+                        break                       # access problem: every file would fail the same way
+            ok = not errors
+            self.st["runs"][phase] = {"at": now, "until": until if ok else since, "since": since, "ok": ok}
+            msg = f"{up} new or better {phase} photo(s), {kept} kept" + (" (run by hand)" if manual else "")
+            if not best.get("items"):
+                msg = f"no {phase} photos of campaigns in this window" + (" (run by hand)" if manual else "")
+            self.st["status"].update({f"last_{phase}": started, f"last_{phase}_result": msg, "ok": ok,
+                                      "error": "; ".join(errors[:3]) if errors else None})
+            self.log(f"pop-upload: {msg}" + (f", {len(errors)} failed" if errors else ""))
+        except Exception as e:
+            ok = False
+            self.st["runs"][phase] = {"at": now, "until": since, "since": since, "ok": False}   # retried
+            self.st["status"].update(ok=False, error=f"{phase} run: {e}", **{f"last_{phase}": started})
+            self.log(f"pop-upload: {phase} run failed: {e}")
+        was_ok = self.st["status"].get("notified_ok", True)
+        if not ok and was_ok:
+            self.notify(f"PoP photo upload ({phase}) failed: {self.st['status'].get('error')}",
+                        title="Warning: PoP photo upload failed")
+        elif ok and not was_ok:
+            self.notify(f"PoP photo uploads are working again ({phase}: {msg}).", ok=True,
+                        title="Recovered: PoP photo upload")
+        self.st["status"]["notified_ok"] = ok
+        self.save()
+        return ok
 
     def consider(self, it, phase):
         """Upload this photo if it is the first or beats the one up there. True if uploaded."""
@@ -251,6 +269,10 @@ class PopUploader:
                                  "version_label": it.get("version_label"), "parts": it.get("parts"),
                                  "uploaded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                  "replaced": (cur or {}).get("name")}
+        recent = self.st["status"].setdefault("recent", [])
+        recent.insert(0, {"name": name, "url": new.get("webUrl"), "score": it["score"], "site": it.get("screen"),
+                          "at": self.st["items"][key]["uploaded_at"], "was": (cur or {}).get("score")})
+        del recent[15:]
         self.save()                                      # after every file: a crash never orphans one
         self.log(f"pop-upload: {rel} ({it['score']}" + (f", was {cur['score']})" if cur else ")"))
         return True

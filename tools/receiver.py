@@ -1006,6 +1006,10 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
 <h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
 <p class="muted" id="sync" style="margin:4px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap" hidden><span id="synctxt"></span><button class="btn" id="syncnow" style="padding:2px 9px">Sync now</button></p>
+<div class="muted" id="popup" style="margin:4px 0 0" hidden><span id="poptxt"></span>
+ <button class="btn" data-phase="day" style="padding:2px 9px" title="Upload the best daytime photo of each campaign since the last run, now">Upload day photos now</button>
+ <button class="btn" data-phase="night" style="padding:2px 9px" title="Upload the best night photo of each campaign since the last run, now">Upload night photos now</button>
+ <details id="poprecent" style="margin-top:4px" hidden></details></div>
 <div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
 <button class="btn" id="all">Expand / collapse all</button><span class="muted" id="built" style="font-size:12px"></span>
 <span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
@@ -1195,18 +1199,36 @@ async function loadSync() {
   else if (st.ok === false && st.error) h += ` <span class="bad">Last sync failed ${esc(fmtT(st.last_run))}: ${esc(st.error)}</span>`;
   else if (st.error && !st.last_run) h += ` <span class="bad">${esc(st.error)}</span>`;
   const pu = st.pop_upload;               // best PoP photos into SharePoint
-  if (pu && pu.enabled && st.configured !== false) {
-    h += '<br>PoP photos to SharePoint: ' + (pu.photos ? `${pu.photos} up` : 'none yet') +
-      (pu.last_day ? ` · day ${esc(fmtT(pu.last_day))}` : '') + (pu.last_night ? ` · night ${esc(fmtT(pu.last_night))}` : '') +
-      ` · next day ${esc(fmtT(pu.next_day))}, night ${esc(fmtT(pu.next_night))}` +
-      (pu.ok === false && pu.error ? ` <span class="bad">Last upload failed: ${esc(pu.error)}</span>` : '');
+  const pbox = document.getElementById('popup');
+  pbox.hidden = !(pu && pu.enabled && st.configured !== false);
+  if (!pbox.hidden) {
+    const last = r => r ? ` (${esc(r)})` : '';
+    document.getElementById('poptxt').innerHTML = 'PoP photos to SharePoint: ' +
+      (pu.running ? `<b>uploading the best ${esc(pu.running)} photos&hellip;</b>` :
+        (pu.photos ? `${pu.photos} up` : 'none yet') +
+        (pu.last_day ? ` · day ${esc(fmtT(pu.last_day))}${last(pu.last_day_result)}` : '') +
+        (pu.last_night ? ` · night ${esc(fmtT(pu.last_night))}${last(pu.last_night_result)}` : '') +
+        ` · next day ${esc(fmtT(pu.next_day))}, night ${esc(fmtT(pu.next_night))}`) +
+      (!pu.running && pu.ok === false && pu.error ? ` <span class="bad">Last upload failed: ${esc(pu.error)}</span>` : '');
+    for (const b of pbox.querySelectorAll('button')) b.disabled = !!pu.running;
+    const rec = pu.recent || [];
+    document.getElementById('poprecent').hidden = !rec.length;
+    document.getElementById('poprecent').innerHTML = `<summary>Latest uploads (${rec.length})</summary>` +
+      rec.map(r => `<div><a href="${esc(r.url || '#')}" target="_blank" rel="noopener">${esc(r.name)}</a>` +
+        ` <span class="muted">${esc(fmtT(r.at))}${r.was != null ? ` · replaced a ${Math.round(r.was)}` : ''}</span></div>`).join('');
   }
   txt.innerHTML = h;
   clearTimeout(syncTimer);
-  if (st.running) syncTimer = setTimeout(loadSync, 4000);
+  if (st.running || (pu && pu.running)) syncTimer = setTimeout(loadSync, 4000);
   else if (wasRunning) load();
   wasRunning = !!st.running;
 }
+for (const b of document.querySelectorAll('#popup button')) b.onclick = async () => {
+  const r = await fetch('/bookings/pop-run?phase=' + b.dataset.phase, {method: 'POST'});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || 'Could not start the upload');
+  setTimeout(loadSync, 800);
+};
 document.getElementById('syncnow').onclick = async () => {
   const r = await fetch('/bookings/sync', {method: 'POST'});
   const j = await r.json().catch(() => ({}));
@@ -2983,6 +3005,12 @@ class H(BaseHTTPRequestHandler):
             if not self.authorised():
                 return
             code, body = sync_call("POST", "/sync", timeout=10)
+            return self.reply(code if code >= 400 else 202, body)
+        m = re.fullmatch(r"/bookings/pop-run\?phase=(day|night)", self.path)
+        if m:                                       # Bookings page: upload the best PoP photos now
+            if not self.authorised():
+                return
+            code, body = sync_call("POST", f"/pop/run?phase={m.group(1)}", timeout=10)
             return self.reply(code if code >= 400 else 202, body)
         if self.path == "/bookings/creatives":     # upload a creatives library (zip)
             if not self.authorised():

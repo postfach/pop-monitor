@@ -40,7 +40,11 @@ full camera frame, so the billboard is seen in its surroundings.
   it recovers).
 
 The **Bookings** page shows how many photos are up, when each run last ran and the next
-times, under the artwork sync line.
+times, under the artwork sync line, with **Upload day photos now** and **Upload night photos
+now** buttons and the latest uploads (each links to the file in SharePoint). A button
+does exactly what the scheduled run does, over the photos since the last run (the last
+24 hours the first time), so it is the way to check the set-up without waiting for 8 pm.
+The scheduled runs still happen as usual afterwards.
 
 ## How a photo is scored
 
@@ -97,8 +101,6 @@ night photos go up straight away.
 | `POP_SITE_COORDS` | receiver | | sites elsewhere: `SITE_ID=lat,lon;SITE_ID=lat,lon` (e.g. Christchurch `-43.53,172.62`) |
 | `POP_BEST_SAMPLES` | receiver | `240` | photos scored per version per run, spread over the window |
 
-Run one upload by hand (testing, or after fixing access):
-`docker compose exec creatives-sync python3 -c "import urllib.request as u;print(u.urlopen(u.Request('http://localhost:8091/pop/run?phase=day',method='POST',headers={'Authorization':'Bearer '+__import__('os').environ['POP_API_KEY']})).read())"`.
 What is up there, with each photo's score and parts, is in the sync volume's
 `.sync/pop-uploads.json`; deleting that file makes the next run start afresh (the files
 already in SharePoint stay, and new ones are added beside them).

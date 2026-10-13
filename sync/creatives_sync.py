@@ -838,7 +838,8 @@ class H(BaseHTTPRequestHandler):
         if m and POP:                             # upload now (testing, or after a fix)
             if not configured():
                 return self.reply(409, {"error": "SharePoint access is not set up"})
-            threading.Thread(target=POP.run, args=(m.group(1),), daemon=True).start()
+            if not POP.start(m.group(1)):
+                return self.reply(409, {"error": "an upload is already running"})
             return self.reply(202, {"status": "started", "phase": m.group(1)})
         self.reply(404, {})
 
