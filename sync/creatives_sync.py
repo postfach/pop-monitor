@@ -48,6 +48,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mi  # noqa: E402
+import pop_upload  # noqa: E402
 
 VERSION = "0.1.0"
 ENV = os.environ.get
@@ -176,8 +177,8 @@ class Graph:
                     msg = r.text[:200]
                 hint = ""
                 if r.status_code in (401, 403):
-                    hint = (" (the app needs Sites.Selected with admin consent and read access to the "
-                            "LUMO site: see docs/sharepoint-setup.md)")
+                    hint = (" (the app needs Sites.Selected with admin consent and access to the LUMO site: "
+                            "read for the artwork, write for the PoP photos; see docs/sharepoint-setup.md)")
                 raise GraphError(f"Graph {r.status_code} on {urllib.parse.unquote(url.replace(GRAPH, ''))[:160]}: {msg}{hint}")
             return r
         raise GraphError(f"Graph kept throttling {url}")
@@ -761,9 +762,9 @@ def revive(d):
 
 # ---------------------------------------------------------------- alerts + API
 
-def notify(text, ok=False):
+def notify(text, ok=False, title=None):
     """Teams (adaptive card, as the receiver sends) and Slack."""
-    title = "Recovered: artwork sync" if ok else "Warning: artwork sync failed"
+    title = title or ("Recovered: artwork sync" if ok else "Warning: artwork sync failed")
     teams = {"type": "message", "attachments": [{
         "contentType": "application/vnd.microsoft.card.adaptive",
         "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.4",
@@ -782,6 +783,11 @@ def notify(text, ok=False):
 
 
 SYNC = None
+POP = None
+
+
+def configured():
+    return bool(ENV("AZ_CLIENT_ID") or ENV("GRAPH_TEST_TOKEN"))
 
 
 class H(BaseHTTPRequestHandler):
@@ -811,7 +817,8 @@ class H(BaseHTTPRequestHandler):
             st = dict(SYNC.status)
             nxt = (SYNC.last_ok + INTERVAL) if SYNC.last_ok else None
             st.update(interval_min=INTERVAL / 60, next_refresh=datetime.fromtimestamp(nxt, timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ") if nxt else None, configured=bool(ENV("AZ_CLIENT_ID") or ENV("GRAPH_TEST_TOKEN")))
+                "%Y-%m-%dT%H:%M:%SZ") if nxt else None, configured=configured())
+            st["pop_upload"] = POP.status() if POP else None
             return self.reply(200, st)
         self.reply(404, {})
 
@@ -827,6 +834,12 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(202, {"status": "running"})
             SYNC.request("Sync now")
             return self.reply(202, {"status": "started"})
+        m = re.fullmatch(r"/pop/run\?phase=(day|night)", self.path)
+        if m and POP:                             # upload now (testing, or after a fix)
+            if not configured():
+                return self.reply(409, {"error": "SharePoint access is not set up"})
+            threading.Thread(target=POP.run, args=(m.group(1),), daemon=True).start()
+            return self.reply(202, {"status": "started", "phase": m.group(1)})
         self.reply(404, {})
 
 
@@ -834,11 +847,20 @@ def main():
     global SYNC
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(STATE, exist_ok=True)
+    if "--pop" in sys.argv:                        # one PoP photo upload run: --pop day|night
+        phase = sys.argv[sys.argv.index("--pop") + 1]
+        u = pop_upload.PopUploader(Graph(), Library, STATE, RECEIVER, API_KEY, LOCAL, log, notify,
+                                   atomic_json, read_json, q)
+        sys.exit(0 if u.run(phase) else 1)
     if "--once" in sys.argv:                       # one run, for testing or a cron job
         s = Syncer()
         sys.exit(0 if s.run("--once") else 1)
     SYNC = Syncer()
     threading.Thread(target=SYNC.loop, daemon=True).start()
+    global POP
+    POP = pop_upload.PopUploader(Graph(), Library, STATE, RECEIVER, API_KEY, LOCAL, log, notify,
+                                 atomic_json, read_json, q)
+    threading.Thread(target=POP.loop, args=(configured,), daemon=True).start()
     port = int(ENV("PORT", "8091"))
     log(f"creatives-sync {VERSION} on :{port}; library {OUT}; refresh every {INTERVAL / 60:.0f} min, "
         f"inputs checked every {CHECK / 60:.0f} min")

@@ -1194,6 +1194,13 @@ async function loadSync() {
   if (st.configured === false) {}
   else if (st.ok === false && st.error) h += ` <span class="bad">Last sync failed ${esc(fmtT(st.last_run))}: ${esc(st.error)}</span>`;
   else if (st.error && !st.last_run) h += ` <span class="bad">${esc(st.error)}</span>`;
+  const pu = st.pop_upload;               // best PoP photos into SharePoint
+  if (pu && pu.enabled && st.configured !== false) {
+    h += '<br>PoP photos to SharePoint: ' + (pu.photos ? `${pu.photos} up` : 'none yet') +
+      (pu.last_day ? ` · day ${esc(fmtT(pu.last_day))}` : '') + (pu.last_night ? ` · night ${esc(fmtT(pu.last_night))}` : '') +
+      ` · next day ${esc(fmtT(pu.next_day))}, night ${esc(fmtT(pu.next_night))}` +
+      (pu.ok === false && pu.error ? ` <span class="bad">Last upload failed: ${esc(pu.error)}</span>` : '');
+  }
   txt.innerHTML = h;
   clearTimeout(syncTimer);
   if (st.running) syncTimer = setTimeout(loadSync, 4000);
@@ -2510,6 +2517,180 @@ def sync_inputs():
                                                  "vault_screen": c.get("vault_screen", "")} for c in cams]}
 
 
+# ---------------------------------------------------------------- best PoP images
+# The clearest day and night PoP photo of each campaign's creative at each site,
+# for creatives-sync to put in SharePoint (8pm: today's daytime photos; 8am: last
+# night's). Scoring is in popscore.py; here we find each campaign's versions and
+# their photos, sort them into day and night, and pick the best.
+try:
+    import popscore as _ps
+except ImportError:                                   # pragma: no cover
+    _ps = None
+POP_SAMPLES = int(os.environ.get("POP_BEST_SAMPLES", "240"))   # photos scored per version and window
+POP_DEFAULT_COORDS = os.environ.get("POP_DEFAULT_COORDS", "-36.85,174.76")   # Auckland
+PREP_CACHE = {}                    # event id -> popscore.prep() of its region image
+PREP_MAX = 6000
+
+
+def site_coords(site_id):
+    """Where a site is, for sunrise and sunset: POP_SITE_COORDS ("SITE=lat,lon;...")
+    or POP_DEFAULT_COORDS. A few tens of km out doesn't matter: twilight is skipped."""
+    for part in os.environ.get("POP_SITE_COORDS", "").split(";"):
+        k, _, v = part.partition("=")
+        if k.strip() == site_id and v:
+            try:
+                lat, lon = (float(x) for x in v.split(","))
+                return lat, lon
+            except ValueError:
+                pass
+    lat, lon = (float(x) for x in POP_DEFAULT_COORDS.split(","))
+    return lat, lon
+
+
+def _pop_prep(eid):
+    if eid in PREP_CACHE:
+        return PREP_CACHE[eid]
+    try:
+        with _Image.open(os.path.join(ARGS.out, "images", f"{eid}.roi.jpg")) as im:
+            v = _ps.prep(im)
+    except Exception:
+        v = None
+    if len(PREP_CACHE) >= PREP_MAX:
+        for k in list(PREP_CACHE)[:PREP_MAX // 4]:
+            PREP_CACHE.pop(k, None)
+    PREP_CACHE[eid] = v
+    return v
+
+
+def _frame_luma(eid):
+    path = os.path.join(ARGS.out, "images", f"{eid}.frame.jpg")
+    try:
+        with _Image.open(path) as im:
+            im.draft("L", (160, 90))                  # decode at 1/8 size: fast
+            return _ps.frame_luma(im)
+    except Exception:
+        return None
+
+
+def _versions(site_id, group):
+    """A campaign's creative versions within one Bookings group: the booked
+    artwork file it matched, else creatives whose photos look alike."""
+    members = [m for m in group["members"] if not m.get("blank")]
+    key = group.get("key", "")
+    file = key.split("|", 2)[2] if key.startswith("a|") and key.count("|") >= 2 else ""
+    if file:
+        return [{"key": "art:" + file, "label": os.path.basename(file), "file": file,
+                 "ids": [m["creative_id"] for m in members], "video": group.get("video")}]
+    out = []
+    for g in lookalikes(site_id, [m["creative_id"] for m in members],
+                        {m["creative_id"]: m.get("image") for m in members}):
+        out.append({"key": "id:" + min(g), "label": min(g), "file": "", "ids": g,
+                    "video": all(next((m.get("video") for m in members if m["creative_id"] == c), False) for c in g)})
+    return out
+
+
+def _play_by_eid(site_id, eid):
+    for p in index_records().get(site_id, []):
+        if p[4] == eid:
+            return (p[0], canon(site_id, p[1])) + tuple(p[2:])
+    return None
+
+
+def best_pops(t0, t1, phase, current=None):
+    """For every campaign version that played in [t0, t1): its best `phase`
+    ('day' or 'night') photo. Unassigned, programmatic and house are left out.
+    current: {"site|campaign|version": event id} of the photos already uploaded;
+    each is scored again alongside the new ones, against the same reference, so
+    "better" is decided fairly (a dull, rainy day can't inflate the scores)."""
+    current = current or {}
+    if not (ART_OK and _ps):
+        return {"error": "numpy, Pillow and popscore.py are needed", "items": []}
+    items = {}
+    wk = monday(datetime.fromtimestamp(t0, LOCAL_TZ).date())
+    last = monday(datetime.fromtimestamp(t1 - 1, LOCAL_TZ).date())
+    weeks = []
+    while wk <= last:
+        weeks.append(wk)
+        wk = wk + timedelta(days=7)
+    for week in weeks:
+        rep = cached_report(week)
+        for site in rep.get("sites") or []:
+            sid = site.get("site_id")
+            names = {c["campaign_id"]: c.get("name") for c in site.get("campaigns") or []}
+            for g in site.get("groups") or []:
+                camp = g.get("assigned") or ""
+                if not re.fullmatch(r"LUMO_\d+", camp):
+                    continue
+                for v in _versions(sid, g):
+                    k = (sid, camp, v["key"])
+                    it = items.setdefault(k, {"site_id": sid, "site_name": site.get("name"),
+                                              "screen": site.get("vault_screen") or site.get("name"),
+                                              "campaign_id": camp, "campaign_name": names.get(camp, ""),
+                                              "version": v["key"], "version_label": v["label"],
+                                              "art_file": v["file"], "creative_ids": set(), "video": v["video"]})
+                    it["creative_ids"].update(v["ids"])
+    out = []
+    for (sid, camp, vkey), it in items.items():
+        lat, lon = site_coords(sid)
+        ids = it["creative_ids"]
+        plays = [p for p in site_plays(sid, t0, t1)
+                 if p[1] in ids and not p[2] and p[5] and (len(p) < 7 or p[6])]
+        plays = [p for p in plays if _ps.phase(p[0], lat, lon) == phase]      # by the clock first: cheap
+        if not plays:
+            continue
+        sample = _spread(plays, POP_SAMPLES)
+        cands = []
+        for p in sample:
+            if _ps.phase(p[0], lat, lon, _frame_luma(p[4])) != phase:       # the picture agrees?
+                continue
+            pr = _pop_prep(p[4])
+            if pr is not None and os.path.exists(os.path.join(ARGS.out, "images", f"{p[4]}.frame.jpg")):
+                cands.append((p, pr))
+        if not cands:
+            continue
+        norm = _ps.norms([pr for _, pr in cands])
+        cur_eid = current.get(f"{sid}|{camp}|{vkey}")
+        cur = None
+        if cur_eid and cur_eid not in {p[4] for p, _ in cands}:
+            cp, cpr = _play_by_eid(sid, cur_eid), _pop_prep(cur_eid)
+            if cp and cpr is not None:
+                cur = (cp, cpr)
+        cons = _ps.consensus([pr for _, pr in _spread(cands, 25)]) if len(cands) >= 3 else None
+        art_ref = None
+        if it["art_file"]:
+            path = creative_file(it["art_file"])
+            if path:
+                try:
+                    with _Image.open(path) as im:
+                        art_ref = _ps.prep(im)
+                except Exception:
+                    art_ref = None
+        best, cur_score = None, None
+        for p, pr in cands + ([cur] if cur else []):
+            refs = [r for r in (art_ref, cons) if r is not None]
+            if it["video"] or not refs:
+                s = _ps.score(pr, None, norm, video=True)
+            else:
+                ss = [_ps.score(pr, r, norm) for r in refs]
+                s = dict(ss[-1], score=round(sum(x["score"] for x in ss) / len(ss), 1),
+                         by_ref={"artwork": ss[0]["score"]} if art_ref is not None and len(ss) == 2 else {})
+            if p[4] == cur_eid:
+                cur_score = s["score"]
+            if best is None or s["score"] > best[1]["score"]:
+                best = (p, s)
+        first = site_plays(sid, 0, t1)
+        first = next((q[0] for q in first if q[1] in ids and not q[2]), best[0][0])
+        p, s = best
+        out.append(dict(it, creative_ids=sorted(ids), event_id=p[4], creative_id=p[1],
+                        taken_at=datetime.fromtimestamp(p[0], LOCAL_TZ).isoformat(timespec="seconds"),
+                        first_seen=datetime.fromtimestamp(first, LOCAL_TZ).date().isoformat(),
+                        score=s["score"], parts=s["parts"], candidates=len(cands),
+                        current_event_id=cur_eid, current_score=cur_score))
+    out.sort(key=lambda x: (x["site_id"] or "", x["campaign_id"], x["version"]))
+    return {"phase": phase, "from": iso(t0), "to": iso(t1), "items": out,
+            "generated_at": iso(time.time())}
+
+
 def bookings_loop():
     while True:
         try:
@@ -2691,6 +2872,30 @@ class H(BaseHTTPRequestHandler):
             if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {ARGS.api_key}"):
                 return self.reply(401, {"error": "bad token"})
             return self.reply(200, sync_inputs())
+        if path in ("/pop/best",) or re.fullmatch(r"/pop/frame/[0-9a-f-]{36}\.jpg", path):
+            # creatives-sync's PoP uploads (API key, not the review login)
+            if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {ARGS.api_key}"):
+                return self.reply(401, {"error": "bad token"})
+            if path == "/pop/best":
+                qs = urllib.parse.parse_qs(query)
+                try:
+                    t0, t1 = float(qs["since"][0]), float(qs.get("until", [time.time()])[0])
+                    ph = qs.get("phase", ["day"])[0]
+                    assert ph in ("day", "night") and t1 > t0 and t1 - t0 <= 15 * 86400
+                except (KeyError, ValueError, AssertionError):
+                    return self.reply(400, {"error": "since (unix time), until and phase=day|night; 15 days at most"})
+                return self.reply(200, best_pops(t0, t1, ph))
+            try:
+                with open(os.path.join(ARGS.out, "images", path.rsplit("/", 1)[1].replace(".jpg", ".frame.jpg")), "rb") as f:
+                    body = f.read()
+            except FileNotFoundError:
+                return self.reply(404)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self.authorised():
             return
         if path.startswith("/api/"):
@@ -2759,6 +2964,17 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path == "/pop/best":              # creatives-sync, with the photos already uploaded
+            if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {ARGS.api_key}"):
+                return self.reply(401, {"error": "bad token"})
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                t0, t1, ph = float(d["since"]), float(d.get("until") or time.time()), d.get("phase", "day")
+                assert ph in ("day", "night") and t1 > t0 and t1 - t0 <= 15 * 86400
+                cur = {str(k): str(v) for k, v in (d.get("current") or {}).items()}
+            except (KeyError, ValueError, TypeError, AssertionError):
+                return self.reply(400, {"error": "since (unix time), until, phase=day|night, current; 15 days at most"})
+            return self.reply(200, best_pops(t0, t1, ph, cur))
         if self.path.startswith("/api/"):          # review page -> gateway
             if self.authorised():
                 self.proxy("POST")

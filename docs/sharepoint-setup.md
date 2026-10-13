@@ -6,7 +6,8 @@ matching needs no one in the loop:
 
 ```
 SharePoint: LUMO site / Sales / 00_Sales (NEW FOLDER) / Booked Campaigns / Creative+MIs
-      │  Microsoft Graph, app-only, read-only, this site only (Sites.Selected)
+      │  Microsoft Graph, app-only, this site only (Sites.Selected)
+      │  reads Creative+MIs; writes the best PoP photos to Booked Campaigns/PoP Images
       ▼
 creatives-sync ──writes──► pop-creatives volume: vault-creatives.json + images
       ▲                          │ (read-only)
@@ -30,7 +31,10 @@ script:
 1. creates the app registration **PoP Monitor - creatives sync** (single tenant);
 2. adds the Microsoft Graph application permission **Sites.Selected** and grants admin
    consent. On its own Sites.Selected opens no site at all;
-3. grants the app **read** on `https://lumodigital.sharepoint.com/sites/LUMO` only;
+3. grants the app **write** on `https://lumodigital.sharepoint.com/sites/LUMO` only (it
+   reads the artwork and puts the best PoP photos in `Booked Campaigns/PoP Images`: see
+   [`pop-photos.md`](pop-photos.md); `-SiteAccess read` keeps it read only, and then the
+   photo uploads fail with an access error);
 4. creates a client secret valid for 24 months;
 5. signs in as the app and lists `Creative+MIs` to prove it works;
 6. writes `AZ_TENANT_ID`, `AZ_CLIENT_ID`, `AZ_CLIENT_SECRET` and `AZ_SECRET_EXPIRES`
@@ -50,12 +54,15 @@ SharePoint …* within a minute of the container starting.
 2. API permissions > Add > Microsoft Graph > Application permissions > `Sites.Selected` >
    Add, then **Grant admin consent**.
 3. Certificates & secrets > New client secret (24 months). Copy the value.
-4. Give the app read on the site. Graph Explorer (signed in as admin, consent to
+4. Give the app write on the site. Graph Explorer (signed in as admin, consent to
    `Sites.FullControl.All`):
    * `GET https://graph.microsoft.com/v1.0/sites/lumodigital.sharepoint.com:/sites/LUMO` → copy `id`
    * `POST https://graph.microsoft.com/v1.0/sites/{id}/permissions` with
-     `{"roles":["read"],"grantedToIdentities":[{"application":{"id":"<client id>","displayName":"PoP Monitor - creatives sync"}}]}`
-   (or PnP PowerShell: `Grant-PnPAzureADAppSitePermission -AppId <client id> -DisplayName "PoP Monitor - creatives sync" -Site https://lumodigital.sharepoint.com/sites/LUMO -Permissions Read`).
+     `{"roles":["write"],"grantedToIdentities":[{"application":{"id":"<client id>","displayName":"PoP Monitor - creatives sync"}}]}`
+   (or PnP PowerShell: `Grant-PnPAzureADAppSitePermission -AppId <client id> -DisplayName "PoP Monitor - creatives sync" -Site https://lumodigital.sharepoint.com/sites/LUMO -Permissions Write`).
+   An app set up earlier with read only: `setup-sharepoint-app.ps1 -PermissionOnly` (or
+   `PATCH https://graph.microsoft.com/v1.0/sites/{id}/permissions/{permission id}` with
+   `{"roles":["write"]}`) adds write and keeps the secret.
 5. Put the tenant ID, client ID, secret and its end date in `.env` (or the stack
    variables) as `AZ_TENANT_ID`, `AZ_CLIENT_ID`, `AZ_CLIENT_SECRET`, `AZ_SECRET_EXPIRES`.
 

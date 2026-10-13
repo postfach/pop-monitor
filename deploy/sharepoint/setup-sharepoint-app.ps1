@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Sets up read-only SharePoint access for PoP Monitor's artwork sync (creatives-sync).
+  Sets up SharePoint access for PoP Monitor's creatives-sync: reading the booked
+  artwork, and writing the best PoP photos into Booked Campaigns/PoP Images.
 
 .DESCRIPTION
   Run once as a Global Administrator (or Application Administrator + SharePoint
@@ -8,13 +9,17 @@
     1. creates (or reuses) the app registration "PoP Monitor - creatives sync";
     2. gives it the Microsoft Graph application permission Sites.Selected and grants
        admin consent. Sites.Selected on its own gives access to no site at all;
-    3. grants the app READ on the LUMO SharePoint site only;
+    3. grants the app WRITE on the LUMO SharePoint site only (it reads the artwork and
+       puts the PoP photos in Booked Campaigns/PoP Images; -SiteAccess read keeps it
+       read only, which turns the PoP photo uploads off in practice);
     4. creates a client secret (24 months by default);
     5. checks the app can sign in and list Booked Campaigns/Creative+MIs;
     6. writes AZ_TENANT_ID, AZ_CLIENT_ID, AZ_CLIENT_SECRET and AZ_SECRET_EXPIRES into
        your .env (with -EnvFile), or prints them for Portainer.
 
-  Safe to run again: it reuses the app and the site grant, and adds a new secret
+  Safe to run again: it reuses the app, raises the site grant to -SiteAccess if it was
+  lower, and adds a new secret (skip that with -PermissionOnly: e.g. to give an app
+  set up for reading only the write access the PoP photo uploads need)
   (use it when the secret is about to expire; the old one keeps working until its
   end date, or delete it in Entra > App registrations > Certificates & secrets).
 
@@ -22,6 +27,10 @@
   # From deploy\desktop (Docker Desktop), writing straight into .env:
   powershell -ExecutionPolicy Bypass -File ..\sharepoint\setup-sharepoint-app.ps1 -EnvFile .env
   docker compose up -d --build
+
+.EXAMPLE
+  # An app set up before the PoP photo uploads (read only): add write, keep the secret
+  powershell -ExecutionPolicy Bypass -File .\deploy\sharepoint\setup-sharepoint-app.ps1 -PermissionOnly
 
 .EXAMPLE
   # Portainer: print the values to paste into the stack's environment variables
@@ -32,7 +41,9 @@ param(
     [string]$LibraryFolder = "00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs",
     [string]$AppName = "PoP Monitor - creatives sync",
     [int]$SecretMonths = 24,
-    [string]$EnvFile = ""
+    [string]$EnvFile = "",
+    [ValidateSet("read", "write")][string]$SiteAccess = "write",
+    [switch]$PermissionOnly
 )
 $ErrorActionPreference = "Stop"
 $GraphAppId = "00000003-0000-0000-c000-000000000000"
@@ -63,7 +74,7 @@ if ($app) {
     Update-MgApplication -ApplicationId $app.Id -RequiredResourceAccess @($access)
 } else {
     $app = New-MgApplication -DisplayName $AppName -SignInAudience "AzureADMyOrg" -RequiredResourceAccess @($access) `
-        -Notes "PoP Monitor creatives-sync: reads booked artwork and Material Instructions from the LUMO SharePoint site (read only, that site only). Owner: IT."
+        -Notes "PoP Monitor creatives-sync: reads booked artwork and Material Instructions from the LUMO SharePoint site and writes the best PoP photos to Booked Campaigns/PoP Images (that site only). Owner: IT."
     Write-Host "Created $AppName (client ID $($app.AppId))"
 }
 $sp = Get-MgServicePrincipal -Filter "appId eq '$($app.AppId)'"
@@ -81,16 +92,27 @@ else {
     Write-Host "Consent granted"
 }
 
-Step "Read access to $SiteUrl (this site only)"
+Step "$SiteAccess access to $SiteUrl (this site only)"
 $u = [Uri]$SiteUrl
 $site = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$($u.Host):$($u.AbsolutePath.TrimEnd('/'))"
 $perms = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$($site.id)/permissions"
 $mine = $perms.value | Where-Object { $_.grantedToIdentitiesV2.application.id -eq $app.AppId -or $_.grantedToIdentities.application.id -eq $app.AppId }
-if ($mine) { Write-Host "Already granted ($($mine.roles -join ', '))" }
-else {
-    $body = @{ roles = @("read"); grantedToIdentities = @(@{ application = @{ id = $app.AppId; displayName = $AppName } }) } | ConvertTo-Json -Depth 5
+$mine = $mine | Select-Object -First 1
+if ($mine -and ($mine.roles -contains $SiteAccess -or ($SiteAccess -eq "read" -and $mine.roles -contains "write"))) {
+    Write-Host "Already granted ($($mine.roles -join ', '))"
+} elseif ($mine) {
+    $body = @{ roles = @($SiteAccess) } | ConvertTo-Json
+    Invoke-MgGraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/sites/$($site.id)/permissions/$($mine.id)" -Body $body -ContentType "application/json" | Out-Null
+    Write-Host "Changed $($mine.roles -join ', ') to $SiteAccess on $($site.webUrl)"
+} else {
+    $body = @{ roles = @($SiteAccess); grantedToIdentities = @(@{ application = @{ id = $app.AppId; displayName = $AppName } }) } | ConvertTo-Json -Depth 5
     Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/sites/$($site.id)/permissions" -Body $body -ContentType "application/json" | Out-Null
-    Write-Host "Granted read on $($site.webUrl)"
+    Write-Host "Granted $SiteAccess on $($site.webUrl)"
+}
+if ($PermissionOnly) {
+    Write-Host "`nDone. The app's existing secret keeps working; the next PoP photo upload (8am or 8pm) will use the new access." -ForegroundColor Green
+    Disconnect-MgGraph | Out-Null
+    return
 }
 
 Step "Client secret ($SecretMonths months)"
@@ -141,5 +163,5 @@ if ($EnvFile) {
     Write-Host "Add these to the stack's environment variables (Portainer) or .env, then redeploy:" -ForegroundColor Green
     $values.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key)=$($_.Value)" }
 }
-Write-Host "`nKeep the secret private: it reads the LUMO site. It is shown only once."
+Write-Host "`nKeep the secret private: it can $SiteAccess the LUMO site. It is shown only once."
 Disconnect-MgGraph | Out-Null

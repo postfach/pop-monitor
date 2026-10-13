@@ -32,7 +32,8 @@ Axis camera ──RTSP 720p──▶ pop-gateway (one worker per camera)
 | `tools/popreplay.c` | Runs the core over a recorded video: the field-trial tuning tool |
 | `tools/roi-picker.html` | Open in a browser, load a camera snapshot, drag the four corners |
 | `tools/receiver.py` | Interim backend + review page (checks token, HMAC, hashes) |
-| `sync/` | `creatives-sync`: booked artwork from SharePoint via Microsoft Graph, with tests and a mock Graph |
+| `tools/popscore.py` | PoP photo quality score (glare, sunstrike, rain, blur, occlusion, clarity) and day/night |
+| `sync/` | `creatives-sync`: booked artwork from SharePoint via Microsoft Graph, and the best PoP photos back into it (`pop_upload.py`), with tests and a mock Graph |
 | `deploy/sharepoint/` | One-off PowerShell set-up of the app registration and site grant |
 | `deploy/` | Portainer / Docker Compose stack, trial config, image build script |
 | `tools/fake_camera.py`, `sim_scene.py`, `make_test_video.py` | Synthetic billboard for end-to-end tests |
@@ -223,7 +224,7 @@ leaving out house and unbooked fill.
    campaign's Material Instructions to pick the file for the screen and its dates). The
    **creatives-sync** container keeps it current automatically: at start, within 5 minutes
    of a new Vault pull or a site's Vault screen changing, every 4 hours, and on **Sync now**
-   on the Bookings page. It needs a one-off app registration with read access to the LUMO
+   on the Bookings page. It needs a one-off app registration with access to the LUMO
    site only: run `deploy/sharepoint/setup-sharepoint-app.ps1` (see
    `docs/sharepoint-setup.md`). A library can still be uploaded as a zip with the same
    button (the newest wins). Format: "Creatives pull" in `docs/vault-pull.md`.
@@ -283,6 +284,18 @@ true coverage) unless this is its first or last week. `plays_per_loop` is the mo
 week. Vault or Doohly API access would remove both limits, and Doohly's playlist would also
 say which creative belongs to which campaign, so the links could then be made automatically. The receiver also tells the gateway how many
 campaigns are certainly booked, which the missing-creative check uses.
+
+### Best PoP photos into SharePoint
+
+At 8 pm (daytime photos) and 8 am (night photos) creatives-sync puts the clearest PoP
+photo of each campaign, site and artwork version into SharePoint under
+`Booked Campaigns/PoP Images/<year>/<MM - Month>/<site>/`, named like
+`LUMO_19702_Curletts-In_2026-10-13_1432_Day_Score87_v1.jpg`. Photos are scored for glare,
+sunstrike, rain, haze, blur, anything in front of the screen and how clearly the creative
+shows (`tools/popscore.py`); a later run replaces a photo only with a higher-scoring one.
+Unassigned, programmatic and house creatives are left out. It needs the SharePoint app to
+have write access (`setup-sharepoint-app.ps1 -PermissionOnly`). Details and settings:
+`docs/pop-photos.md`.
 
 ## Adding many sites
 

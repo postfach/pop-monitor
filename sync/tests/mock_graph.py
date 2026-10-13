@@ -119,6 +119,43 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"value": hits})
         self.send(404, {"error": {"code": "notMocked", "message": p}})
 
+    def _authed_path(self):
+        if self.headers.get("Authorization") != "Bearer test-token":
+            self.send(401, {"error": {"code": "InvalidAuthenticationToken", "message": "bad token"}})
+            return None
+        p = urllib.parse.unquote(self.path.partition("?")[0])
+        return p[len("/v1.0"):] if p.startswith("/v1.0") else p
+
+    def do_PUT(self):
+        """Simple upload by path (PoP photos): creates missing folders, like Graph."""
+        p = self._authed_path()
+        if p is None:
+            return
+        m = re.fullmatch(r"/drives/drive1/root:/(.+):/content", p)
+        if not m:
+            return self.send(404, {"error": {"code": "notMocked", "message": p}})
+        if ARGS.readonly:
+            return self.send(403, {"error": {"code": "accessDenied", "message": "read only"}})
+        rel = m.group(1).strip("/")
+        data = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        os.makedirs(os.path.dirname(os.path.join(ARGS.library, rel)), exist_ok=True)
+        with open(os.path.join(ARGS.library, rel), "wb") as f:
+            f.write(data)
+        self.send(201, item(rel))
+
+    def do_DELETE(self):
+        p = self._authed_path()
+        if p is None:
+            return
+        m = re.fullmatch(r"/drives/drive1/items/([^/]+)", p)
+        rel = IDS.get(m.group(1)) if m else None
+        if rel is None or not os.path.exists(os.path.join(ARGS.library, rel)):
+            return self.send(404, {"error": {"code": "itemNotFound", "message": "no item"}})
+        os.remove(os.path.join(ARGS.library, rel))
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
 
 def main():
     global ARGS
@@ -128,6 +165,7 @@ def main():
     ap.add_argument("--gateway-port", type=int, default=0)
     ap.add_argument("--sites", default="BEACH-01=Beach,CURLETTS-IN=Curletts In,ALBANY-IN=Albany Expressway In")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--readonly", action="store_true", help="refuse uploads (an app with read access only)")
     ARGS = ap.parse_args()
     item("")
     if ARGS.gateway_port:

@@ -45,6 +45,8 @@ services:
       BOOKINGS_FILE: /bookings/vault-bookings.json
       CREATIVES_DIR: /creatives,/bookings/creatives   # artwork library: creatives-sync's, or a hand-made pull (newest wins)
       SYNC_URL: http://creatives-sync:8091
+      POP_DEFAULT_COORDS: ${POP_DEFAULT_COORDS:--36.85,174.76}   # sunrise/sunset for day vs night PoP photos
+      POP_SITE_COORDS: ${POP_SITE_COORDS:-}     # optional per site: SITE_ID=lat,lon;SITE_ID=lat,lon
       REVIEW_USER: ${REVIEW_USER:-}
       REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
     ports:
@@ -76,6 +78,11 @@ services:
       SP_ROOT: ${SP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs}
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-240}
       SYNC_SCREENS: ${SYNC_SCREENS:-}           # blank = the Vault screens of the monitored sites
+      # best day and night PoP photo per campaign into SharePoint (needs write access: docs/sharepoint-setup.md)
+      POP_UPLOAD: ${POP_UPLOAD:-1}
+      POP_ROOT: ${POP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images}
+      POP_DAY_AT: ${POP_DAY_AT:-20:00}          # today's daytime photos
+      POP_NIGHT_AT: ${POP_NIGHT_AT:-08:00}      # last night's photos
     expose:
       - "8091"                  # status and "Sync now", reachable only by the receiver
     volumes:
