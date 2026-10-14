@@ -1206,7 +1206,8 @@ function render() {
     : rep.sites.map(s => site(s, rep)).join('') || '<p class="muted">No sites.</p>';
   document.getElementById('built').textContent = rep.built_at ? `Worked out ${rep.built_at.split(' ')[1] || rep.built_at}` : '';
 }
-function shift(days) { const d = new Date(week + 'T00:00'); d.setDate(d.getDate() + days); week = d.toISOString().slice(0, 10);
+function shift(days) {   // in UTC: a local midnight is the previous day in UTC east of Greenwich (NZ)
+  const d = new Date(week + 'T00:00Z'); d.setUTCDate(d.getUTCDate() + days); week = d.toISOString().slice(0, 10);
   history.replaceState(null, '', '?week=' + week); load(); }
 document.getElementById('prev').onclick = () => shift(-7);
 document.getElementById('next').onclick = () => shift(7);
