@@ -306,6 +306,29 @@ Unassigned, programmatic and house creatives are left out. It needs the SharePoi
 have write access (`setup-sharepoint-app.ps1 -PermissionOnly`). Details and settings:
 `docs/pop-photos.md`.
 
+## Storage and clean-up (receiver)
+
+The receiver keeps PoP records, alerts and gateway heartbeats in a SQLite database
+(`pop.db` in its data volume, `tools/store.py`) and the photos as files next to it. An hourly
+clean-up keeps the disk from filling:
+
+| What | Kept | Setting |
+|---|---|---|
+| PoP photos (full frame and screen crop) | 3 days | `POP_IMAGE_DAYS` |
+| Photos attached to alerts | 30 days | `POP_ALERT_IMAGE_DAYS` |
+| PoP and alert records (the details of every play) | 90 days | `POP_RECORD_DAYS` |
+| Gateway heartbeats | 7 days | `POP_HEARTBEAT_DAYS` |
+
+The best day and night photo of every campaign is in SharePoint already (8 pm / 8 am), so
+3 days is enough. Removing a photo keeps its play: delivery and coverage are unchanged; the
+review page shows *photo removed after 3 days*, and artwork matching and the Bookings page
+use the photos still there. The creative matching on the gateway doesn't use these photos
+at all. The Health page shows the record and photo counts, their size and the free disk.
+
+Upgrading from a version with `records.jsonl`: on first start it is imported into `pop.db`
+(about 5 s per 150,000 records) and renamed `records.jsonl.imported`; delete that once
+you're happy.
+
 ## Adding many sites
 
 * **From Doohly** (with a Doohly token): the Sites page lists the Doohly screens not set up yet;

@@ -46,6 +46,9 @@ services:
       BOOKINGS_FILE: /bookings/vault-bookings.json
       CREATIVES_DIR: /creatives,/bookings/creatives   # artwork library: creatives-sync's, or a hand-made pull (newest wins)
       SYNC_URL: http://creatives-sync:8091
+      POP_IMAGE_DAYS: ${POP_IMAGE_DAYS:-3}            # PoP photos kept this many days (the best go to SharePoint)
+      POP_ALERT_IMAGE_DAYS: ${POP_ALERT_IMAGE_DAYS:-30}
+      POP_RECORD_DAYS: ${POP_RECORD_DAYS:-90}         # details of every play (small)
       POP_DEFAULT_COORDS: ${POP_DEFAULT_COORDS:--36.85,174.76}   # sunrise/sunset for day vs night PoP photos
       POP_SITE_COORDS: ${POP_SITE_COORDS:-}     # optional per site: SITE_ID=lat,lon;SITE_ID=lat,lon
       REVIEW_USER: ${REVIEW_USER:-}

@@ -5,9 +5,9 @@ Implements POST /v1/pop, /v1/alerts (multipart: metadata, frame, roi) and
 POST /v1/heartbeat (JSON). Checks the bearer token, the HMAC signature and
 idempotency, then stores everything under --out:
 
-  out/records.jsonl         one line per accepted PoP record or alert
-  out/heartbeats.jsonl
+  out/pop.db                PoP records, alerts and heartbeats (SQLite, tools/store.py)
   out/images/<event_id>.frame.jpg / .roi.jpg
+                            photos, removed after POP_IMAGE_DAYS (3) days
 
   python3 tools/receiver.py --port 8080 --api-key KEY --hmac-key SECRET --out ./received
 
@@ -34,16 +34,17 @@ import threading
 import time
 import uuid
 import shutil
-import bisect
 import zipfile
 import io
 from datetime import datetime, timezone
+
+import store
 from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ARGS = None
-SEEN = set()
+STORE = None          # store.Store: records, alerts and heartbeats (set in main)
 LOCK = threading.Lock()
 
 
@@ -55,21 +56,6 @@ def parse_multipart(ctype, body):
         name = part.get_param("name", header="content-disposition")
         parts[name] = part.get_payload(decode=True)
     return parts
-
-
-def tail_jsonl(path, n):
-    try:
-        with open(path) as f:
-            lines = f.readlines()[-n:]
-    except FileNotFoundError:
-        return []
-    out = []
-    for line in lines:
-        try:
-            out.append(json.loads(line))
-        except ValueError:
-            pass
-    return out
 
 
 def load_resets():
@@ -93,55 +79,13 @@ def note_reset(site_id, ts):
         os.replace(tmp, os.path.join(ARGS.out, "site-resets.json"))
 
 
-def rewrite_records(fn):
-    """Rewrite records.jsonl through fn(record) -> record, or None to drop it
-    (its images are deleted too). Returns how many records were dropped."""
-    path = os.path.join(ARGS.out, "records.jsonl")
-    dropped = 0
-    with LOCK:
-        try:
-            with open(path) as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            return 0
-        tmp = path + ".tmp"
-        with open(tmp, "w") as out:
-            for line in lines:
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    out.write(line)
-                    continue
-                new = fn(r)
-                if new is None:
-                    dropped += 1
-                    SEEN.discard(r.get("event_id"))
-                    for kind in ("frame", "roi"):
-                        try:
-                            os.remove(os.path.join(ARGS.out, "images", f"{r.get('event_id')}.{kind}.jpg"))
-                        except (FileNotFoundError, TypeError):
-                            pass
-                    continue
-                out.write(json.dumps(new) + "\n")
-        os.replace(tmp, path)
-    return dropped
-
-
 def recorded_sites():
     """Every site ID that has records here, with counts and the newest time."""
     sites = {}
-    for r in tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 1000000):
-        sid = r.get("site_id")
-        if not sid:                      # gateway-level alerts (gateway_offline) belong to no site
-            continue
-        e = sites.setdefault(sid, {"site_id": sid, "name": "", "pops": 0, "alerts": 0, "last": ""})
-        e["name"] = disp(r) or e["name"]
-        e["pops" if r.get("type") == "creative_change" else "alerts"] += 1
-        t = r.get("play_started_at") or r.get("at") or ""
-        if t > e["last"]:
-            e["last"] = t
-    for e in sites.values():
+    for e in STORE.sites():
+        e["last"] = iso(e["last_t"]) if e.get("last_t") else ""
         e["last_local"] = local_time(e["last"], True)
+        sites[e["site_id"]] = e
     return sites
 
 
@@ -1008,6 +952,10 @@ async function load() {
     $sub.innerHTML = gws.length ? `${gws.length} gateway(s)` + (down ? ` · <span class="bad">${down} offline</span>` : '') + (warn ? ` · <span class="warn">${warn} with warnings</span>` : '') + ' · updates every 15 s'
                                 : 'No heartbeats received yet.';
     document.getElementById('gws').innerHTML = gws.map(gateway).join('');
+    const st = await (await fetch('/health/storage')).json().catch(() => null);
+    if (st) $sub.innerHTML += `<br>This server: ${st.records.toLocaleString()} PoP and alert record(s) since ${esc(st.oldest || '–')} (${st.db_mb} MB), ` +
+      `${st.photo_files.toLocaleString()} photo file(s) (${st.photo_mb} MB) · photos kept ${st.image_days} day(s), alert photos ${st.alert_image_days}, records ${st.record_days} · ` +
+      `<span class="${st.free_gb < 5 ? 'bad' : ''}">${st.free_gb} GB free</span> of ${st.disk_gb} GB`;
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
 let $sub; load(); setInterval(load, 15000);
@@ -1447,8 +1395,7 @@ def gateway_alert(gid, state, since, detail):
     rec = {"event_id": str(uuid.uuid4()), "type": "fault", "fault": "gateway_offline", "state": state,
            "severity": "critical", "site_id": "", "site_name": f"Gateway {gid}", "gateway_id": gid,
            "since": iso(since), "at": iso(now), "detail": detail, "_received": {"endpoint": "watchdog"}}
-    with LOCK, open(os.path.join(ARGS.out, "records.jsonl"), "a") as f:
-        f.write(json.dumps(rec) + "\n")
+    STORE.add(rec)
     print(f"ALERT gateway {gid} gateway_offline {state}: {detail}", flush=True)
     when = local_time(rec["at"], True)
     title = f"{'Recovered: ' if state == 'cleared' else 'Critical: '}gateway {gid} {'back online' if state == 'cleared' else 'offline'}"
@@ -1494,6 +1441,32 @@ def offline_banner():
     items = ", ".join(f"<b>{esc(gid)}</b> (last heard {esc(fmt_age(time.time() - at))} ago)" for gid, at in off)
     return (f"<div style='border:1px solid var(--bad);color:var(--bad);border-radius:8px;padding:10px 12px;margin:10px 0'>"
             f"Gateway offline: {items}. <a href='/health'>Health</a></div>")
+
+
+STORAGE = {"at": 0, "data": None}
+
+
+def storage_data():
+    """The receiver's own storage for the Health page (photo sizes counted every 5 minutes)."""
+    if STORAGE["data"] and time.time() - STORAGE["at"] < 300:
+        return STORAGE["data"]
+    n = size = 0
+    try:
+        for ent in os.scandir(os.path.join(ARGS.out, "images")):
+            try:
+                size += ent.stat(follow_symlinks=False).st_size
+                n += 1
+            except OSError:
+                pass
+    except FileNotFoundError:
+        pass
+    du = shutil.disk_usage(ARGS.out)
+    d = dict(STORE.counts(), photo_files=n, photo_mb=round(size / 1e6, 1), free_gb=round(du.free / 1e9, 1),
+             disk_gb=round(du.total / 1e9, 1), image_days=store.IMAGE_DAYS, alert_image_days=store.ALERT_IMAGE_DAYS,
+             record_days=store.RECORD_DAYS)
+    d["oldest"] = local_time(iso(d["oldest"]), True) if d.get("oldest") else None
+    STORAGE.update(at=time.time(), data=d)
+    return d
 
 
 def health_data():
@@ -1554,7 +1527,6 @@ import math
 
 BOOKINGS_LOCK = threading.Lock()
 BOOKINGS = {"mtime": None, "data": None, "path": None}
-RECS = {"size": 0, "inode": None, "by_site": {}}     # incremental index of PoP records
 
 
 def bookings_paths():
@@ -1774,40 +1746,6 @@ def iso_to_ts(v):
         return None
 
 
-def index_records():
-    """PoP records per site, read incrementally: (t, creative, blank, video, event_id, has_roi)."""
-    path = os.path.join(ARGS.out, "records.jsonl")
-    try:
-        st = os.stat(path)
-    except OSError:
-        return {}
-    with LOCK:
-        if RECS["inode"] != st.st_ino or st.st_size < RECS["size"]:   # rewritten (delete/rename)
-            RECS.update(size=0, inode=st.st_ino, by_site={})
-        if st.st_size > RECS["size"]:
-            with open(path, "rb") as f:
-                f.seek(RECS["size"])
-                chunk = f.read()
-            end = chunk.rfind(b"\n") + 1
-            for line in chunk[:end].splitlines():
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                if r.get("type") != "creative_change":
-                    continue
-                t = iso_to_ts(r.get("play_started_at"))
-                if t is None:
-                    continue
-                RECS["by_site"].setdefault(r.get("site_id"), []).append(
-                    (t, r.get("local_creative_id"), bool(r.get("is_blank")), bool(r.get("video_creative")),
-                     r.get("event_id"), "roi_sha256" in r, (r.get("quality") or {}).get("usable", True) is not False))
-            RECS["size"] += end
-            for v in RECS["by_site"].values():
-                v.sort(key=lambda x: x[0])
-        return RECS["by_site"]
-
-
 def runs_typical(plays, S, cap):
     """Usual run length (slots) of each creative: mode of rounded durations."""
     hist = {}
@@ -1816,11 +1754,6 @@ def runs_typical(plays, S, cap):
         h = hist.setdefault(plays[i][1], {})
         h[r] = h.get(r, 0) + 1
     return {cid: min(h, key=lambda r: (-h[r], r)) for cid, h in hist.items()}
-
-
-def _between(plays, t0, t1):
-    """The plays (sorted by time) with t0 <= start < t1, by binary search."""
-    return plays[bisect.bisect_left(plays, t0, key=lambda p: p[0]):bisect.bisect_left(plays, t1, key=lambda p: p[0])]
 
 
 # ---------------------------------------------------------------- creative merges
@@ -1872,7 +1805,7 @@ def canon(site_id, cid):
 
 def site_plays(site_id, t0, t1):
     """A site's plays in [t0, t1), with merged IDs read as the ID they were merged into."""
-    ps = _between(index_records().get(site_id, []), t0, t1)
+    ps = STORE.plays(site_id, t0, t1)
     if not merges().get(site_id):
         return ps
     return [(p[0], canon(site_id, p[1])) + tuple(p[2:]) for p in ps]
@@ -1954,7 +1887,7 @@ def push_merges():
     before applying them)."""
     changed = False
     for sid, site_m in merges().items():
-        plays = index_records().get(sid, [])
+        plays = STORE.last_plays(sid, 500)
         recent = {p[1] for p in plays[-500:]}
         todo = [(cid, m) for cid, m in site_m.items()
                 if not m.get("pushed") or (cid in recent and any(p[1] == cid and p[0] > m["pushed"] + 600 for p in plays[-500:]))]
@@ -2739,6 +2672,7 @@ try:
     import popscore as _ps
 except ImportError:                                   # pragma: no cover
     _ps = None
+POP_IMAGE_DAYS = store.IMAGE_DAYS
 POP_SAMPLES = int(os.environ.get("POP_BEST_SAMPLES", "240"))   # photos scored per version and window
 POP_DEFAULT_COORDS = os.environ.get("POP_DEFAULT_COORDS", "-36.85,174.76")   # Auckland
 PREP_CACHE = {}                    # event id -> popscore.prep() of its region image
@@ -2806,10 +2740,10 @@ def _versions(site_id, group):
 
 
 def _play_by_eid(site_id, eid):
-    for p in index_records().get(site_id, []):
-        if p[4] == eid:
-            return (p[0], canon(site_id, p[1])) + tuple(p[2:])
-    return None
+    p = STORE.play(eid)
+    if not p or p[7] != site_id:
+        return None
+    return (p[0], canon(site_id, p[1]), bool(p[2]), bool(p[3]), p[4], bool(p[5]), bool(p[6]))
 
 
 def best_pops(t0, t1, phase, current=None):
@@ -2894,8 +2828,8 @@ def best_pops(t0, t1, phase, current=None):
                 cur_score = s["score"]
             if best is None or s["score"] > best[1]["score"]:
                 best = (p, s)
-        first = site_plays(sid, 0, t1)
-        first = next((q[0] for q in first if q[1] in ids and not q[2]), best[0][0])
+        raw = {a for a, m in merges().get(sid, {}).items() if canon(sid, a) in ids} | set(ids)
+        first = STORE.first_play(sid, sorted(raw), t1) or best[0][0]
         p, s = best
         out.append(dict(it, creative_ids=sorted(ids), event_id=p[4], creative_id=p[1],
                         taken_at=datetime.fromtimestamp(p[0], LOCAL_TZ).isoformat(timespec="seconds"),
@@ -2934,9 +2868,11 @@ def coverage_cell(c):
 
 
 def render_page(site):
-    recs = tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 2000)
     if site:
-        recs = [r for r in recs if r.get("site_id") == site]
+        recs = STORE.recent(200, site)
+        recs = [r for r in recs if r.get("site_id") == site and r.get("type") == "creative_change"] + STORE.alerts(50, site)
+    else:
+        recs = STORE.newest_per_site() + STORE.alerts(50)
     live = gateway_cameras()                     # live from the gateway when it's reachable
     if live is not None:                         # hide records from sites that no longer exist
         known = {c.get("id") or c.get("site_id") for c in live}
@@ -2958,7 +2894,7 @@ def render_page(site):
                 c["coverage"] = c.get("plays_last_hour", 0) / c["expected_per_hour"]
             hb[c.get("site_id")] = c
     else:                                        # otherwise the latest heartbeat
-        last = tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 1)
+        last = STORE.last_heartbeats(1)
         stale = bool(offline_gateways())
         for c in (last[0].get("cameras", []) if last else []):
             hb[c.get("site_id")] = dict(c, stale=stale)
@@ -2976,9 +2912,11 @@ def render_page(site):
     camp_cache = {}
     for r in pops:
         q = r.get("quality", {})
-        img = (f"<div class='thumb'><img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''></div>"
+        gone = r.get("_images_removed")
+        img = (f"<div class='thumb'><span>photo removed after {POP_IMAGE_DAYS:g} days</span></div>" if gone else
+               f"<div class='thumb'><img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''></div>"
                if "roi_sha256" in r else "<div class='thumb'><span>no image</span></div>")
-        full = f" &middot; <a href='/images/{esc(r['event_id'])}.frame.jpg' target='_blank'>full frame</a>" if "frame_sha256" in r else ""
+        full = f" &middot; <a href='/images/{esc(r['event_id'])}.frame.jpg' target='_blank'>full frame</a>" if "frame_sha256" in r and not gone else ""
         flags = " [blank]" if r.get("is_blank") else ""
         flags += " [video]" if r.get("video_creative") else ""
         verdict = "" if q.get("usable", True) else f"<br><span class='bad'>{esc(q.get('reason'))}</span>"
@@ -3053,13 +2991,7 @@ class H(BaseHTTPRequestHandler):
             except ValueError:
                 new_id = None
             if new_id and new_id != old_id:    # keep this site's history under its new ID
-                def move(r):
-                    if r.get("site_id") == old_id:
-                        r["site_id"] = new_id
-                        if new_name:
-                            r["site_name"] = r["camera"] = new_name
-                    return r
-                rewrite_records(move)
+                STORE.rename_site(old_id, new_id, new_name)
                 print(f"site ID {old_id} -> {new_id}: records moved", flush=True)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -3120,6 +3052,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, sorted(recorded_sites().values(), key=lambda e: e["site_id"] or ""))
         if path == "/health.json":
             return self.reply(200, health_data())
+        if path == "/health/storage":
+            return self.reply(200, storage_data())
         if path == "/bookings.json":
             m = re.search(r"(?:^|&)week=(\d{4}-\d\d-\d\d)", query)
             wk = monday(datetime.fromisoformat(m.group(1)).date()) if m else monday(datetime.now(LOCAL_TZ).date())
@@ -3276,7 +3210,7 @@ class H(BaseHTTPRequestHandler):
             REPORTS["gen"] += 1
             if history:
                 note_reset(sid, asked)
-                deleted = rewrite_records(lambda r: None if r.get("site_id") == sid else r)
+                deleted = STORE.delete_site(sid)
                 with LOCK:
                     links = load_links()
                     if links.pop(sid, None) is not None:
@@ -3296,7 +3230,7 @@ class H(BaseHTTPRequestHandler):
             live = gateway_cameras()
             if live is not None and sid in {c.get("id") for c in live}:
                 return self.reply(409, {"error": "that site still exists; remove it on the Sites page first"})
-            n = rewrite_records(lambda r: None if r.get("site_id") == sid else r)
+            n = STORE.delete_site(sid)
             print(f"deleted {n} record(s) for site {sid}", flush=True)
             return self.reply(200, {"deleted": n})
         if self.path.startswith("/hooks/"):      # stand-in for Teams/Slack webhooks
@@ -3311,10 +3245,10 @@ class H(BaseHTTPRequestHandler):
         os.makedirs(os.path.join(ARGS.out, "images"), exist_ok=True)
 
         if self.path == "/v1/heartbeat":
-            with LOCK, open(os.path.join(ARGS.out, "heartbeats.jsonl"), "a") as f:
-                f.write(body.decode() + "\n")
             try:
-                note_heartbeat(json.loads(body))
+                hb = json.loads(body)
+                STORE.add_heartbeat(hb, body.decode())
+                note_heartbeat(hb)
             except ValueError:
                 pass
             return self.reply(200)
@@ -3339,10 +3273,8 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"status": "dropped: played before the site's creatives were reset"})
         if self.headers.get("Idempotency-Key") != eid:
             return self.reply(400, {"error": "idempotency key mismatch"})
-        with LOCK:
-            if eid in SEEN:
-                return self.reply(409, {"status": "duplicate"})
-            SEEN.add(eid)
+        if STORE.seen(eid):
+            return self.reply(409, {"status": "duplicate"})
         checks = {}
         for name in ("frame", "roi"):
             data = parts.get(name)
@@ -3352,8 +3284,8 @@ class H(BaseHTTPRequestHandler):
                 with open(os.path.join(ARGS.out, "images", f"{eid}.{name}.jpg"), "wb") as f:
                     f.write(data)
         meta["_received"] = {"endpoint": self.path, "images": checks}
-        with LOCK, open(os.path.join(ARGS.out, "records.jsonl"), "a") as f:
-            f.write(json.dumps(meta) + "\n")
+        if not STORE.add(meta):
+            return self.reply(409, {"status": "duplicate"})
         if meta.get("type") == "fault":
             print(f"ALERT {meta['site_id']} {meta['fault']} {meta['state']}: {meta['detail']}", flush=True)
         else:
@@ -3376,9 +3308,9 @@ def main():
     if not ARGS.api_key:
         ap.error("--api-key or POP_API_KEY is required")
     os.makedirs(ARGS.out, exist_ok=True)
-    for r in tail_jsonl(os.path.join(ARGS.out, "records.jsonl"), 1000000):   # idempotency across restarts
-        SEEN.add(r.get("event_id"))
-    for hb in tail_jsonl(os.path.join(ARGS.out, "heartbeats.jsonl"), 500):     # last known state per gateway
+    global STORE
+    STORE = store.Store(ARGS.out, log=lambda m: print(m, flush=True))
+    for hb in STORE.last_heartbeats(500):                                   # last known state per gateway
         try:
             t = datetime.fromisoformat(hb.get("sent_at", "").replace("Z", "+00:00")).timestamp()
         except ValueError:
@@ -3387,6 +3319,7 @@ def main():
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=bookings_loop, daemon=True).start()
     threading.Thread(target=report_warmer, daemon=True).start()
+    threading.Thread(target=STORE.housekeeper, daemon=True).start()
     print(f"receiver on {ARGS.bind}:{ARGS.port}, storing in {ARGS.out}", flush=True)
     ThreadingHTTPServer((ARGS.bind, ARGS.port), H).serve_forever()
 

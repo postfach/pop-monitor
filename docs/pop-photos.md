@@ -35,7 +35,7 @@ full camera frame, so the billboard is seen in its surroundings.
 * Creatives not linked to a campaign on the Bookings page (unassigned, programmatic,
   house) are never uploaded. When an unassigned creative is linked later, its photos are
   picked up from the next run.
-* A missed run (computer off, container down) catches up at the next start, up to a week
+* A missed run (computer off, container down) catches up at the next start, up to 3 days
   back. A failed run is retried hourly and posts one alert to Teams/Slack (and one when
   it recovers).
 
@@ -95,7 +95,7 @@ night photos go up straight away.
 | `POP_UPLOAD` | creatives-sync | `1` | `0` turns the uploads off |
 | `POP_ROOT` | creatives-sync | `00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images` | folder in the Sales library |
 | `POP_DAY_AT` / `POP_NIGHT_AT` | creatives-sync | `20:00` / `08:00` | local time (TZ) |
-| `POP_CATCHUP_DAYS` | creatives-sync | `7` | how far back a missed run catches up |
+| `POP_CATCHUP_DAYS` | creatives-sync | `3` | how far back a missed run catches up (photos are kept 3 days) |
 | `POP_RETRY_MIN` | creatives-sync | `60` | retry after a failed run |
 | `POP_DEFAULT_COORDS` | receiver | `-36.85,174.76` (Auckland) | for sunrise and sunset |
 | `POP_SITE_COORDS` | receiver | | sites elsewhere: `SITE_ID=lat,lon;SITE_ID=lat,lon` (e.g. Christchurch `-43.53,172.62`) |
