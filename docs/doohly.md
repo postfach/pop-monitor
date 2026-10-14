@@ -12,7 +12,7 @@ screen whose player is in Doohly.
 | Slot type | Sold, bonus, non-guaranteed bonus ("ng bonus"), filler | Vault slot types |
 | Which artwork | the creatives booked on the player, found in SharePoint by file name, with their weighting (% of the campaign's plays) and day-parting | the Material Instructions |
 | Day or night | the player's GPS location | Auckland unless `POP_SITE_COORDS` is set |
-| Rotation check | the frame's loop policy: a warning when the site's slot count or length differs | — |
+| Rotation (slot count and length) | the frame's loop policy: the site's rotation is kept the same automatically | set by hand |
 | Player status | online or offline, last seen; a Teams/Slack alert after 15 minutes offline | — |
 
 A campaign booked only as a **non-guaranteed bonus** plays when the loop has room, so it
@@ -59,6 +59,18 @@ form if Vault names it differently.
 The screen sizes and loops are read a few players at a time (Doohly takes a few seconds
 per player), so after the first start the list fills in over about half an hour; until then
 those columns show `?`, and the form leaves the rotation blank.
+
+## Rotation from Doohly
+
+Each site's rotation (slots in the loop and slot length) follows its Doohly player's loop
+policy: within 5 minutes of a difference, the receiver changes the site's settings on the
+gateway (which restarts that camera's stream) and logs `rotation: <site> set to 20 x 8 s
+from Doohly`. The Sites page marks those sites *· Doohly*, and the site's Settings page shows
+the Doohly loop and the last change.
+
+Untick **Keep in step with Doohly's loop** on a site's Settings page to set its rotation by
+hand; the Bookings page then warns if it differs from Doohly. Takeover sites and sites with
+time-of-day rotations (from the config file) are always left alone.
 
 ## When it runs
 

@@ -168,9 +168,9 @@ function hostText(c) {
 }
 async function load() {
   try {
-    const [r, s] = await Promise.all([fetch('/api/cameras'), fetch('/api/settings')]);
+    const [r, s, ro] = await Promise.all([fetch('/api/cameras'), fetch('/api/settings'), fetch('/sites/rotation').catch(() => null)]);
     if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-    const cams = await r.json(), st = s.ok ? await s.json() : {};
+    const cams = await r.json(), st = s.ok ? await s.json() : {}, rots = ro && ro.ok ? await ro.json() : {};
     document.getElementById('sub').textContent = `${cams.length} site(s) on gateway ${st.gateway_id || ''}`;
     document.getElementById('rows').innerHTML = cams.map(c => {
       const q = encodeURIComponent(c.id);
@@ -178,7 +178,7 @@ async function load() {
       return `<tr><td><b>${esc(c.name)}</b>${c.name !== c.id ? `<br><span class="muted">${esc(c.id)}</span>` : ''}</td>
         <td>${esc(c.model)}</td><td>${hostText(c)}</td>
         <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
-        <td>${rotation(c)}</td><td>${c.plays_last_hour}${exp}</td>
+        <td>${rotation(c)}${rots[c.id] && rots[c.id].auto ? ' <span class="muted" title="kept in step with the Doohly player\'s loop">· Doohly</span>' : ''}</td><td>${c.plays_last_hour}${exp}</td>
         <td class="bad">${esc(c.active_faults.join(', '))}</td>
         <td class="actions"><a href="/site?site=${q}">Settings</a><a href="/roi?site=${q}">Region</a><a href="/?site=${q}">PoP</a></td></tr>`;
     }).join('') || '<tr><td colspan="8" class="muted">No sites yet. Click Add site.</td></tr>';
@@ -317,6 +317,8 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
   <label class="f"><span>Slots in the rotation</span><input type="number" name="slot_count" min="1" max="200" placeholder="6"></label>
   <label class="f"><span>Slot length (seconds)</span><input type="number" name="slot_s" min="1" max="3600" step="0.5" placeholder="10"></label>
 </div><p class="hint" id="rothint">Leave blank if unknown. Setting these makes detection and fault alerts fit the loop.</p>
+<label class="check" id="rotauto" hidden><input type="checkbox" name="rot_doohly"> Keep in step with Doohly's loop <span class="muted" id="rotdoohly"></span></label>
+<p class="hint" id="rotnote" hidden></p>
 </fieldset>
 
 <fieldset><legend>Schedule and checks</legend>
@@ -362,9 +364,11 @@ const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || 
 let current = null;
 
 function setVal(n, v) { const el = f.elements[n]; if (!el) return; if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? ''; }
+let rot = null;                          // this site's Doohly rotation state (/sites/rotation)
 function sync() {
   const take = f.elements.takeover.checked;
-  f.elements.slot_count.disabled = f.elements.slot_s.disabled = take;
+  const follow = rot && rot.doohly && f.elements.rot_doohly.checked && !take;
+  f.elements.slot_count.disabled = f.elements.slot_s.disabled = take || follow;
   const all = f.elements.allday.checked;
   f.elements.from.disabled = f.elements.to.disabled = all;
   f.elements.camera_tls_insecure.disabled = !f.elements.use_https.checked;
@@ -431,9 +435,38 @@ function fillFrom(c, copy) {
   if (current.password_set) { $('pwhint').textContent = 'Password (blank = keep this site’s password)'; $('clearpw').hidden = false; }
   if (current.dayparts) $('rothint').textContent = `This site also has ${current.dayparts} time-of-day profile(s) from the config file; these fields set the default profile.`;
   $('effective').textContent = current.snapshot_url ? 'Snapshots currently use ' + current.snapshot_url + '.' : '';
+  loadRotation(c.id);
   $('save').textContent = 'Save changes'; $('test').hidden = $('region').hidden = $('del').hidden = $('dup').hidden = $('reset').hidden = false;
   sync();
 }
+
+async function loadRotation(id) {
+  const all = await fetch('/sites/rotation').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  rot = all[id] || null;
+  if (!rot || !rot.doohly) {                   // no Doohly loop for this site: nothing to follow
+    if (rot && rot.why) { $('rotnote').hidden = false; $('rotnote').textContent = `Rotation set by hand (${rot.why}).`; }
+    return;
+  }
+  $('rotauto').hidden = false;
+  f.elements.rot_doohly.checked = !rot.manual;
+  $('rotdoohly').textContent = `(${rot.doohly.slot_count} × ${rot.doohly.slot_s} s, "${rot.doohly.name || ''}")`;
+  const ch = rot.last_change;
+  $('rotnote').hidden = !(ch || rot.why);
+  $('rotnote').textContent = rot.why && !rot.manual ? `Not following Doohly: ${rot.why}.` :
+    ch ? `Last set from Doohly ${new Date(ch.at).toLocaleString()}: ${ch.from} → ${ch.to}.` : '';
+  sync();
+}
+f.addEventListener('change', async ev => {
+  if (ev.target.name !== 'rot_doohly' || !current) return;
+  const manual = !ev.target.checked;
+  const r = await fetch('/sites/rotation', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({site_id: current.id, manual})});
+  if (!r.ok) { msg('Could not change this: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad'); return; }
+  rot = await r.json();
+  if (!manual && rot.doohly) { setVal('slot_count', rot.doohly.slot_count); setVal('slot_s', rot.doohly.slot_s); }
+  msg(manual ? 'The rotation is now set by hand: Doohly won\'t change it.' : 'The rotation now follows Doohly (applied within a few seconds).', 'ok');
+  sync();
+});
 
 function formData() {
   const e = f.elements, num = v => v === '' ? 0 : Number(v);
@@ -2396,10 +2429,11 @@ def site_bookings(cam, week, links_all):
         if dev.get("online") is False:
             res["warnings"].append(f"Doohly says the player {dev.get('name')} is offline (last seen "
                                    f"{local_time(dev.get('alive_at'), True) or 'unknown'}).")
-        if lp.get("slot_count") and (lp["slot_count"] != N or abs((lp.get("slot_s") or 0) - S) > 0.01):
+        if lp.get("slot_count") and (lp["slot_count"] != N or abs((lp.get("slot_s") or 0) - S) > 0.01) \
+                and not (rotation_info([cam]).get(sid) or {}).get("auto"):     # auto: it is being set now
             res["warnings"].append(f"Doohly's loop for this screen is {lp['slot_count']} slots of {lp.get('slot_s')} s "
-                                   f"({lp.get('name')}), but this site is set to {N} x {S:g} s: change the rotation "
-                                   "in the site's Settings so plays are counted in the right slots.")
+                                   f"({lp.get('name')}), but this site is set to {N} x {S:g} s by hand: change the rotation "
+                                   "in the site's Settings (or let it follow Doohly) so plays are counted in the right slots.")
     if not S or N < 1:
         res["warnings"].append("No rotation (slot count and length) set, so plays can't be measured in slots.")
         return res
@@ -2841,12 +2875,91 @@ def best_pops(t0, t1, phase, current=None):
             "generated_at": iso(time.time())}
 
 
+ROT_LOCK = threading.Lock()
+
+
+def _rot_path():
+    return os.path.join(ARGS.out, "rotation.json")
+
+
+def rotation_state():
+    """{"manual": {site: true}, "changes": {site: {...}}}: sites whose rotation is set
+    by hand, and the last change made to follow Doohly."""
+    try:
+        with open(_rot_path(), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    d.setdefault("manual", {})
+    d.setdefault("changes", {})
+    return d
+
+
+def save_rotation_state(d):
+    tmp = _rot_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1)
+    os.replace(tmp, _rot_path())
+
+
+def rotation_info(cams=None):
+    """Per site: whether its rotation follows Doohly, Doohly's loop, and why not."""
+    cams = gateway_cameras() if cams is None else cams
+    st = rotation_state()
+    out = {}
+    for cam in cams or []:
+        sid = cam.get("id")
+        ds = doohly_site(sid, cam.get("vault_screen"))
+        lp = (ds or {}).get("loop") or {}
+        why = ("set by hand" if st["manual"].get(sid) else "takeover" if cam.get("takeover") else
+               "has time-of-day rotations" if cam.get("dayparts") else
+               "no Doohly player" if not ds else "Doohly's loop not known yet" if not lp.get("slot_count") else "")
+        out[sid] = {"auto": not why, "why": why, "manual": bool(st["manual"].get(sid)),
+                    "doohly": {"slot_count": lp.get("slot_count"), "slot_s": lp.get("slot_s"), "name": lp.get("name")} if lp else None,
+                    "last_change": st["changes"].get(sid)}
+    return out
+
+
+def sync_rotations():
+    """Keep each site's rotation (slot count and length) the same as its Doohly
+    player's loop, unless the site is set by hand, a takeover or day-parted."""
+    cams = gateway_cameras()
+    if cams is None or not load_doohly():
+        return
+    info = rotation_info(cams)
+    for cam in cams:
+        sid = cam.get("id")
+        r = info.get(sid) or {}
+        if not r.get("auto"):
+            continue
+        n, ms = int(r["doohly"]["slot_count"]), int(round(float(r["doohly"]["slot_s"]) * 1000))
+        if n == (cam.get("slot_count") or 0) and ms == (cam.get("slot_ms") or 0):
+            continue
+        url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + f"/api/cameras/{urllib.parse.quote(sid, safe='')}"
+        try:
+            req = urllib.request.Request(url, data=json.dumps({"slot_count": n, "slot_ms": ms}).encode(), method="PUT",
+                                         headers={"Authorization": f"Bearer {ARGS.api_key}", "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception as e:
+            print(f"rotation: could not update {sid}: {e}", flush=True)
+            continue
+        was = f"{cam.get('slot_count') or '?'} x {(cam.get('slot_ms') or 0) / 1000:g} s"
+        print(f"rotation: {sid} set to {n} x {ms / 1000:g} s from Doohly ({r['doohly'].get('name')}), was {was}", flush=True)
+        with ROT_LOCK:
+            st = rotation_state()
+            st["changes"][sid] = {"at": iso(time.time()), "from": was, "to": f"{n} x {ms / 1000:g} s",
+                                  "loop": r["doohly"].get("name")}
+            save_rotation_state(st)
+        REPORTS["gen"] += 1
+
+
 def bookings_loop():
     while True:
-        try:
-            sync_expectations()
-        except Exception as e:  # never let the helper thread die
-            print(f"bookings: sync failed: {e}", flush=True)
+        for job in (sync_expectations, sync_rotations):
+            try:
+                job()
+            except Exception as e:  # never let the helper thread die
+                print(f"bookings: {job.__name__} failed: {e}", flush=True)
         time.sleep(300)
 
 
@@ -3062,6 +3175,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, vault_screens())
         if path == "/doohly/players":
             return self.reply(200, doohly_players())
+        if path == "/sites/rotation":
+            return self.reply(200, rotation_info())
         if path == "/bookings/sync":              # artwork sync status for the Bookings page
             code, st = sync_call("GET", "/status")
             st.setdefault("configured", code != 404 and bool(sync_url()))
@@ -3220,6 +3335,25 @@ class H(BaseHTTPRequestHandler):
                         os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
             print(f"creatives reset for site {sid}" + (f"; deleted {deleted} record(s) and its links" if history else ""), flush=True)
             return self.reply(200, {"reset": True, "history": history, "deleted": deleted})
+        if self.path == "/sites/rotation":         # Site page: follow Doohly's loop, or set by hand
+            if not self.authorised():
+                return
+            try:
+                d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))
+                sid, manual = str(d["site_id"]), bool(d["manual"])
+            except (ValueError, KeyError, TypeError):
+                return self.reply(400, {"error": "site_id and manual required"})
+            with ROT_LOCK:
+                st = rotation_state()
+                if manual:
+                    st["manual"][sid] = True
+                else:
+                    st["manual"].pop(sid, None)
+                save_rotation_state(st)
+            if not manual:
+                threading.Thread(target=sync_rotations, daemon=True).start()
+            REPORTS["gen"] += 1
+            return self.reply(200, rotation_info().get(sid) or {})
         if self.path == "/records/delete":         # review page: remove a site's stored records
             if not self.authorised():
                 return
