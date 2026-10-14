@@ -200,6 +200,12 @@ td.actions a{margin-right:12px} .note{border:1px solid var(--line);border-radius
 <div class="wrap"><table><thead><tr><th>Site</th><th>Model</th><th>Camera</th><th>Video</th><th>Rotation</th><th>Plays / hour</th><th>Faults</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Loading&hellip;</td></tr></tbody></table></div>
 <p class="note muted" id="note" hidden></p>
+<section id="dsec" hidden><div class="head" style="margin-top:28px"><div><h2 style="font-size:16px;margin:0">Screens in Doohly</h2>
+<p class="muted" id="dsub" style="margin:2px 0 0"></p></div>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><input type="search" id="dq" placeholder="Filter screens" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font:inherit">
+<label class="muted"><input type="checkbox" id="dall"> show active ones too</label></div></div>
+<div class="wrap"><table><thead><tr><th>Active</th><th>Screen</th><th>Address</th><th>Screen size</th><th>Loop</th><th>Player</th></tr></thead>
+<tbody id="drows"></tbody></table></div></section>
 <section id="old" hidden><h2 style="font-size:16px;margin:28px 0 4px">Records from sites that no longer exist</h2>
 <p class="muted" style="margin:0 0 10px">PoP images and alerts stored under a site ID the gateway no longer has (sites that were removed, or renamed before this version). They're already hidden from the review page; delete them to free the space.</p>
 <div class="wrap"><table><thead><tr><th>Site ID</th><th>Last name</th><th>PoP images</th><th>Alerts</th><th>Newest</th><th></th></tr></thead>
@@ -265,7 +271,36 @@ document.getElementById('oldrows').addEventListener('click', async ev => {
   if (!r.ok) { b.textContent = j.error || 'Failed'; return; }
   delete b.dataset.armed; load();
 });
-load(); setInterval(load, 15000);
+let players = [];
+async function loadPlayers() {
+  const r = await fetch('/doohly/players').catch(() => null);
+  if (!r || !r.ok) return;
+  const d = await r.json(); players = d.players || [];
+  document.getElementById('dsec').hidden = !players.length;
+  const n = players.filter(p => !p.site_id).length;
+  document.getElementById('dsub').textContent = `${players.length} player(s) in Doohly, ${players.length - n} set up as sites, ${n} not yet` + (d.at ? ` · read ${d.at}` : '') +
+    '. Tick a screen to set it up: its name, Vault screen and rotation are filled in from Doohly; you add the camera, then its region.';
+  drawPlayers();
+}
+function drawPlayers() {
+  const q = document.getElementById('dq').value.trim().toLowerCase(), all = document.getElementById('dall').checked;
+  const rows = players.filter(p => (all || !p.site_id) && (!q || (p.name + ' ' + p.address).toLowerCase().includes(q)));
+  document.getElementById('drows').innerHTML = rows.map(p => `<tr>
+    <td>${p.site_id ? `<input type="checkbox" checked disabled title="Set up as ${esc(p.site_name || p.site_id)}. To stop monitoring it, delete the site from its Settings.">`
+      : `<input type="checkbox" data-player="${esc(p.id)}" title="Set up this screen as a site">`}</td>
+    <td><b>${esc(p.screen)}</b>${p.site_id ? `<br><a class="muted" href="/site?site=${encodeURIComponent(p.site_id)}">${esc(p.site_name || p.site_id)}</a>` : `<br><span class="muted">${esc(p.name)}</span>`}</td>
+    <td>${esc(p.address)}</td><td>${p.frame ? `${p.frame.width} × ${p.frame.height}` : '<span class="muted">?</span>'}</td>
+    <td>${p.loop ? `${p.loop.slot_count} × ${p.loop.slot_s} s` : '<span class="muted">?</span>'}</td>
+    <td class="${p.online ? 'ok' : 'bad'}">${p.online ? 'online' : 'offline'}</td></tr>`).join('') ||
+    '<tr><td colspan="6" class="muted">No screens match.</td></tr>';
+}
+document.getElementById('dq').oninput = drawPlayers;
+document.getElementById('dall').onchange = drawPlayers;
+document.getElementById('drows').addEventListener('change', ev => {
+  const c = ev.target.closest('input[data-player]'); if (!c || !c.checked) return;
+  location.href = '/site?doohly=' + encodeURIComponent(c.dataset.player);
+});
+load(); setInterval(load, 15000); loadPlayers();
 </script></body></html>
 '''
 
@@ -377,6 +412,7 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 </main><script>
 const params = new URLSearchParams(location.search), editing = params.get('site') || params.get('camera');
 const copying = !editing && params.get('copy');
+const fromDoohly = !editing && !copying && params.get('doohly');
 const f = document.getElementById('f'), $ = id => document.getElementById(id);
 const msg = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || 'muted'; };
 let current = null;
@@ -403,6 +439,22 @@ async function init() {
   }
   if (s.default_username) $('userhint').textContent = `Camera user (blank = default "${s.default_username}")`;
   if (!s.default_password_set) $('pwhint').textContent = 'Password (no default set: enter one)';
+  if (fromDoohly) {                       // set up a screen from Doohly: everything but the camera
+    const d = await fetch('/doohly/players').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+    const p = (d.players || []).find(x => x.id === fromDoohly);
+    if (p) {
+      const g = p.suggested;
+      for (const k of ['site_id', 'display_name', 'vault_screen']) setVal(k, g[k]);
+      if (g.slot_count) setVal('slot_count', g.slot_count);
+      if (g.slot_s) setVal('slot_s', g.slot_s);
+      $('title').textContent = 'Add ' + p.screen;
+      $('sub').innerHTML = `From Doohly player <b>${p.name.replace(/</g, '&lt;')}</b>${p.address ? ' · ' + p.address.replace(/</g, '&lt;') : ''}` +
+        (p.loop ? ` · loop ${p.loop.slot_count} × ${p.loop.slot_s} s` : '') + '. Enter the camera’s address and login, save, then set its region.';
+      if (p.site_id) msg(`This screen is already set up as ${p.site_name || p.site_id}.`, 'bad');
+      sync(); f.elements.host.focus(); return;
+    }
+    msg('That Doohly player was not found (the list is refreshed every 30 minutes).', 'bad');
+  }
   if (!editing && !copying) { sync(); return; }
   const r = await fetch('/api/cameras/' + encodeURIComponent(editing || copying));
   if (!r.ok) { msg('Could not load this site: ' + ((await r.json().catch(() => ({}))).error || r.statusText), 'bad'); return; }
@@ -1593,6 +1645,31 @@ def doohly_site(site_id=None, screen=None):
             if screen_key(s.get("screen")) == want:
                 return s
     return None
+
+
+def site_id_for(name):
+    """A site ID from a screen name: "Albany Expressway IN" -> "ALBANY-EXPRESSWAY-IN"."""
+    return re.sub(r"[^A-Z0-9]+", "-", (name or "").upper()).strip("-")[:40] or "SITE"
+
+
+def doohly_players():
+    """Every Doohly player, for setting up sites: which ones already have a site
+    (by the site's Vault screen name, or as matched by creatives-sync) and the
+    settings a new site would start with."""
+    d = load_doohly() or {}
+    cams = gateway_cameras() or []
+    by_screen = {screen_key(c.get("vault_screen")): c for c in cams if c.get("vault_screen")}
+    ids = {c.get("id") for c in cams}
+    out = []
+    for p in d.get("players") or []:
+        cam = by_screen.get(screen_key(p.get("screen")))
+        sid = (cam or {}).get("id") or (p.get("site_id") if p.get("site_id") in ids else None)
+        lp = p.get("loop") or {}
+        out.append(dict(p, site_id=sid, site_name=(cam or {}).get("name"),
+                        suggested={"site_id": site_id_for(p.get("screen")), "display_name": p.get("screen"),
+                                   "vault_screen": p.get("screen"), "slot_count": lp.get("slot_count"),
+                                   "slot_s": lp.get("slot_s")}))
+    return {"at": local_time(d.get("generated_at"), True), "players": out}
 
 
 def _doohly_plays(b, week):
@@ -3049,6 +3126,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, cached_report(wk))
         if path == "/bookings/screens":
             return self.reply(200, vault_screens())
+        if path == "/doohly/players":
+            return self.reply(200, doohly_players())
         if path == "/bookings/sync":              # artwork sync status for the Bookings page
             code, st = sync_call("GET", "/status")
             st.setdefault("configured", code != 404 and bool(sync_url()))

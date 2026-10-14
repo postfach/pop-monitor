@@ -40,6 +40,26 @@ listed in the header as *not found in Doohly*; set `DOOHLY_DEVICES` for it
 (`SITE_ID=Doohly player name;SITE_ID=...`). The main frame is the player's largest frame
 (not the name plate).
 
+## Setting up sites from Doohly
+
+The **Sites** page lists every Doohly player under *Screens in Doohly* (test players left
+out), with its address, screen size, loop and whether it is online. Screens already set up
+as a site are hidden (tick *show active ones too* to see them, ticked).
+
+Tick a screen to set it up: the Add site form opens with the site ID (e.g.
+`ALBANY-EXPRESSWAY-IN`), name, Vault screen and rotation (slot count and length from the
+player's loop) filled in. Add the camera's address and login, save, and set its region as
+usual. Nothing is monitored until then: a screen only becomes a site once it has a camera.
+
+A screen counts as set up when a site's Vault screen name is the player's name without
+`LUMO-` (ignoring case), so the bookings, artwork and day/night link up by themselves.
+Lumo Lite players come through as e.g. `LITE-Chartwell`; change the Vault screen in the
+form if Vault names it differently.
+
+The screen sizes and loops are read a few players at a time (Doohly takes a few seconds
+per player), so after the first start the list fills in over about half an hour; until then
+those columns show `?`, and the form leaves the rotation blank.
+
 ## When it runs
 
 * Every 5 minutes (`DOOHLY_DEVICE_MIN`): the players (online, last seen, location, frames

@@ -308,6 +308,10 @@ have write access (`setup-sharepoint-app.ps1 -PermissionOnly`). Details and sett
 
 ## Adding many sites
 
+* **From Doohly** (with a Doohly token): the Sites page lists the Doohly screens not set up yet;
+  tick one and the Add site form opens with its ID, name, Vault screen and rotation filled in,
+  so only the camera's address and region are left (`docs/doohly.md`).
+
 * **Duplicate site** (on a site's Settings page) opens the Add site form pre-filled with that
   site's model, ports, transport, rotation, hours and alert settings. Enter the new ID, name
   and host. The password isn't copied.

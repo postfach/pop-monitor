@@ -33,6 +33,7 @@ ENV = os.environ.get
 BASE = ENV("DOOHLY_URL", "https://api.dooh.ly/api/public").rstrip("/")
 DEVICE_EVERY = float(ENV("DOOHLY_DEVICE_MIN", "5")) * 60
 BOOKINGS_EVERY = float(ENV("DOOHLY_INTERVAL_MIN", "30")) * 60
+PLAYER_FETCH = int(ENV("DOOHLY_PLAYER_FETCH", "20"))
 OFFLINE_ALERT_MIN = float(ENV("DOOHLY_OFFLINE_ALERT_MIN", "15"))
 LIVE = ("booked", "reserved", "paused")
 PURCHASE = {"Sold": "sold", "Guaranteed Bonus": "bonus", "Non-Guaranteed Bonus": "ng bonus", "Filler": "filler"}
@@ -171,6 +172,8 @@ class Watcher:
         self.atomic_json, self.read_json, self.on_change = atomic_json, read_json, on_change
         self.doc = read_json(self.path, {}) or {}
         self.cache = read_json(self.cache_p, {}) or {}       # booking id -> (updatedAt, slim)
+        self.players_p = os.path.join(state_dir, "doohly-players.json")
+        self.player_cache = read_json(self.players_p, {}) or {}   # player id -> frame and loop
         self.lock = threading.Lock()
         self.last_bookings = 0
         self.alerted = {}                                     # site -> since (offline alert sent)
@@ -247,18 +250,62 @@ class Watcher:
                     site["bookings"] = self.bookings(fr["id"], weeks[0], weeks[1] + timedelta(days=6))
                     site["bookings_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 out_sites[sid] = site
+            players = self.players(devices, with_bookings)
+            for pl in players:                            # which monitored site shows each player, if any
+                pl["site_id"] = next((sid for sid, did in ids.items() if did == pl["id"]), None)
             bh = hashlib.sha256(json.dumps({k: v["bookings"] for k, v in sorted(out_sites.items())},
                                            sort_keys=True).encode()).hexdigest()[:16]
             changed = bh != self.doc.get("bookings_hash")
             self.doc = {"format": "pop-monitor/doohly", "version": 1,
                         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "weeks": [w.isoformat() for w in weeks], "sites": out_sites, "unmatched": unmatched,
+                        "players": players,
                         "bookings_hash": bh, "calls": self.c.calls, "ok": True, "error": None}
             self.atomic_json(self.path, self.doc)
             if with_bookings:
                 self.last_bookings = time.time()
             self.check_offline(out_sites)
             return changed
+
+    def players(self, devices, refresh):
+        """Every Doohly player (test players left out), for setting up sites: name,
+        address, location, status, and its main frame's size and loop. Frames need a
+        slow call per player, so at most PLAYER_FETCH players are read per pass: new
+        ones first, then (on the half-hourly pass, `refresh`) changed ones. The first
+        full list takes about half an hour to fill in."""
+        cache = self.player_cache
+        out = []
+        budget = PLAYER_FETCH                 # Doohly takes seconds per player: a few each pass
+        for d in devices:
+            if d.get("isTest") or d.get("deletedAt"):
+                continue
+            hit = cache.get(d["id"])
+            if budget > 0 and (not hit or (refresh and hit.get("updated_at") != d.get("updatedAt"))):
+                budget -= 1
+                try:
+                    fr = self.main_frame(self.c.get(f"/v2/devices/{d['id']}"))
+                except DoohlyError as e:
+                    self.log(f"doohly: player {d.get('name')}: {e}")
+                    fr = None
+                lp = (fr or {}).get("loopPolicy") or {}
+                hit = {"updated_at": d.get("updatedAt"),
+                       "frame": {"name": fr.get("name"), "width": (fr.get("bounds") or {}).get("width"),
+                                 "height": (fr.get("bounds") or {}).get("height")} if fr else None,
+                       "loop": {"name": lp.get("name"), "slot_count": lp.get("slotCount"),
+                                "slot_s": lp.get("slotDuration")} if lp else None}
+                cache[d["id"]] = hit
+            coords = (d.get("geoLocation") or {}).get("coordinates") or [None, None]
+            loc = d.get("location") or {}
+            out.append({"id": d["id"], "name": d.get("name"), "screen": re.sub(r"(?i)^lumo\s*[-_ ]\s*", "", d.get("name") or ""),
+                        "address": ", ".join(x for x in (loc.get("address"), loc.get("city")) if x),
+                        "lat": coords[1], "lon": coords[0], "online": bool(d.get("isConnected")),
+                        "alive_at": d.get("aliveAt"), "frame": (hit or {}).get("frame"), "loop": (hit or {}).get("loop")})
+        if budget < PLAYER_FETCH:
+            keep = {d["id"] for d in devices}
+            self.player_cache = {k: v for k, v in cache.items() if k in keep}
+            self.atomic_json(self.players_p, self.player_cache)
+        out.sort(key=lambda p: (p["name"] or "").lower())
+        return out
 
     def bookings(self, frame_id, d0, d1):
         """Live bookings on a frame that overlap [d0, d1], with their creatives.
@@ -311,7 +358,8 @@ class Watcher:
         return {"enabled": bool(token()), "generated_at": d.get("generated_at"), "ok": d.get("ok"),
                 "error": d.get("error"), "sites": len(d.get("sites") or {}), "unmatched": d.get("unmatched") or [],
                 "bookings": sum(len(s.get("bookings") or []) for s in (d.get("sites") or {}).values()),
-                "offline": [s["screen"] for s in (d.get("sites") or {}).values() if not s["device"]["online"]]}
+                "offline": [s["screen"] for s in (d.get("sites") or {}).values() if not s["device"]["online"]],
+                "players": len(d.get("players") or [])}
 
     def loop(self):
         time.sleep(float(ENV("START_DELAY_S", "20")) + 5)
