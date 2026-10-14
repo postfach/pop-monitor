@@ -60,6 +60,25 @@ The screen sizes and loops are read a few players at a time (Doohly takes a few 
 per player), so after the first start the list fills in over about half an hour; until then
 those columns show `?`, and the form leaves the rotation blank.
 
+## Programmatic, inferred
+
+Doohly's API doesn't report plays, so it can't say when a programmatic ad played. But the
+loops fill every unbooked slot with programmatic, and Doohly says exactly what is booked,
+so on a screen with a Doohly player a creative is marked **Programmatic (inferred)** when:
+
+* every campaign booked there that week with images has its artwork in the library;
+* the creative's PoP images (at least 3 compared, and at least 3 plays) match none of it;
+* it isn't a video while a booked campaign has a video (videos can't be compared yet).
+
+If a campaign is booked with live web content (e.g. a weather ad), nothing is inferred on
+that screen until one of its creatives is linked to the campaign on the Bookings page; the
+Programmatic tile says *not inferred* and why. Inferred creatives count as programmatic,
+show *Auto: Programmatic (inferred)* (pick anything else to override, as usual) and
+*Programmatic (inferred)* on the review page.
+
+As a cross-check the Programmatic tile shows the slots Doohly leaves unbooked, and a warning
+appears when programmatic is taking clearly more or fewer slots than that.
+
 ## Rotation from Doohly
 
 Each site's rotation (slots in the loop and slot length) follows its Doohly player's loop

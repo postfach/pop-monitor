@@ -1109,7 +1109,7 @@ function site(s, rep) {
      <td>${c.creatives.length ? `<span title="${esc(c.creatives.join(', '))}">${c.creatives.length === 1 ? esc(c.creatives[0]) : c.creatives.length + ' IDs'}</span>` : '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
   const opt = (v, label, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
   const cname = id => (s.campaigns.find(c => c.campaign_id === id) || {}).name || id;
-  const opts = (sel, cr) => (sel === '\u0000' ? opt('\u0000', 'Mixed: pick one to set them all', sel) : '') + opt('', cr.art && cr.art.status === 'matched' && !cr.link ? 'Auto: ' + cname(cr.art.campaign_id) : 'Unassigned', sel) +
+  const opts = (sel, cr) => (sel === '\u0000' ? opt('\u0000', 'Mixed: pick one to set them all', sel) : '') + opt('', cr.by === 'inferred' ? 'Auto: Programmatic (inferred)' : cr.art && cr.art.status === 'matched' && !cr.link ? 'Auto: ' + cname(cr.art.campaign_id) : 'Unassigned', sel) +
      opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
      `<optgroup label="Booked this week">` + s.campaigns.map(c => opt(c.campaign_id, c.name, sel)).join('') + `</optgroup>` +
      (sel && sel !== 'programmatic' && sel !== 'house' && !s.campaigns.some(c => c.campaign_id === sel) ? opt(sel, sel + ' (not booked this week)', sel) : '');
@@ -1146,7 +1146,9 @@ function site(s, rep) {
      <div class="tiles">
        ${tile('True coverage', pct(tc), tsub, tcls)}
        ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} ${s.doohly ? 'bonus if room' : 'maybe'}` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
-       ${tile('Programmatic', one(s.programmatic_per_loop), 'slots per loop')}
+       ${tile('Programmatic', one(s.programmatic_per_loop), 'slots per loop' + (s.programmatic_room != null ? ` · ${one(s.programmatic_room)} unbooked in Doohly` : '') +
+         (s.programmatic_inference && s.programmatic_inference.on ? ` · ${s.programmatic_inference.creatives.length} creative(s) inferred` :
+          s.programmatic_inference && s.programmatic_inference.why_not ? ` · <span title="${esc(s.programmatic_inference.why_not)}" style="text-decoration:underline dotted">not inferred</span>` : ''))}
        ${tile('House', one(s.house_per_loop), 'slots per loop' + (s.unbooked_per_loop > 0.05 ? ` · plus ${one(s.unbooked_per_loop)} from campaigns not booked this week` : ''))}
        ${tile('Unassigned', one(s.unassigned_per_loop), 'slots per loop, not yet marked', s.unassigned_per_loop > 0.05 ? 'warn' : '')}
        ${tile('Blank', one(s.blank_per_loop), 'slots per loop', s.blank_per_loop > 0.2 ? 'warn' : '')}
@@ -2031,6 +2033,47 @@ def match(creatives, campaigns, links, art=None):
 
 
 
+PROG_MIN_SAMPLES = 3       # PoP images compared before a creative can be called programmatic
+PROG_MIN_PLAYS = 3
+
+
+def infer_programmatic(ds, week, crs, assigned, art, library):
+    """Creatives that are almost certainly programmatic: the screen's loop fills its
+    unbooked slots with programmatic (Doohly), Doohly says exactly what is booked,
+    every booked image has its artwork here, and the creative matches none of it.
+    Returns (set of creative IDs, reason it can't be done or "")."""
+    if not ART_OK:
+        return set(), "artwork matching is unavailable"
+    lp = ds.get("loop") or {}
+    if lp and lp.get("programmatic") is False:
+        return set(), "this screen's Doohly loop has no programmatic"
+    w0, w1 = week.isoformat(), (week + timedelta(days=6)).isoformat()
+    live = [b for b in ds.get("bookings") or [] if (b.get("start") or "9") <= w1 and (b.get("end") or "0") >= w0]
+    have = {x.get("campaign_id") for x in library if x.get("file")}
+    taken = set(assigned.values())
+    video_block = False
+    for b in live:
+        cid, kinds = b.get("campaign_id"), {c.get("type") for c in b.get("creatives") or []}
+        if "image" in kinds and cid not in have:
+            return set(), f"the artwork for {b.get('campaign_name') or cid} isn't in the library, so its plays could be mistaken for programmatic"
+        if "html" in kinds and cid not in taken:      # live web content can't be compared: needs a creative linked first
+            return set(), (f"{b.get('campaign_name') or cid} is booked with live web content, which can't be matched: "
+                           "link its creative to the campaign below and the rest can be worked out")
+        if "video" in kinds and cid not in taken:
+            video_block = True
+    out = set()
+    for cr in crs:
+        a = art.get(cr["creative_id"]) or {}
+        if cr["blank"] or assigned.get(cr["creative_id"]) != "unassigned":
+            continue
+        if a.get("status") != "none" or (a.get("samples") or 0) < PROG_MIN_SAMPLES or cr["plays"] < PROG_MIN_PLAYS:
+            continue
+        if cr.get("video") and video_block:
+            continue
+        out.add(cr["creative_id"])
+    return out, ""
+
+
 # ---------------------------------------------------------------- artwork matching
 # The creatives booked on each screen (pulled from SharePoint's Creative+MIs folders
 # into vault-creatives.json + images) are compared with the PoP images of each
@@ -2461,13 +2504,19 @@ def site_bookings(cam, week, links_all):
                  linked=[k for k, v in site_links.items() if v == c["campaign_id"]],
                  artwork=[{"name": x.get("name"), "file": x.get("file"), "kind": x.get("kind", "image"),
                            "from": x.get("from"), "to": x.get("to"), "rotation": x.get("rotation")} for x in mine])
+    ds = doohly_site(sid, res["vault_screen"])
+    inferred, why_not = (infer_programmatic(ds, week, crs, m, art, library) if ds else (set(), ""))
+    res["programmatic_inference"] = {"on": bool(ds) and not why_not, "why_not": why_not, "creatives": sorted(inferred)}
     tally = {"programmatic": 0.0, "house": 0.0, "unbooked": 0.0, "unassigned": 0.0}
     for cr in crs:
         a = "blank" if cr["blank"] else m.get(cr["creative_id"], "unassigned")
+        if cr["creative_id"] in inferred:
+            a = "programmatic"
         cr["assigned"] = a
         cr["link"] = site_links.get(cr["creative_id"], "")
         cr["art"] = art.get(cr["creative_id"])
-        cr["by"] = "manual" if cr["link"] else "artwork" if a not in ("unassigned", "blank") else ""
+        cr["by"] = ("manual" if cr["link"] else "inferred" if cr["creative_id"] in inferred else
+                    "artwork" if a not in ("unassigned", "blank") else "")
         if cr["by"] == "artwork" and a in by_c:
             by_c[a]["linked"].append(cr["creative_id"])
         if a in by_c:
@@ -2502,6 +2551,16 @@ def site_bookings(cam, week, links_all):
         when = f"after its end date ({to})" if kind == "late" else f"before its start date ({frm})"
         res["warnings"].append(f"{name} ({camp}) played {when} in its Material Instructions"
                                f" (seen as {', '.join(sorted(ids))}).")
+    if ds and loops >= 20 and (ds.get("loop") or {}).get("programmatic") is not False:
+        dbooked = sum(c["plays_per_loop"] for c in campaigns)          # sold, bonus and bonus-if-room
+        room = max(0.0, N - dbooked)
+        seen_p = tally["programmatic"]
+        if abs(seen_p - room) > max(1.0, 0.25 * room) and not why_not:
+            res["warnings"].append(f"Programmatic is taking {seen_p:.1f} slot(s) per loop, but Doohly leaves {room:.1f} "
+                                   f"unbooked ({N} slots, {dbooked:g} booked)" +
+                                   (": some programmatic may still be unassigned" if seen_p < room else
+                                    ": something marked programmatic may belong to a booking") + ".")
+        res["programmatic_room"] = round(room, 1)
     if tally["unassigned"] > 0.05 and loops >= 1:
         res["warnings"].append(f"{tally['unassigned']:.1f} slot(s) per loop show creatives not assigned yet: "
                                "mark them as a campaign, programmatic or house below.")
@@ -2628,7 +2687,8 @@ def campaign_for_record(r, cache):
                 if a in names:
                     cache[key][cr["creative_id"]] = names[a]["name"] + (" (artwork match)" if cr.get("by") == "artwork" else "")
                 elif a in ("programmatic", "house"):
-                    cache[key][cr["creative_id"]] = "Programmatic" if a == "programmatic" else "House"
+                    cache[key][cr["creative_id"]] = ("House" if a == "house" else
+                                                     "Programmatic (inferred)" if cr.get("by") == "inferred" else "Programmatic")
     return cache[key].get(cid)
 
 
