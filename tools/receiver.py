@@ -1085,7 +1085,8 @@ function artCell(c, s) {
 }
 function refThumb(cr) {
   const a = cr.art; if (!a || !a.file || a.status === 'none') return '';
-  return `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}"><img class="thumb" loading="lazy" src="${artUrl(a.file)}" alt="booked artwork" style="${a.status === 'possible' ? 'opacity:.55' : ''}"></a>`;
+  const f = a.frame || a.file;          // a video: the frame it looked like
+  return `<a href="${artUrl(f)}" target="_blank" title="${esc(a.name)}${a.kind === 'video' ? ' (video frame)' : ''}"><img class="thumb" loading="lazy" src="${artUrl(f)}" alt="booked artwork" style="${a.status === 'possible' ? 'opacity:.55' : ''}"></a>`;
 }
 function artPill(cr, s, cname) {
   const a = cr.art;
@@ -2060,8 +2061,9 @@ def infer_programmatic(ds, week, crs, assigned, art, library):
         if "html" in kinds and cid not in taken:      # live web content can't be compared: needs a creative linked first
             return set(), (f"{b.get('campaign_name') or cid} is booked with live web content, which can't be matched: "
                            "link its creative to the campaign below and the rest can be worked out")
-        if "video" in kinds and cid not in taken:
-            video_block = True
+        if "video" in kinds and cid not in taken and not any(
+                x.get("campaign_id") == cid and x.get("kind") == "video" and x.get("frames") for x in library):
+            video_block = True                       # a booked video with no frames to compare with
     out = set()
     for cr in crs:
         a = art.get(cr["creative_id"]) or {}
@@ -2091,6 +2093,10 @@ ART_GW, ART_GH = 48, 32          # fingerprint grid
 ART_MATCH = 0.40                 # fine-detail correlation that counts as a match
 ART_MARGIN = 0.08                # ...and by this much over any other campaign
 ART_POSSIBLE = 0.30              # shown as "looks like" below a match
+# a video frame is compared with a photo of whatever moment played (motion blur, a
+# frame between two references), so a video match needs less agreement
+ART_MATCH_VIDEO = float(os.environ.get("ART_MATCH_VIDEO", "0.36"))
+ART_MARGIN_VIDEO = float(os.environ.get("ART_MARGIN_VIDEO", "0.08"))
 ART_SAMPLES = 5                  # PoP images per creative compared
 CRE = {"mtime": None, "path": None, "data": None, "root": None}
 CRE_LOCK = threading.Lock()
@@ -2335,15 +2341,26 @@ def artwork_matches(cam, t0, t1):
     new plays don't make every page load redo it. Returns {creative_id: {...}}."""
     if not ART_OK or not cam.get("vault_screen"):
         return {}
-    cands = [c for c in screen_creatives(cam["vault_screen"]) if c.get("file") and c.get("kind", "image") == "image"]
+    cands = [c for c in screen_creatives(cam["vault_screen"]) if c.get("file") and (
+        c.get("kind", "image") == "image" or (c.get("kind") == "video" and c.get("frames")))]
     if not cands:
         return {}
     inset = max(0.0, min(0.4, float(cam.get("inset_pct") or 0) / 100.0))
-    refs = [(c, _ref_fp(c["file"], inset)) for c in cands]
-    refs = [(c, f) for c, f in refs if f is not None]
+    # one reference per image, one per frame of a video (a PoP shows one moment of it);
+    # a booked entry scores as its best reference, so the right frame wins
+    refs, owner, frame_of = [], [], []
+    for k, c in enumerate(cands):
+        for rel in (c["frames"] if c.get("kind") == "video" else [c["file"]]):
+            f = _ref_fp(rel, inset)
+            if f is not None:
+                refs.append(f)
+                owner.append(k)
+                frame_of.append(rel)
     if not refs:
         return {}
-    stack = _np.stack([f for _, f in refs])
+    stack = _np.stack(refs)
+    owner = _np.array(owner)
+    used = sorted(set(owner.tolist()))
     lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}"
     sid = cam.get("id")
     state = art_state().setdefault(sid, {})
@@ -2363,16 +2380,28 @@ def artwork_matches(cam, t0, t1):
             fps = [f for f in (_pop_fp(p[4]) for p in sample) if f is not None]
             if not fps:
                 continue
-            per = _np.median(_np.stack([_scores(f, stack) for f in fps]), axis=0)   # per booked image
+            raw = [_scores(f, stack) for f in fps]
+            # per sample, each booked entry's best reference (its best video frame)
+            per_s = _np.stack([[float(r[owner == k].max()) for k in used] for r in raw])
+            per = _np.median(per_s, axis=0)                                       # per booked entry
             order = _np.argsort(-per)
-            best, bc = float(per[order[0]]), refs[order[0]][0]
-            other = max([float(per[i]) for i in range(len(refs)) if refs[i][0]["campaign_id"] != bc["campaign_id"]] or [0.0])
-            status = ("matched" if best >= ART_MATCH and best - other >= ART_MARGIN
-                      else "possible" if best >= ART_POSSIBLE else "none")
+            bk = used[int(order[0])]
+            best, bc = float(per[order[0]]), cands[bk]
+            other = max([float(per[i]) for i, k in enumerate(used) if cands[k]["campaign_id"] != bc["campaign_id"]] or [0.0])
+            video = bc.get("kind") == "video"
+            need, margin = (ART_MATCH_VIDEO, ART_MARGIN_VIDEO) if video else (ART_MATCH, ART_MARGIN)
+            status = ("matched" if best >= need and best - other >= margin
+                      else "possible" if best >= min(ART_POSSIBLE, need - 0.04) else "none")
+            frame = None
+            if video:                                      # the frame most samples looked like
+                idx = _np.flatnonzero(owner == bk)
+                votes = [int(idx[int(_np.argmax(r[idx]))]) for r in raw]
+                frame = frame_of[max(set(votes), key=votes.count)]
             st = {"lib": lib, "at": now, "eid": sample[-1][4],
                   "res": {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"),
                           "file": bc.get("file"), "score": round(best, 2), "next": round(other, 2),
-                          "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(refs)}}
+                          "kind": bc.get("kind", "image"), "frame": frame,
+                          "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(used)}}
             state[cid] = st
             ART_STATE["dirty"] = True
         res = dict(st["res"])

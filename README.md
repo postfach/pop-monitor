@@ -241,7 +241,14 @@ leaving out house and unbooked fill.
      Instructions (a teaser left on, a new creative started early).
    Anything can be set by hand to a campaign, **Programmatic** or **House**; that always wins
    and is kept for later weeks (a creative linked to a campaign that isn't booked that week is
-   counted with house). Video creatives aren't matched yet.
+   counted with house).
+
+   **Video creatives** are matched too: creatives-sync downloads each booked video and takes
+   a frame every 0.5 s (up to 90, with ffmpeg from the `imageio-ffmpeg` package), and a PoP
+   photo is compared with every frame, the best one counting. The thumbnail shown is the frame
+   it looked like. A photo of a moving video agrees less than one of a still, so a video match
+   needs a fine-detail score of 0.36 rather than 0.40 (`ART_MATCH_VIDEO` on the receiver;
+   `VIDEO_FRAME_EVERY_S`, `VIDEO_FRAME_WIDTH`, `VIDEO_MAX_FRAMES` on creatives-sync).
 
 Each site is a collapsed line on load (true coverage, booked vs available slots, unassigned
 slots, campaigns not seen, warnings); click it to open the full card (the page remembers which

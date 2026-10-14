@@ -68,7 +68,8 @@ so on a screen with a Doohly player a creative is marked **Programmatic (inferre
 
 * every campaign booked there that week with images has its artwork in the library;
 * the creative's PoP images (at least 3 compared, and at least 3 plays) match none of it;
-* it isn't a video while a booked campaign has a video (videos can't be compared yet).
+* it isn't a video while a booked video has no frames in the library (its download or frame
+  extraction failed), as its plays could then be mistaken for programmatic.
 
 If a campaign is booked with live web content (e.g. a weather ad), nothing is inferred on
 that screen until one of its creatives is linked to the campaign on the Bookings page; the

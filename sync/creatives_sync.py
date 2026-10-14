@@ -49,6 +49,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mi  # noqa: E402
 import pop_upload  # noqa: E402
+import videoframes  # noqa: E402
 import doohly  # noqa: E402
 
 VERSION = "0.1.0"
@@ -736,7 +737,8 @@ class Syncer:
                 "campaigns": len(all_cids)}
 
     def materialise(self, lib, creatives):
-        """Download new or changed images into <screen>/images/<campaign>/<file>."""
+        """Download new or changed images into <screen>/images/<campaign>/<file>, and
+        for videos their frames into <screen>/frames/<campaign>/<file>/f0001.jpg..."""
         state_p = os.path.join(STATE, "files.json")
         have = read_json(state_p, {}) or {}
         cache = os.path.join(STATE, "items")
@@ -746,6 +748,11 @@ class Syncer:
             f = c.get("_item")
             if not f:
                 continue                              # kept from the last run: file already there
+            if c["kind"] == "video":
+                d, k = self.video_frames(lib, c, f, cache, have)
+                downloaded += d
+                n += k
+                continue
             if c["kind"] != "image":
                 c["file"] = None
                 continue
@@ -774,18 +781,49 @@ class Syncer:
         atomic_json(state_p, have)
         return downloaded, n
 
+    def video_frames(self, lib, c, f, cache, have):
+        """Download a booked video (kept in the cache) and take its frames. The
+        creative's "file" is its first frame (thumbnail), "frames" all of them."""
+        rel = f"{mi.slug(c['screen'])}/frames/{safe(c['campaign_id'])}/{safe(f['name'])}"
+        tag = hashlib.sha1(f"{f['id']}|{f['etag']}|{videoframes.FRAME_EVERY_S}|{videoframes.FRAME_WIDTH}".encode()).hexdigest()[:20]
+        dest = os.path.join(OUT, rel)
+        downloaded = 0
+        if have.get(rel) != tag or not os.path.isdir(dest):
+            cached = os.path.join(cache, tag + os.path.splitext(f["name"])[1].lower())
+            if not os.path.exists(cached):
+                data = lib.download(f["id"])
+                with open(cached + ".part", "wb") as o:
+                    o.write(data)
+                os.replace(cached + ".part", cached)
+                downloaded = 1
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                videoframes.extract(cached, dest)
+            except Exception as e:
+                log(f"sync: {c['campaign_id']} {f['name']}: {e}")
+                c["file"], c["note"] = None, (c.get("note") or "") + f"; video frames failed: {e}"
+                return downloaded, 0
+            have[rel] = tag
+        frames = sorted(x for x in os.listdir(dest) if x.endswith(".jpg"))
+        c["frames"] = [f"{rel}/{x}" for x in frames]
+        c["file"] = c["frames"][0] if frames else None
+        c["frame_every_s"] = videoframes.FRAME_EVERY_S
+        return downloaded, 1 if frames else 0
+
     def prune(self, manifest):
         """Remove library images no longer in the manifest, and stale cache entries."""
         keep = {c["file"] for c in manifest["creatives"] if c.get("file")}
+        keep |= {x for c in manifest["creatives"] for x in c.get("frames") or []}
         have = read_json(os.path.join(STATE, "files.json"), {}) or {}
         for root, dirs, files in os.walk(OUT):
             if os.path.abspath(root).startswith(os.path.abspath(STATE)):
                 continue
             for fn in files:
                 rel = os.path.relpath(os.path.join(root, fn), OUT).replace(os.sep, "/")
-                if "/images/" in rel and rel not in keep:
+                if ("/images/" in rel or "/frames/" in rel) and rel not in keep:
                     os.remove(os.path.join(root, fn))
                     have.pop(rel, None)
+                    have.pop(rel.rsplit("/", 1)[0], None)      # a video's frames folder
         for root, dirs, files in os.walk(OUT, topdown=False):
             if root != OUT and not os.listdir(root):
                 os.rmdir(root)

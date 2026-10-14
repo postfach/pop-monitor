@@ -119,7 +119,10 @@ of that folder uploaded on the Bookings page.
 from the Material Instructions) and `rotation` (%) are optional; `via` says how the file
 was chosen: `mi` (named in the Material Instructions for that screen), `filename` (the
 file name names the screen) or `size` (the file matches the screen's pixel size).
-Videos are listed with `kind: "video"` and no file; they aren't matched yet.
+Videos are listed with `kind: "video"`; creatives-sync adds `frames` (a JPEG every 0.5 s, under
+`<screen>/frames/<campaign>/<file>/`) and `file` (the first frame, as a thumbnail), and the
+receiver matches PoP photos against every frame. A hand-made pull can do the same, or leave
+videos without frames (they are then not matched).
 
 Steps, per monitored Vault screen and per campaign booked on it this week (from
 `vault-bookings.json`):
