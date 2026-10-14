@@ -5,7 +5,7 @@ FROM python:3.12-slim
 RUN useradd -r -u 10001 pop && mkdir /creatives && chown pop /creatives
 COPY sync/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
-COPY sync/mi.py sync/creatives_sync.py sync/pop_upload.py /app/
+COPY sync/mi.py sync/creatives_sync.py sync/pop_upload.py sync/doohly.py /app/
 COPY sync/tests /app/tests
 # The unit tests run during the build, so a broken image is never produced.
 RUN cd /app && OUT_DIR=/tmp/t STATE_DIR=/tmp/t/s python3 -m unittest discover -s tests && rm -rf /tmp/t

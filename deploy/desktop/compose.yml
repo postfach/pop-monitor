@@ -81,6 +81,8 @@ services:
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-240}
       SYNC_SCREENS: ${SYNC_SCREENS:-}           # blank = the Vault screens of the monitored sites
       # best day and night PoP photo per campaign into SharePoint (needs write access: docs/sharepoint-setup.md)
+      DOOHLY_API_TOKEN: ${DOOHLY_API_TOKEN:-}   # bookings, slots and players from Doohly (read only): docs/doohly.md
+      DOOHLY_DEVICES: ${DOOHLY_DEVICES:-}       # optional: SITE_ID=Doohly player name;... when the names differ
       POP_UPLOAD: ${POP_UPLOAD:-1}
       POP_ROOT: ${POP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images}
       POP_DAY_AT: ${POP_DAY_AT:-20:00}          # today's daytime photos

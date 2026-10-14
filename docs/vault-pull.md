@@ -1,5 +1,8 @@
 # Vault bookings pull
 
+> Screens whose player is in Doohly now take their bookings from Doohly instead
+> (`docs/doohly.md`). The Vault pull below is still used for any other screen.
+
 The review page compares what each site played with what Vault says is booked on
 its screen. It reads `vault-bookings.json`, written each week by a scheduled task
 that uses the Vault connector, or uploaded on the Bookings page. When Vault (or

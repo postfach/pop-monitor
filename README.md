@@ -33,7 +33,7 @@ Axis camera ──RTSP 720p──▶ pop-gateway (one worker per camera)
 | `tools/roi-picker.html` | Open in a browser, load a camera snapshot, drag the four corners |
 | `tools/receiver.py` | Interim backend + review page (checks token, HMAC, hashes) |
 | `tools/popscore.py` | PoP photo quality score (glare, sunstrike, rain, blur, occlusion, clarity) and day/night |
-| `sync/` | `creatives-sync`: booked artwork from SharePoint via Microsoft Graph, and the best PoP photos back into it (`pop_upload.py`), with tests and a mock Graph |
+| `sync/` | `creatives-sync`: booked artwork from SharePoint via Microsoft Graph, bookings and players from Doohly (`doohly.py`), and the best PoP photos back into SharePoint (`pop_upload.py`), with tests and a mock Graph |
 | `deploy/sharepoint/` | One-off PowerShell set-up of the app registration and site grant |
 | `deploy/` | Portainer / Docker Compose stack, trial config, image build script |
 | `tools/fake_camera.py`, `sim_scene.py`, `make_test_video.py` | Synthetic billboard for end-to-end tests |
@@ -284,6 +284,15 @@ true coverage) unless this is its first or last week. `plays_per_loop` is the mo
 week. Vault or Doohly API access would remove both limits, and Doohly's playlist would also
 say which creative belongs to which campaign, so the links could then be made automatically. The receiver also tells the gateway how many
 campaigns are certainly booked, which the missing-creative check uses.
+
+### Doohly
+
+With a Doohly API token (`DOOHLY_API_TOKEN`), creatives-sync reads each monitored screen's
+Doohly player (read only) and the Bookings page uses its bookings instead of the Vault pull:
+exact weeks, plays per loop, sold / bonus / non-guaranteed bonus, the creatives booked with
+their weighting and day-parting (images still from SharePoint, by file name), the loop's slot
+count and length (a warning if the site's rotation differs), the player's location for day and
+night, and a player-offline alert. Details: `docs/doohly.md`.
 
 ### Best PoP photos into SharePoint
 

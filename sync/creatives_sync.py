@@ -49,6 +49,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mi  # noqa: E402
 import pop_upload  # noqa: E402
+import doohly  # noqa: E402
 
 VERSION = "0.1.0"
 ENV = os.environ.get
@@ -324,7 +325,9 @@ def fetch_inputs():
     r.raise_for_status()
     d = r.json()
     if not isinstance((d.get("bookings") or {}).get("proposals"), list):
-        raise RuntimeError("the receiver has no Vault pull yet (vault-bookings.json)")
+        if not doohly.token():
+            raise RuntimeError("the receiver has no Vault pull yet (vault-bookings.json)")
+        d["bookings"] = {"proposals": []}            # Doohly gives the bookings instead
     return d
 
 
@@ -363,10 +366,42 @@ def bookings_by_screen(bookings, screens, weeks):
     return out
 
 
+def doohly_by_screen(doc, screens, weeks):
+    """From doohly.json: {screen: {campaign_id: {"name", "weeks", "files"}}} for the screens
+    whose player is in Doohly. "files" are the booked creatives with the dates they play."""
+    want = {mi.screen_norm(s): s for s in screens}
+    out = {}
+    w0, w1 = min(weeks), max(weeks) + timedelta(days=6)
+    for site in (doc.get("sites") or {}).values():
+        screen = want.get(mi.screen_norm(site.get("screen")))
+        if not screen:
+            continue
+        camps = out.setdefault(screen, {})
+        for b in site.get("bookings") or []:
+            cid = b.get("campaign_id")
+            if not cid or not b.get("start") or not b.get("end"):
+                continue
+            a, z = date.fromisoformat(b["start"]), date.fromisoformat(b["end"])
+            if z < w0 or a > w1:
+                continue
+            e = camps.setdefault(cid, {"name": b.get("campaign_name") or b.get("name") or "", "weeks": set(), "files": []})
+            e["weeks"] |= {w for w in weeks if a <= w + timedelta(days=6) and z >= w}
+            for c in b.get("creatives") or []:
+                e["files"].append({"name": c.get("name") or "", "type": c.get("type"), "from": max(a, w0).isoformat(),
+                                   "to": min(z, w1).isoformat(), "share": c.get("share"),
+                                   "hours": c.get("hours") or (None if (b.get("start_time"), b.get("end_time")) in
+                                                               (("00:00", "23:59"), ("00:00", "24:00"), ("", ""))
+                                                               else f"{b['start_time']}-{b['end_time']}"),
+                                   "days": c.get("days")})
+    return out
+
+
 # ---------------------------------------------------------------- choosing files
 
-def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname=""):
-    """Files for one campaign on one screen. Returns (creatives, missing_reason)."""
+def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", booked_files=None):
+    """Files for one campaign on one screen. Returns (creatives, missing_reason).
+    booked_files: the creatives Doohly has booked on this screen for this campaign
+    (name, type, from, to, share, hours); when given they decide the files."""
     key = mi.screen_norm(screen)
     images = [f for f in files if mi.kind_of(f["name"])]
     if not images:
@@ -386,6 +421,41 @@ def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname=""):
             return [f for d, f in dated if d is None or mi.monday(d) == past[-1]]
         return fs
 
+    # 0. Doohly: the files actually booked on the player, found in SharePoint by name
+    not_found = []
+    if booked_files:
+        out, seen = [], set()
+        for b in booked_files:
+            if b.get("type") == "html":
+                continue                                   # live web content: nothing to match against
+            f, how = mi.match_file(b["name"], in_week_folder(images), size)
+            if not f:
+                f, how = mi.match_file(b["name"], images, size)
+            if not f:
+                not_found.append(b["name"])
+                continue
+            if (f["name"], b.get("from"), b.get("hours")) in seen:
+                continue
+            seen.add((f["name"], b.get("from"), b.get("hours")))
+            note = "booked in Doohly" + ("" if how == "exact" else f" as {b['name']} (file name {how})")
+            if b.get("share") is not None:
+                note += f"; {b['share']:g}% of its plays"
+            if b.get("hours") or b.get("days"):
+                note += f"; plays {' '.join(x for x in (b.get('hours'), ','.join(b.get('days') or [])) if x)}"
+            out.append(entry(campaign_id, screen, f, "doohly", date.fromisoformat(b["from"]) if b.get("from") else None,
+                             date.fromisoformat(b["to"]) if b.get("to") else None, b.get("share"), note, b.get("hours")))
+        if out:
+            if not_found:
+                out[0]["note"] += f"; not in SharePoint: {', '.join(not_found[:3])}"
+            return out, None
+    got, why = _choose_mi(campaign_id, screen, size, weeks, images, mis, all_screens, key, w0, w1, in_week_folder)
+    if not got and not_found:
+        why = f"Doohly plays {', '.join(not_found[:3])} but no file of that name is in the SharePoint folder"
+    return got, why
+
+
+def _choose_mi(campaign_id, screen, size, weeks, images, mis, all_screens, key, w0, w1, in_week_folder):
+    """Steps 1-3 of choose(): the Material Instructions, else file names and sizes."""
     # 1. Material Instructions: newest workbook with a row for this screen in these weeks
     rows, src = [], None
     for m in sorted(mis, key=lambda m: (m["updated"] or date.min, m["modified"]), reverse=True):
@@ -580,6 +650,9 @@ class Syncer:
         today = datetime.now(LOCAL).date()
         weeks = [mi.monday(today), mi.monday(today) + timedelta(days=7)]
         booked = bookings_by_screen(bookings, screens, weeks)
+        dbooked = doohly_by_screen(read_json(os.path.join(OUT, "doohly.json"), {}) or {}, screens, weeks)
+        for screen, camps in dbooked.items():          # Doohly knows this screen: it decides what is booked
+            booked[screen] = {cid: {"name": v["name"], "weeks": v["weeks"]} for cid, v in camps.items()}
 
         g = Graph()
         lib = Library(g).connect()
@@ -639,7 +712,8 @@ class Syncer:
                                     "reason": f"no folder for {cid} in Creative+MIs"})
                     continue
                 got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
-                                  [screen] + spec_names, info["name"])
+                                  [screen] + spec_names, info["name"],
+                                  booked_files=(dbooked.get(screen) or {}).get(cid, {}).get("files"))
                 if got:
                     pairs_ok += 1
                     creatives += got
@@ -784,6 +858,7 @@ def notify(text, ok=False, title=None):
 
 SYNC = None
 POP = None
+DOOHLY = None
 
 
 def configured():
@@ -819,6 +894,7 @@ class H(BaseHTTPRequestHandler):
             st.update(interval_min=INTERVAL / 60, next_refresh=datetime.fromtimestamp(nxt, timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ") if nxt else None, configured=configured())
             st["pop_upload"] = POP.status() if POP else None
+            st["doohly"] = DOOHLY.status() if DOOHLY else None
             return self.reply(200, st)
         self.reply(404, {})
 
@@ -862,6 +938,10 @@ def main():
     POP = pop_upload.PopUploader(Graph(), Library, STATE, RECEIVER, API_KEY, LOCAL, log, notify,
                                  atomic_json, read_json, q)
     threading.Thread(target=POP.loop, args=(configured,), daemon=True).start()
+    global DOOHLY
+    DOOHLY = doohly.Watcher(OUT, STATE, fetch_inputs, LOCAL, log, notify, atomic_json, read_json,
+                            on_change=SYNC.request)
+    threading.Thread(target=DOOHLY.loop, daemon=True).start()
     port = int(ENV("PORT", "8091"))
     log(f"creatives-sync {VERSION} on :{port}; library {OUT}; refresh every {INTERVAL / 60:.0f} min, "
         f"inputs checked every {CHECK / 60:.0f} min")

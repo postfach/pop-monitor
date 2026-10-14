@@ -1032,6 +1032,7 @@ const tile = (k, v, s, cls) => `<div class="tile"><div class="k">${k}</div><div 
 function meter(c) {
   if (c.status === 'not linked') return '<span class="muted" title="Link this campaign\'s creative(s) under Creatives seen to measure it">not linked</span>';
   const d = c.delivery ?? 0, cls = c.status === 'not seen' ? 'none' : c.status === 'under' ? 'under' : '';
+  if (c.status === 'maybe' && c.source === 'doohly') return '<span class="muted" title="Non-guaranteed bonus: plays only when the loop has room, so it isn\'t counted in true coverage">bonus if room</span>';
   if (c.status === 'maybe') return '<span class="muted" title="Vault doesn\'t say which weeks of this booking are live">may be booked this week</span>';
   if (c.status === 'seen') return `<span class="muted">seen, ${one(c.delivered)} / loop</span>`;
   return `<span class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(d * 100))}%"></i></span>${c.status === 'not seen' ? '<span class="bad">not seen</span>' : pct(d)}`;
@@ -1070,7 +1071,7 @@ function site(s, rep) {
   if (!s.vault_screen) return `<div class="site plain"><span class="sname">${esc(s.name)}</span>
      <span class="muted">Not linked to a Vault screen. <a href="/site?site=${encodeURIComponent(s.site_id)}">Set its Vault screen name</a> to compare bookings.</span></div>`;
   const camp = s.campaigns.map(c => `<tr${c.certain ? '' : ' style="opacity:.7"'}><td>${c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)}<br><span class="muted">${esc(c.advertiser)} · ${esc(c.campaign_id)}</span></td>
-     <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
+     <td class="n">${c.plays_per_loop}</td><td>${c.slot_types.map(t => `<span class="pill">${esc(t)}</span>`).join(' ')}${(c.doohly || []).map((b, i) => ` <a class="pill" href="${esc(b.url)}" target="_blank" rel="noopener" title="${esc(b.name)} · ${esc(b.purchase_type || '')} · ${b.creatives} creative(s)">Doohly${c.doohly.length > 1 ? ' ' + (i + 1) : ''}</a>`).join('')}${c.gaps ? ` <span class="pill" title="booked ${c.weeks} of the weeks between its first and last week; Vault doesn't say which">${c.weeks} wks in range</span>` : ''}</td>
      <td>${artCell(c, s)}</td>
      <td>${c.creatives.length ? `<span title="${esc(c.creatives.join(', '))}">${c.creatives.length === 1 ? esc(c.creatives[0]) : c.creatives.length + ' IDs'}</span>` : '<span class="muted">none</span>'}</td><td class="n">${one(c.delivered)}</td><td>${meter(c)}</td></tr>`).join('');
   const opt = (v, label, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(label)}</option>`;
@@ -1104,13 +1105,14 @@ function site(s, rep) {
   return `<details class="site" data-site="${esc(s.site_id)}"${OPEN_SITES.has(s.site_id) ? ' open' : ''}><summary>
      <span class="sname"><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></span>
      <span class="muted">${esc(s.vault_screen)} · ${s.slot_count} × ${s.slot_s} s</span>
+     ${s.doohly ? `<span class="pill ${s.doohly.online ? 'ok' : 'bad'}" title="Doohly player ${esc(s.doohly.player)}, last seen ${esc(s.doohly.alive_at || '?')}; bookings read ${esc(s.doohly.bookings_at || '?')}">player ${s.doohly.online ? 'online' : 'offline'}</span>` : ''}
      <span class="chips">${chip('True coverage', pct(tc), tcls)}${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}
        ${s.unassigned_per_loop > 0.05 ? chip('Unassigned', one(s.unassigned_per_loop) + ' / loop', 'warn') : ''}${notSeen ? chip('Not seen', notSeen + ' campaign(s)', 'bad') : ''}
        ${s.warnings.length ? chip('', s.warnings.length + ' warning(s)', 'warn') : ''}</span></summary>
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
        ${tile('True coverage', pct(tc), tsub, tcls)}
-       ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} maybe` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
+       ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} ${s.doohly ? 'bonus if room' : 'maybe'}` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
        ${tile('Programmatic', one(s.programmatic_per_loop), 'slots per loop')}
        ${tile('House', one(s.house_per_loop), 'slots per loop' + (s.unbooked_per_loop > 0.05 ? ` · plus ${one(s.unbooked_per_loop)} from campaigns not booked this week` : ''))}
        ${tile('Unassigned', one(s.unassigned_per_loop), 'slots per loop, not yet marked', s.unassigned_per_loop > 0.05 ? 'warn' : '')}
@@ -1119,7 +1121,7 @@ function site(s, rep) {
      </div>
      <h3>Booked campaigns</h3>
      <div class="wrap"><table><thead><tr><th>Campaign</th><th class="n">Booked / loop</th><th>Slot type</th><th>Artwork</th><th>Creatives</th><th class="n">Seen / loop</th><th>Delivery</th></tr></thead>
-     <tbody>${camp || '<tr><td colspan="7" class="muted">Nothing booked on this screen this week in the Vault pull.</td></tr>'}</tbody></table></div>
+     <tbody>${camp || '<tr><td colspan="7" class="muted">Nothing booked on this screen this week ' + (s.doohly ? 'in Doohly' : 'in the Vault pull') + '.</td></tr>'}</tbody></table></div>
      <h3>Creatives seen <span class="muted" style="font-weight:400">${groups.length} artwork(s)${nIds > groups.length ? `, from ${nIds} gateway IDs` : ''}</span></h3>
      <div class="wrap"><table><thead><tr><th>PoP</th><th>Booked artwork</th><th>Creative</th><th class="n">Plays</th><th class="n">Slots / loop</th><th>Campaign</th></tr></thead>
      <tbody>${crs || '<tr><td colspan="6" class="muted">No plays recorded this week.</td></tr>'}</tbody></table></div></details>`;
@@ -1129,11 +1131,15 @@ async function load() {
   const rep = await r.json();
   week = rep.week;
   document.getElementById('wk').textContent = 'Week of ' + new Date(rep.week + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
-  document.getElementById('sub').innerHTML = rep.pulled_at
-    ? `Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '') +
+  const dh = rep.doohly ? (rep.doohly.ok === false ? `<span class="bad">Doohly: ${esc(rep.doohly.error || 'failed')}</span> · `
+      : `Bookings from Doohly (${esc(rep.doohly.at)}, ${rep.doohly.bookings} booking(s) on ${rep.doohly.sites} screen(s))` +
+        (rep.doohly.unmatched.length ? ` · <span class="warn" title="${esc(rep.doohly.unmatched.map(u => u.site_id + ': ' + u.looked_for + ' (' + u.why + ')').join('; '))}">${rep.doohly.unmatched.length} site(s) not found in Doohly</span>` : '') + ' · ') : '';
+  document.getElementById('sub').innerHTML = dh + (rep.pulled_at
+    ? `${rep.doohly ? 'other screens from the ' : ''}Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '') +
       (rep.creatives ? ` · artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : ' · <span class="warn">no artwork library yet</span>') +
       (rep.artwork_enabled === false ? ' · <span class="warn">artwork matching unavailable (needs numpy and Pillow)</span>' : '')
-    : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>';
+    : (rep.doohly ? (rep.creatives ? `artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : '<span class="warn">no artwork library yet</span>')
+       : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>'));
   last = rep;
   render();
 }
@@ -1549,8 +1555,99 @@ def week_of(iso_date):
     return monday(datetime.fromisoformat(iso_date[:10]).date())
 
 
+DOOHLY = {"mtime": None, "path": None, "data": None}
+DOOHLY_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def load_doohly():
+    """doohly.json from creatives-sync (what the Doohly players have booked), newest copy."""
+    best = None
+    for d in [x.strip() for x in os.environ.get("CREATIVES_DIR", "/bookings/creatives").split(",") if x.strip()]:
+        p = os.path.join(d, "doohly.json")
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if best is None or m > best[1]:
+            best = (p, m)
+    if best is None:
+        DOOHLY.update(mtime=None, path=None, data=None)
+        return None
+    if DOOHLY["path"] != best[0] or DOOHLY["mtime"] != best[1]:
+        try:
+            with open(best[0], encoding="utf-8") as f:
+                DOOHLY.update(data=json.load(f), path=best[0], mtime=best[1])
+        except (OSError, ValueError) as e:
+            print(f"doohly: cannot read {best[0]}: {e}", flush=True)
+    return DOOHLY["data"]
+
+
+def doohly_site(site_id=None, screen=None):
+    d = load_doohly() or {}
+    sites = d.get("sites") or {}
+    if site_id and site_id in sites:
+        return sites[site_id]
+    if screen:
+        want = screen_key(screen)
+        for s in sites.values():
+            if screen_key(s.get("screen")) == want:
+                return s
+    return None
+
+
+def _doohly_plays(b, week):
+    """Plays per loop a Doohly booking adds in a week, averaged over the days it is on."""
+    try:
+        d0 = max(datetime.fromisoformat(b["start"]).date(), week)
+        d1 = min(datetime.fromisoformat(b["end"]).date(), week + timedelta(days=6))
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    if d1 < d0:
+        return 0.0
+    days = b.get("days") or DOOHLY_DAYS
+    n = sum(1 for i in range((d1 - d0).days + 1) if DOOHLY_DAYS[(d0 + timedelta(days=i)).weekday()] in days)
+    return (b.get("plays_per_loop") or 0) * n / 7.0
+
+
+def doohly_booked(site, week):
+    """Campaigns booked on a Doohly player in a week. The weeks are exact; a
+    campaign booked only as a non-guaranteed bonus isn't certain (it plays when
+    the loop has room), so it is left out of true coverage, as Vault's maybes are."""
+    vault = {p.get("campaign_id"): p for p in (load_bookings() or {}).get("proposals", []) if p.get("campaign_id")}
+    camps = {}
+    for b in site.get("bookings") or []:
+        ppl = _doohly_plays(b, week)
+        if ppl <= 0:
+            continue
+        cid = b.get("campaign_id") or f"D:{b.get('name')}"
+        v = vault.get(cid) or {}
+        name = re.sub(r"^LUMO_\d+\s*-\s*", "", b.get("campaign_name") or b.get("name") or "")
+        c = camps.setdefault(cid, {"certain": False, "campaign_id": cid, "name": v.get("name") or name,
+                                   "advertiser": (v.get("advertiser") or {}).get("name", ""),
+                                   "url": v.get("url") or b.get("url", ""), "doohly": [], "plays_per_loop": 0.0,
+                                   "slot_types": [], "weeks": None, "gaps": False, "source": "doohly"})
+        c["plays_per_loop"] += ppl
+        if b.get("purchase_type") != "Non-Guaranteed Bonus":
+            c["certain"] = True              # sold or guaranteed: it should play; a non-guaranteed bonus only fills room
+        c["doohly"].append({"url": b.get("url"), "name": b.get("name"), "purchase_type": b.get("purchase_type"),
+                            "creatives": len(b.get("creatives") or [])})
+        if b.get("slot_type") and b["slot_type"] not in c["slot_types"]:
+            c["slot_types"].append(b["slot_type"])
+    out = list(camps.values())
+    for c in out:
+        c["plays_per_loop"] = round(c["plays_per_loop"], 1)
+        if c["plays_per_loop"] == int(c["plays_per_loop"]):
+            c["plays_per_loop"] = int(c["plays_per_loop"])
+    out.sort(key=lambda c: (not c["certain"], -c["plays_per_loop"], c["name"].lower()))
+    return out
+
+
 def booked_for(screen, week):
-    """Campaigns booked on a Vault screen in the week starting `week` (a date)."""
+    """Campaigns booked on a Vault screen in the week starting `week` (a date):
+    from the screen's Doohly player when there is one, else from the Vault pull."""
+    ds = doohly_site(screen=screen) if screen else None
+    if ds is not None:
+        return doohly_booked(ds, week)
     data = load_bookings()
     if not data or not screen:
         return []
@@ -2281,6 +2378,18 @@ def site_bookings(cam, week, links_all):
            "slot_count": N, "slot_s": S, "campaigns": [], "creatives": [], "groups": [], "warnings": []}
     if not res["vault_screen"]:
         res["warnings"].append("No Vault screen set for this site (Settings).")
+    ds = doohly_site(sid, res["vault_screen"])
+    if ds:
+        dev, lp = ds.get("device") or {}, ds.get("loop") or {}
+        res["doohly"] = {"player": dev.get("name"), "online": dev.get("online"), "alive_at": local_time(dev.get("alive_at"), True),
+                         "frame": ds.get("frame"), "loop": lp, "bookings_at": local_time(ds.get("bookings_at"), True)}
+        if dev.get("online") is False:
+            res["warnings"].append(f"Doohly says the player {dev.get('name')} is offline (last seen "
+                                   f"{local_time(dev.get('alive_at'), True) or 'unknown'}).")
+        if lp.get("slot_count") and (lp["slot_count"] != N or abs((lp.get("slot_s") or 0) - S) > 0.01):
+            res["warnings"].append(f"Doohly's loop for this screen is {lp['slot_count']} slots of {lp.get('slot_s')} s "
+                                   f"({lp.get('name')}), but this site is set to {N} x {S:g} s: change the rotation "
+                                   "in the site's Settings so plays are counted in the right slots.")
     if not S or N < 1:
         res["warnings"].append("No rotation (slot count and length) set, so plays can't be measured in slots.")
         return res
@@ -2353,7 +2462,7 @@ def site_bookings(cam, week, links_all):
         res["warnings"].append(f"{tally['unassigned']:.1f} slot(s) per loop show creatives not assigned yet: "
                                "mark them as a campaign, programmatic or house below.")
     if booked > N:
-        res["warnings"].append(f"Vault has {booked} plays per loop booked but the site's rotation has {N} slots: "
+        res["warnings"].append(f"{'Doohly' if res.get('doohly') else 'Vault'} has {booked} plays per loop booked but the site's rotation has {N} slots: "
                                "check the slot count, or the screen runs a longer loop.")
     blank = sum(c["share"] for c in crs if c["blank"])
     elapsed = max(0.0, t1 - start)
@@ -2390,7 +2499,7 @@ def report_version(cams):
     """What a cached report depends on besides new plays (which a minute's
     staleness covers): links, the Vault pull, the artwork library, site setup."""
     return (REPORTS["gen"], MERGES.get("mtime"), _mtime(os.path.join(ARGS.out, "creative-links.json")), BOOKINGS.get("mtime"),
-            CRE.get("mtime"), None if cams is None else tuple(
+            CRE.get("mtime"), _mtime(DOOHLY.get("path") or ""), None if cams is None else tuple(
                 (c.get("id"), c.get("name"), c.get("vault_screen"), c.get("slot_count"), c.get("slot_ms"),
                  c.get("inset_pct")) for c in cams))
 
@@ -2441,6 +2550,11 @@ def bookings_report(week, cams=None):
            "source": (data or {}).get("source", ""), "file": BOOKINGS["path"],
            "campaigns": len((data or {}).get("proposals", [])), "gateway": cams is not None, "sites": [],
            "artwork_enabled": ART_OK}
+    dd = load_doohly()
+    if dd:
+        out["doohly"] = {"at": local_time(dd.get("generated_at"), True), "ok": dd.get("ok"), "error": dd.get("error"),
+                         "sites": len(dd.get("sites") or {}), "unmatched": dd.get("unmatched") or [],
+                         "bookings": sum(len(x.get("bookings") or []) for x in (dd.get("sites") or {}).values())}
     lib = load_creatives()
     if lib:
         out["creatives"] = {"pulled_at": local_time(lib.get("generated_at"), True), "source": lib.get("source", ""),
@@ -2555,8 +2669,8 @@ PREP_MAX = 6000
 
 
 def site_coords(site_id):
-    """Where a site is, for sunrise and sunset: POP_SITE_COORDS ("SITE=lat,lon;...")
-    or POP_DEFAULT_COORDS. A few tens of km out doesn't matter: twilight is skipped."""
+    """Where a site is, for sunrise and sunset: POP_SITE_COORDS ("SITE=lat,lon;..."),
+    else its Doohly player's location, else POP_DEFAULT_COORDS. A few tens of km out doesn't matter: twilight is skipped."""
     for part in os.environ.get("POP_SITE_COORDS", "").split(";"):
         k, _, v = part.partition("=")
         if k.strip() == site_id and v:
@@ -2565,6 +2679,9 @@ def site_coords(site_id):
                 return lat, lon
             except ValueError:
                 pass
+    ds = doohly_site(site_id)                          # the Doohly player's location
+    if ds and ds["device"].get("lat") is not None:
+        return float(ds["device"]["lat"]), float(ds["device"]["lon"])
     lat, lon = (float(x) for x in POP_DEFAULT_COORDS.split(","))
     return lat, lon
 
