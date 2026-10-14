@@ -7,16 +7,18 @@ thousands of camera shots:
 ```
 Sales / 00_Sales (NEW FOLDER) / Booked Campaigns / PoP Images /
   2026 / 10 - October / Curletts In /
-    LUMO_19702_Curletts-In_2026-10-13_1432_Day_Score87_v1.jpg
-    LUMO_19702_Curletts-In_2026-10-13_2215_Night_Score81_v1.jpg
-    LUMO_19023_Curletts-In_2026-10-13_1105_Day_Score92_v1.jpg
-    LUMO_19023_Curletts-In_2026-10-13_1611_Day_Score90_v2.jpg      (second execution)
+    LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg
+    LUMO_19391_HBO.Max_Curletts-In_2026-10-13_2215_Night_Score81_v1.jpg
+    LUMO_19023_Pals_Curletts-In_2026-10-13_1105_Day_Score92_v1.jpg
+    LUMO_19023_Pals_Curletts-In_2026-10-13_1611_Day_Score90_v2.jpg      (second execution)
 ```
 
-File name: campaign ID, site (its Vault screen name), date and time the photo was
+File name: campaign ID, advertiser (spaces as periods, from the Doohly campaign; from an imported Vault
+pull only for screens not in Doohly; left out if there is none), site (its Vault screen name), date and time the photo was
 taken, Day or Night, score (0 to 100), and the version (v1, v2, … one per booked artwork
 file, so a campaign with several executions gets a photo of each). The photo is the
-full camera frame, so the billboard is seen in its surroundings.
+full camera frame, so the billboard is seen in its surroundings. Files uploaded under an
+older naming are renamed to the current one at the next run (same photo, time and score).
 
 ## When, and what replaces what
 

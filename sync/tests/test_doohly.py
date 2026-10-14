@@ -91,6 +91,8 @@ class FakeClient:
                                 "loopPolicy": {"name": "20 slots, 16s", "slotCount": 20, "slotDuration": 16}}]}
         if path.startswith("/v3/bookings/"):
             return self.b[path.rsplit("/", 1)[1]]
+        if path.startswith("/v3/campaigns/"):
+            return {"id": path.rsplit("/", 1)[1], "advertiser": {"name": "AUM New Years Event"}}
         raise AssertionError(path)
 
 
@@ -123,6 +125,7 @@ class WatcherRun(unittest.TestCase):
         s = d["sites"]["BEACH-01"]
         self.assertEqual((s["frame"]["id"], s["loop"]["slot_count"], s["device"]["lat"]), ("main", 20, -36.85))
         self.assertEqual([b["campaign_id"] for b in s["bookings"]], ["LUMO_19649"])     # the 2020 one is left out
+        self.assertEqual(s["bookings"][0]["advertiser"], "AUM New Years Event")
         self.assertEqual(d["unmatched"][0]["site_id"], "PARNELL")
         self.assertEqual(notes, ["Warning: Doohly player offline at Beach"])
         calls = w.c.calls

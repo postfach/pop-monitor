@@ -143,6 +143,20 @@ class H(BaseHTTPRequestHandler):
             f.write(data)
         self.send(201, item(rel))
 
+    def do_PATCH(self):
+        """Rename an item (PoP photos named in an older format)."""
+        p = self._authed_path()
+        if p is None:
+            return
+        m = re.fullmatch(r"/drives/drive1/items/([^/]+)", p)
+        rel = IDS.get(m.group(1)) if m else None
+        if rel is None or not os.path.exists(os.path.join(ARGS.library, rel)):
+            return self.send(404, {"error": {"code": "itemNotFound", "message": "no item"}})
+        name = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["name"]
+        new = os.path.join(os.path.dirname(rel), name)
+        os.replace(os.path.join(ARGS.library, rel), os.path.join(ARGS.library, new))
+        self.send(200, item(new))
+
     def do_DELETE(self):
         p = self._authed_path()
         if p is None:

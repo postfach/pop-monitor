@@ -6,7 +6,7 @@
         ▼
   SharePoint  Sales / 00_Sales (NEW FOLDER) / Booked Campaigns / PoP Images /
               <year> / <MM - Month> / <site> /
-                LUMO_19702_Curletts-In_2026-10-13_1432_Day_Score87_v1.jpg
+                LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg
 
 When it runs (local time, TZ):
   * POP_DAY_AT (20:00): the daytime photos taken since the last daytime run;
@@ -61,9 +61,16 @@ def month_folder(iso_day):
     return f"{d.year}/{d.month:02d} - {MONTHS[d.month - 1]}"
 
 
+def adv_part(name):
+    """The advertiser for a file name: "HBO Max" -> "HBO.Max" (periods for spaces)."""
+    s = re.sub(r"[^A-Za-z0-9&+]+", ".", str(name or "")).strip(".")
+    return re.sub(r"\.+", ".", s)[:40].strip(".")
+
+
 def file_name(item, phase, version_no):
     taken = datetime.fromisoformat(item["taken_at"])
-    return (f"{item['campaign_id']}_{slug(item.get('screen') or item.get('site_name'))}_"
+    adv = adv_part(item.get("advertiser"))
+    return (f"{item['campaign_id']}_{adv + '_' if adv else ''}{slug(item.get('screen') or item.get('site_name'))}_"
             f"{taken:%Y-%m-%d_%H%M}_{'Day' if phase == 'day' else 'Night'}_"
             f"Score{int(round(item['score']))}_v{version_no}.jpg")
 
@@ -239,12 +246,32 @@ class PopUploader:
         self.save()
         return ok
 
+    def rename_if_needed(self, cur, it, phase, ck):
+        """Bring a file already up there to the current naming (e.g. the advertiser
+        added to the name), keeping its photo, time and score."""
+        vno = (self.st["versions"].get(ck) or {}).get(it["version"])
+        if not vno or not cur.get("item_id") or not cur.get("taken_at"):
+            return
+        want = file_name(dict(it, taken_at=cur["taken_at"], score=cur.get("score", 0)), phase, vno)
+        if want == cur.get("name"):
+            return
+        try:
+            new = self.g.request("PATCH", f"/drives/{self._drive()}/items/{cur['item_id']}",
+                                 json={"name": want}).json()
+        except Exception as e:
+            self.log(f"pop-upload: could not rename {cur.get('name')}: {e}")
+            return
+        self.log(f"pop-upload: renamed {cur.get('name')} to {want}")
+        cur.update(name=want, path=cur.get("path", "").rsplit("/", 1)[0] + "/" + want, url=new.get("webUrl", cur.get("url")))
+        self.save()
+
     def consider(self, it, phase):
         """Upload this photo if it is the first or beats the one up there. True if uploaded."""
         ck = f"{it['campaign_id']}|{it['site_id']}"
         key = f"{ck}|{it['version']}|{phase}"
         cur = self.st["items"].get(key)
         if cur:
+            self.rename_if_needed(cur, it, phase, ck)
             if it["event_id"] == cur.get("event_id"):
                 return False                             # what is up there is still the best
             # scored again with today's photos when the receiver still has it, else as uploaded

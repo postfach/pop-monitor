@@ -40,6 +40,11 @@ class FakeGraph:
             path = url.split("root:/", 1)[1].rsplit(":/content", 1)[0]
             self.files[f"id{self.n}"] = path
             return self.R({"id": f"id{self.n}", "webUrl": "https://x/" + path})
+        if method == "PATCH":
+            iid = url.rsplit("/", 1)[1]
+            folder = self.files[iid].rsplit("/", 1)[0]
+            self.files[iid] = folder + "/" + kw["json"]["name"]
+            return self.R({"id": iid, "webUrl": "https://x/" + self.files[iid]})
         if method == "DELETE":
             iid = url.rsplit("/", 1)[1]
             self.deleted.append(iid)
@@ -111,6 +116,17 @@ class Uploads(unittest.TestCase):
         # the same photo coming back as best: nothing to do
         self.run_with([item(90, "e3", current_event_id="e3", current_score=90)])
         self.assertEqual(len(self.g.files), 1)
+
+    def test_advertiser_in_name_and_old_files_renamed(self):
+        self.assertEqual(pu.adv_part("HBO Max"), "HBO.Max")
+        self.assertEqual(pu.adv_part("Tui Garden Products!"), "Tui.Garden.Products")
+        self.assertEqual(pu.file_name(item(98.2, "e", advertiser="HBO Max"), "day", 1),
+                         "LUMO_19702_HBO.Max_Curletts-In_2026-10-13_1432_Day_Score98_v1.jpg")
+        self.run_with([item(80, "e1")])                                       # uploaded before advertisers
+        self.run_with([item(70, "e2", advertiser="HBO Max", current_event_id="e1", current_score=80)])
+        (path,) = self.g.files.values()                                       # not replaced, but renamed
+        self.assertTrue(path.endswith("/LUMO_19702_HBO.Max_Curletts-In_2026-10-13_1432_Day_Score80_v1.jpg"), path)
+        self.assertEqual(self.g.deleted, [])
 
     def test_versions_and_phases_are_separate(self):
         self.run_with([item(80, "a1"), item(70, "b1", version="art:b.jpg")])

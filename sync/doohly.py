@@ -307,6 +307,19 @@ class Watcher:
         out.sort(key=lambda p: (p["name"] or "").lower())
         return out
 
+    def advertiser(self, campaign_uuid):
+        """A Doohly campaign's advertiser name (read once per campaign, then kept)."""
+        if not campaign_uuid:
+            return None
+        adv = self.cache.setdefault("_advertisers", [None, {}])[1]
+        if campaign_uuid not in adv:
+            try:
+                adv[campaign_uuid] = ((self.c.get(f"/v3/campaigns/{campaign_uuid}") or {}).get("advertiser") or {}).get("name")
+            except DoohlyError as e:
+                self.log(f"doohly: campaign {campaign_uuid}: {e}")
+                return None
+        return adv[campaign_uuid]
+
     def bookings(self, frame_id, d0, d1):
         """Live bookings on a frame that overlap [d0, d1], with their creatives.
         Details are fetched only for new or changed bookings."""
@@ -317,14 +330,19 @@ class Watcher:
                 continue
             hit = self.cache.get(b["id"])
             if hit and hit[0] == b.get("updatedAt"):
+                if "advertiser" not in hit[1]:          # read before advertisers were kept
+                    hit[1]["advertiser"] = self.advertiser((b.get("campaign") or {}).get("id"))
                 out.append(hit[1])
                 continue
             slim = slim_booking(self.c.get(f"/v3/bookings/{b['id']}"))
+            slim["advertiser"] = self.advertiser((b.get("campaign") or {}).get("id"))
             self.cache[b["id"]] = [b.get("updatedAt"), slim]
             out.append(slim)
-        keep = {b["id"] for b in out}
+        keep = {b["id"] for b in out} | {"_advertisers"}
         stale = date.today() - timedelta(days=21)
-        self.cache = {k: v for k, v in self.cache.items() if k in keep or (v[1].get("end") or "") >= stale.isoformat()}
+        self.cache = {k: v for k, v in self.cache.items()
+                      if k in keep or (isinstance(v[1], dict) and (v[1].get("end") or "") >= stale.isoformat()
+                                       and "campaign_id" in v[1])}
         self.atomic_json(self.cache_p, self.cache)
         out.sort(key=lambda b: (b["start"] or "", b["campaign_id"] or "", b["name"] or ""))
         return out

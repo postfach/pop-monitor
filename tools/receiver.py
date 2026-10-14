@@ -1706,8 +1706,9 @@ def doohly_booked(site, week):
         cid = b.get("campaign_id") or f"D:{b.get('name')}"
         v = vault.get(cid) or {}
         name = re.sub(r"^LUMO_\d+\s*-\s*", "", b.get("campaign_name") or b.get("name") or "")
-        c = camps.setdefault(cid, {"certain": False, "campaign_id": cid, "name": v.get("name") or name,
-                                   "advertiser": (v.get("advertiser") or {}).get("name", ""),
+        # Doohly first (the stack reads it itself); a Vault pull, if one was imported, only fills gaps
+        c = camps.setdefault(cid, {"certain": False, "campaign_id": cid, "name": name or v.get("name") or cid,
+                                   "advertiser": b.get("advertiser") or (v.get("advertiser") or {}).get("name", "") or "",
                                    "url": v.get("url") or b.get("url", ""), "doohly": [], "plays_per_loop": 0.0,
                                    "slot_types": [], "weeks": None, "gaps": False, "source": "doohly"})
         c["plays_per_loop"] += ppl
@@ -2861,6 +2862,7 @@ def best_pops(t0, t1, phase, current=None):
         for site in rep.get("sites") or []:
             sid = site.get("site_id")
             names = {c["campaign_id"]: c.get("name") for c in site.get("campaigns") or []}
+            advs = {c["campaign_id"]: c.get("advertiser") or "" for c in site.get("campaigns") or []}
             for g in site.get("groups") or []:
                 camp = g.get("assigned") or ""
                 if not re.fullmatch(r"LUMO_\d+", camp):
@@ -2869,7 +2871,7 @@ def best_pops(t0, t1, phase, current=None):
                     k = (sid, camp, v["key"])
                     it = items.setdefault(k, {"site_id": sid, "site_name": site.get("name"),
                                               "screen": site.get("vault_screen") or site.get("name"),
-                                              "campaign_id": camp, "campaign_name": names.get(camp, ""),
+                                              "campaign_id": camp, "campaign_name": names.get(camp, ""), "advertiser": advs.get(camp, ""),
                                               "version": v["key"], "version_label": v["label"],
                                               "art_file": v["file"], "creative_ids": set(), "video": v["video"]})
                     it["creative_ids"].update(v["ids"])

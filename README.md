@@ -299,7 +299,7 @@ night, and a player-offline alert. Details: `docs/doohly.md`.
 At 8 pm (daytime photos) and 8 am (night photos) creatives-sync puts the clearest PoP
 photo of each campaign, site and artwork version into SharePoint under
 `Booked Campaigns/PoP Images/<year>/<MM - Month>/<site>/`, named like
-`LUMO_19702_Curletts-In_2026-10-13_1432_Day_Score87_v1.jpg`. Photos are scored for glare,
+`LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg`. Photos are scored for glare,
 sunstrike, rain, haze, blur, anything in front of the screen and how clearly the creative
 shows (`tools/popscore.py`); a later run replaces a photo only with a higher-scoring one.
 Unassigned, programmatic and house creatives are left out. It needs the SharePoint app to
