@@ -13,6 +13,7 @@ screen whose player is in Doohly.
 | Which artwork | the creatives booked on the player, found in SharePoint by file name, with their weighting (% of the campaign's plays) and day-parting | the Material Instructions |
 | Day or night | the player's GPS location | Auckland unless `POP_SITE_COORDS` is set |
 | Rotation (slot count and length) | the frame's loop policy: the site's rotation is kept the same automatically | set by hand |
+| Screen resolution | the frame's size: fills in a site's *Screen* resolution if none is set, so PoP images are straightened to the screen's shape | set by hand, or the camera's view |
 | Player status | online or offline, last seen; a Teams/Slack alert after 15 minutes offline | — |
 
 A campaign booked only as a **non-guaranteed bonus** plays when the loop has room, so it
@@ -47,8 +48,8 @@ out), with its address, screen size, loop and whether it is online. Screens alre
 as a site are hidden (tick *show active ones too* to see them, ticked).
 
 Tick a screen to set it up: the Add site form opens with the site ID (e.g.
-`ALBANY-EXPRESSWAY-IN`), name, Vault screen and rotation (slot count and length from the
-player's loop) filled in. Add the camera's address and login, save, and set its region as
+`ALBANY-EXPRESSWAY-IN`), name, Vault screen, rotation (slot count and length from the
+player's loop) and screen resolution filled in. Add the camera's address and login, save, and set its region as
 usual. Nothing is monitored until then: a screen only becomes a site once it has a camera.
 
 A screen counts as set up when a site's Vault screen name is the player's name without

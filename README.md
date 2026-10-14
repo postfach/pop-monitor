@@ -376,6 +376,19 @@ camera so the edit itself isn't logged as a play.
 
 Region edits are saved by the gateway in `cameras.json` (see above), so they survive restarts.
 
+**Screen resolution.** A camera sees the board at an angle, which squeezes it (a 576 × 396
+screen seen from the side can look nearly square). With the screen's resolution set on the
+site's Settings page (*Screen*, or `board_width` / `board_height` in the camera's JSON), the
+straightened PoP image (`roi`) is given the screen's shape instead of the shape the camera
+sees: 1024 px on its longer side (`snapshot.roi_width`) whatever the screen's own pixel count,
+as the camera's view sets the real detail. The preview on the region page does the same.
+Screens with a Doohly player get Doohly's resolution automatically if none is set (within 5
+minutes, logged as `screen size: <site> set to 576 x 396 from Doohly`); a resolution entered
+by hand is left alone. Changing it restarts that camera's stream but keeps its creatives:
+the detector's own small image (192 px) keeps the shape the camera sees, so creative IDs
+don't change. Artwork matching uses a fingerprint grid with the screen's shape (a tall
+screen gets a tall grid), from this resolution, else Doohly's, else the artwork's size.
+
 Behind the page: the gateway serves a small live-settings API on port 8090 (`control_port`,
 0 disables it), reachable only inside the Docker network and protected by the API key; the
 receiver forwards `/api/*` to it. Set `REVIEW_USER` and `REVIEW_PASSWORD` to require a login

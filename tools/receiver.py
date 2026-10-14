@@ -321,6 +321,13 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 <p class="hint" id="rotnote" hidden></p>
 </fieldset>
 
+<fieldset><legend>Screen</legend>
+<div class="grid">
+  <label class="f"><span>Screen width (pixels)</span><input type="number" name="board_width" min="16" max="20000" placeholder="576"></label>
+  <label class="f"><span>Screen height (pixels)</span><input type="number" name="board_height" min="16" max="20000" placeholder="396"></label>
+</div><p class="hint" id="boardhint">The screen's resolution. The straightened PoP image is given the screen's shape, so a board seen at an angle isn't squeezed (used for artwork matching, scores and the photos on these pages). Blank = the shape the camera sees. Filled in from Doohly when the screen has a Doohly player.</p>
+</fieldset>
+
 <fieldset><legend>Schedule and checks</legend>
 <label class="check"><input type="checkbox" name="allday" checked> Operates 24 hours</label>
 <div class="grid">
@@ -395,6 +402,7 @@ async function init() {
       for (const k of ['site_id', 'display_name', 'vault_screen']) setVal(k, g[k]);
       if (g.slot_count) setVal('slot_count', g.slot_count);
       if (g.slot_s) setVal('slot_s', g.slot_s);
+      if (g.board_width) { setVal('board_width', g.board_width); setVal('board_height', g.board_height); }
       $('title').textContent = 'Add ' + p.screen;
       $('sub').innerHTML = `From Doohly player <b>${p.name.replace(/</g, '&lt;')}</b>${p.address ? ' · ' + p.address.replace(/</g, '&lt;') : ''}` +
         (p.loop ? ` · loop ${p.loop.slot_count} × ${p.loop.slot_s} s` : '') + '. Enter the camera’s address and login, save, then set its region.';
@@ -429,6 +437,7 @@ function fillFrom(c, copy) {
   f.querySelector(`input[name=rtsp_transport][value=${current.rtsp_transport}]`).checked = true;
   for (const k of ['use_https','camera_tls_insecure','takeover','ptz_check']) setVal(k, current[k]);
   setVal('slot_count', current.slot_count || ''); setVal('slot_s', current.slot_ms ? current.slot_ms / 1000 : '');
+  setVal('board_width', current.board_width || ''); setVal('board_height', current.board_height || '');
   const hrs = current.operating_hours || '00:00-24:00', all = hrs === '00:00-24:00' || hrs.split('-')[0] === hrs.split('-')[1];
   setVal('allday', all); if (!all) { setVal('from', hrs.split('-')[0]); setVal('to', hrs.split('-')[1]); }
   if (copy) { sync(); f.elements.site_id.focus(); return; }
@@ -443,6 +452,13 @@ function fillFrom(c, copy) {
 async function loadRotation(id) {
   const all = await fetch('/sites/rotation').then(r => r.ok ? r.json() : {}).catch(() => ({}));
   rot = all[id] || null;
+  const fr = rot && rot.frame;                 // Doohly's resolution for this screen
+  if (fr && fr.width) {
+    const same = +f.elements.board_width.value === fr.width && +f.elements.board_height.value === fr.height;
+    $('boardhint').textContent = `Doohly: ${fr.width} × ${fr.height}` + (same ? '.' : f.elements.board_width.value ?
+      ' (different from what is set here, which wins).' : ' (it fills this in within 5 minutes, or enter it now).') +
+      ' The straightened PoP image gets the screen\'s shape, so a board seen at an angle isn\'t squeezed.';
+  }
   if (!rot || !rot.doohly) {                   // no Doohly loop for this site: nothing to follow
     if (rot && rot.why) { $('rotnote').hidden = false; $('rotnote').textContent = `Rotation set by hand (${rot.why}).`; }
     return;
@@ -482,6 +498,7 @@ function formData() {
     slot_ms: e.takeover.checked ? 0 : Math.round(num(e.slot_s.value) * 1000),
     operating_hours: e.allday.checked ? '00:00-24:00' : `${e.from.value}-${e.to.value}`,
     ptz_check: e.ptz_check.checked,
+    board_width: num(e.board_width.value), board_height: num(e.board_height.value),
     coverage_min_pct: e.coverage_min_pct.value === '' ? null : Number(e.coverage_min_pct.value),
     coverage_window_min: e.coverage_window_min.value === '' ? null : Number(e.coverage_window_min.value),
   };
@@ -495,6 +512,7 @@ f.addEventListener('submit', async ev => {
   const d = formData();
   if (!d.site_id) { msg('Site ID is required.', 'bad'); return; }
   if (!d.host && !d.rtsp_url_override) { msg('Enter the camera host (or a custom video URL).', 'bad'); return; }
+  if (!d.board_width !== !d.board_height) { msg('Enter both the screen width and height, or neither.', 'bad'); return; }
   $('save').disabled = true; msg(editing ? 'Saving and restarting this camera…' : 'Adding site…');
   const r = await fetch(editing ? '/api/cameras/' + encodeURIComponent(editing) : '/api/cameras',
                         {method: editing ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(d)});
@@ -590,7 +608,7 @@ const qs = new URLSearchParams(location.search), name = qs.get('site') || qs.get
 const $ = id => document.getElementById(id);
 const c = $('c'), ctx = c.getContext('2d'), pv = $('preview'), pctx = pv.getContext('2d');
 const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently: true});
-let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false;
+let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false, board = 0;
 const LABELS = ['TL', 'TR', 'BR', 'BL'];
 $('cam').textContent = name;
 if (new URLSearchParams(location.search).get('new')) setTimeout(() => msg('Site added. Now drag the corners onto the screen and save.', 'ok'), 1500);
@@ -607,6 +625,7 @@ async function load() {
     if (!cam) throw new Error('site "' + name + '" not found on the gateway');
     $('cam').textContent = cam.name; document.title = cam.name + ' – region';
     saved = {roi: cam.roi.map(p => p.slice()), inset: cam.inset_pct};
+    board = cam.board_width > 0 && cam.board_height > 0 ? cam.board_width / cam.board_height : 0;
     pts = saved.roi.map(p => p.slice());
     $('inset').value = saved.inset;
     $('sub').textContent = (cam.name !== cam.id ? cam.id + ' · ' : '') + (cam.model ? cam.model : 'Camera') + (cam.connected ? ' · connected' : ' · video not connected');
@@ -646,7 +665,8 @@ function preview() {
   const W = img.width, H = img.height, q = pts.map(p => [p[0]*(W-1), p[1]*(H-1)]);
   const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
   const bw = (dist(q[0],q[1]) + dist(q[3],q[2]))/2, bh = (dist(q[0],q[3]) + dist(q[1],q[2]))/2;
-  const ow = 320, oh = Math.max(40, Math.min(640, Math.round(ow * bh / Math.max(1, bw))));
+  // the screen's shape when its resolution is set (as the gateway does), else the shape seen
+  const ow = 320, oh = Math.max(40, Math.min(640, Math.round(board ? ow / board : ow * bh / Math.max(1, bw))));
   pv.width = ow; pv.height = oh;
   const h = homography(q), out = pctx.createImageData(ow, oh), inset = Math.min(0.4, (+$('inset').value || 0)/100);
   for (let j = 0; j < oh; j++) for (let i = 0; i < ow; i++) {
@@ -1676,7 +1696,9 @@ def doohly_players():
         out.append(dict(p, site_id=sid, site_name=(cam or {}).get("name"),
                         suggested={"site_id": site_id_for(p.get("screen")), "display_name": p.get("screen"),
                                    "vault_screen": p.get("screen"), "slot_count": lp.get("slot_count"),
-                                   "slot_s": lp.get("slot_s")}))
+                                   "slot_s": lp.get("slot_s"),
+                                   "board_width": (p.get("frame") or {}).get("width"),
+                                   "board_height": (p.get("frame") or {}).get("height")}))
     return {"at": local_time(d.get("generated_at"), True), "players": out}
 
 
@@ -2214,15 +2236,27 @@ def _hp(t, k=3):
     return t - b / (2 * k + 1) ** 2
 
 
-def _prep(img, inset=0.0):
+def art_grid(aspect=None):
+    """Fingerprint grid for a screen of this shape (width / height), about as many
+    cells as the default 48 x 32, so a tall or very wide screen isn't squashed into a
+    3:2 grid (losing detail along its long side)."""
+    if not aspect or aspect <= 0 or abs(math.log(aspect * ART_GH / ART_GW)) < 0.15:
+        return ART_GW, ART_GH                         # near 3:2 (most screens): the usual grid
+    gw = max(16, min(96, round(math.sqrt(ART_GW * ART_GH * aspect))))
+    gh = max(16, min(96, round(ART_GW * ART_GH / gw)))
+    return gw, gh
+
+
+def _prep(img, inset=0.0, grid=None):
     """Fine luma detail of an image on a fixed grid: low frequencies (glare,
     vignetting, exposure) removed, so it can be compared with a camera photo."""
+    gw, gh = grid or (ART_GW, ART_GH)
     img = img.convert("RGB")
     if inset > 0:                         # the PoP image leaves out the board's edge
         w, h = img.size
         img = img.crop((w * inset, h * inset, w * (1 - inset), h * (1 - inset)))
-    img = img.resize((ART_GW * 4, ART_GH * 4), _Image.BILINEAR).filter(_ImageFilter.GaussianBlur(1.2))
-    img = img.resize((ART_GW, ART_GH), _Image.BOX).convert("L")
+    img = img.resize((gw * 4, gh * 4), _Image.BILINEAR).filter(_ImageFilter.GaussianBlur(1.2))
+    img = img.resize((gw, gh), _Image.BOX).convert("L")
     return _hp(_np.asarray(img, dtype=float))
 
 
@@ -2245,27 +2279,27 @@ def _shift_corr(a, b, r=2):
     return best
 
 
-def _ref_fp(rel, inset):
+def _ref_fp(rel, inset, grid=None):
     path = creative_file(rel)
     if not path:
         return None
-    key = (path, os.path.getmtime(path), round(inset, 3))
+    key = (path, os.path.getmtime(path), round(inset, 3), grid)
     if key not in ART_CACHE:
         try:
             with _Image.open(path) as im:
-                ART_CACHE[key] = _prep(im, inset)
+                ART_CACHE[key] = _prep(im, inset, grid)
         except Exception as e:
             print(f"creatives: cannot read {path}: {e}", flush=True)
             ART_CACHE[key] = None
     return ART_CACHE[key]
 
 
-def _pop_fp(eid):
-    key = ("pop", eid)
+def _pop_fp(eid, grid=None):
+    key = ("pop", eid, grid)
     if key not in ART_CACHE:
         try:
             with _Image.open(os.path.join(ARGS.out, "images", f"{eid}.roi.jpg")) as im:
-                ART_CACHE[key] = _prep(im)
+                ART_CACHE[key] = _prep(im, grid=grid)
         except Exception:
             ART_CACHE[key] = None
     return ART_CACHE[key]
@@ -2346,12 +2380,18 @@ def artwork_matches(cam, t0, t1):
     if not cands:
         return {}
     inset = max(0.0, min(0.4, float(cam.get("inset_pct") or 0) / 100.0))
+    # the grid takes the screen's shape: its resolution (site or Doohly), else the artwork's
+    px = board_px(cam)
+    if not px:
+        sizes = sorted(c["width"] / c["height"] for c in cands if (c.get("width") or 0) > 0 and (c.get("height") or 0) > 0)
+        px = (sizes[len(sizes) // 2], 1) if sizes else None
+    grid = art_grid(px[0] / px[1]) if px else None
     # one reference per image, one per frame of a video (a PoP shows one moment of it);
     # a booked entry scores as its best reference, so the right frame wins
     refs, owner, frame_of = [], [], []
     for k, c in enumerate(cands):
         for rel in (c["frames"] if c.get("kind") == "video" else [c["file"]]):
-            f = _ref_fp(rel, inset)
+            f = _ref_fp(rel, inset, grid)
             if f is not None:
                 refs.append(f)
                 owner.append(k)
@@ -2361,7 +2401,7 @@ def artwork_matches(cam, t0, t1):
     stack = _np.stack(refs)
     owner = _np.array(owner)
     used = sorted(set(owner.tolist()))
-    lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}"
+    lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}|{grid}"
     sid = cam.get("id")
     state = art_state().setdefault(sid, {})
     plays = site_plays(sid, t0, t1)
@@ -2377,7 +2417,7 @@ def artwork_matches(cam, t0, t1):
             ART_RECHECK_MATCHED if st["res"]["status"] == "matched" else ART_RECHECK_OTHER)
         if not fresh:
             sample = _spread(ps, ART_SAMPLES)
-            fps = [f for f in (_pop_fp(p[4]) for p in sample) if f is not None]
+            fps = [f for f in (_pop_fp(p[4], grid) for p in sample) if f is not None]
             if not fps:
                 continue
             raw = [_scores(f, stack) for f in fps]
@@ -3005,7 +3045,9 @@ def rotation_info(cams=None):
         why = ("set by hand" if st["manual"].get(sid) else "takeover" if cam.get("takeover") else
                "has time-of-day rotations" if cam.get("dayparts") else
                "no Doohly player" if not ds else "Doohly's loop not known yet" if not lp.get("slot_count") else "")
+        fr = (ds or {}).get("frame") or {}
         out[sid] = {"auto": not why, "why": why, "manual": bool(st["manual"].get(sid)),
+                    "frame": {"width": fr["width"], "height": fr["height"]} if fr.get("width") and fr.get("height") else None,
                     "doohly": {"slot_count": lp.get("slot_count"), "slot_s": lp.get("slot_s"), "name": lp.get("name")} if lp else None,
                     "last_change": st["changes"].get(sid)}
     return out
@@ -3044,9 +3086,45 @@ def sync_rotations():
         REPORTS["gen"] += 1
 
 
+def board_px(cam):
+    """(width, height) of a site's screen: as set on the site, else Doohly's frame, else None."""
+    if (cam.get("board_width") or 0) > 0 and (cam.get("board_height") or 0) > 0:
+        return cam["board_width"], cam["board_height"]
+    fr = (doohly_site(cam.get("id"), cam.get("vault_screen")) or {}).get("frame") or {}
+    if (fr.get("width") or 0) > 0 and (fr.get("height") or 0) > 0:
+        return fr["width"], fr["height"]
+    return None
+
+
+def sync_board_sizes():
+    """Give each site with no screen resolution set its Doohly player's resolution, so
+    the gateway straightens PoP images to the screen's shape. Once set (here or by
+    hand) it is left alone."""
+    cams = gateway_cameras()
+    if cams is None or not load_doohly():
+        return
+    for cam in cams:
+        sid = cam.get("id")
+        if (cam.get("board_width") or 0) > 0:
+            continue
+        fr = (doohly_site(sid, cam.get("vault_screen")) or {}).get("frame") or {}
+        w, h = fr.get("width") or 0, fr.get("height") or 0
+        if not (16 <= w <= 20000 and 16 <= h <= 20000):
+            continue
+        url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + f"/api/cameras/{urllib.parse.quote(sid, safe='')}"
+        try:
+            req = urllib.request.Request(url, data=json.dumps({"board_width": w, "board_height": h}).encode(), method="PUT",
+                                         headers={"Authorization": f"Bearer {ARGS.api_key}", "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception as e:
+            print(f"screen size: could not update {sid}: {e}", flush=True)
+            continue
+        print(f"screen size: {sid} set to {w} x {h} from Doohly", flush=True)
+
+
 def bookings_loop():
     while True:
-        for job in (sync_expectations, sync_rotations):
+        for job in (sync_expectations, sync_rotations, sync_board_sizes):
             try:
                 job()
             except Exception as e:  # never let the helper thread die

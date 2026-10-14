@@ -270,6 +270,8 @@ static cJSON *camera_json(int i)
     const cJSON *prof = cJSON_GetObjectItemCaseSensitive(o, "profile");
     cJSON_AddNumberToObject(j, "slot_count", prof ? raw_int(prof, "slot_count", 0) : 0);
     cJSON_AddNumberToObject(j, "slot_ms", prof ? raw_int(prof, "slot_ms", 0) : 0);
+    cJSON_AddNumberToObject(j, "board_width", c->board_width);
+    cJSON_AddNumberToObject(j, "board_height", c->board_height);
     cJSON_AddNumberToObject(j, "dayparts", c->n_dayparts);
     cJSON_AddStringToObject(j, "operating_hours", c->operating_hours);
     cJSON_AddBoolToObject(j, "ptz_check", c->ptz_check);
@@ -361,7 +363,7 @@ static void merge_form(cJSON *obj, const cJSON *in)
     if (cJSON_IsString(pw) && *pw->valuestring) set_item(obj, "password", cJSON_CreateString(pw->valuestring));
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(in, "clear_password")))
         cJSON_DeleteItemFromObjectCaseSensitive(obj, "password");
-    static const char *ints[] = {"http_port", "rtsp_port", NULL};
+    static const char *ints[] = {"http_port", "rtsp_port", "board_width", "board_height", NULL};
     for (int k = 0; ints[k]; k++) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, ints[k]);
         if (!v || cJSON_IsNull(v) || (cJSON_IsNumber(v) && v->valueint == 0))

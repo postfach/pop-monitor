@@ -51,14 +51,38 @@ static int64_t mono_to_wall(int64_t mono)
     return mono + (util_wall_ms() - util_mono_ms());
 }
 
+static int roi_height_for(const pc_point r[4], int fw, int fh, int ow);
+
+/* Size of a straightened board image whose longer side is `longest`. With the
+ * screen's resolution known it has the screen's shape (the camera sees the
+ * board at an angle, which squeezes it); otherwise the shape the camera sees.
+ * The pixel size is set by `longest`, not the screen's resolution. */
+static void board_size(const camera_cfg *c, const pc_point roi[4], int fw, int fh, int longest, int *ow, int *oh)
+{
+    if (c && c->board_width > 0 && c->board_height > 0) {
+        double a = (double)c->board_width / c->board_height;
+        if (a >= 1) { *ow = longest; *oh = (int)lround(longest / a); }
+        else        { *oh = longest; *ow = (int)lround(longest * a); }
+        if (*ow < 16) *ow = 16;
+        if (*oh < 16) *oh = 16;
+        *ow &= ~1;
+        *oh &= ~1;
+        return;
+    }
+    *ow = longest;
+    *oh = roi_height_for(roi, fw, fh, longest);
+}
+
 /* Straightened ROI of the current analysis frame as a small JPEG, for alerts. */
-static void alert_roi_jpeg(const pc_point roi[4], float inset, const pc_frame *f, uint8_t **jpg, size_t *len)
+static void alert_roi_jpeg(const camera_cfg *c, const pc_point roi[4], float inset, const pc_frame *f,
+                           uint8_t **jpg, size_t *len)
 {
     *jpg = NULL;
     *len = 0;
     if (!f) return;
     pc_warp w;
-    int ow = 480, oh = 240;
+    int ow, oh;
+    board_size(c, roi, f->width, f->height, 480, &ow, &oh);
     if (pc_warp_init(&w, f->width, f->height, roi, inset, ow, oh) != 0) return;
     uint8_t *rgb = malloc((size_t)ow * oh * 3);
     if (rgb) {
@@ -234,8 +258,8 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     uint8_t *roi_jpg = NULL;
     size_t roi_len = 0;
     if (best_rgb) {
-        int ow = c->snap.roi_width > 64 ? c->snap.roi_width : 1024;
-        int oh = roi_height_for(roi_pts, best_w, best_h, ow);
+        int ow, oh;
+        board_size(c, roi_pts, best_w, best_h, c->snap.roi_width > 64 ? c->snap.roi_width : 1024, &ow, &oh);
         pc_warp w;
         if (pc_warp_init(&w, best_w, best_h, roi_pts, inset, ow, oh) == 0) {
             uint8_t *rgb = malloc((size_t)ow * oh * 3);
@@ -285,6 +309,10 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
         cJSON_AddItemToArray(roi, pt);
     }
     cJSON_AddNumberToObject(j, "inset_pct", inset);
+    if (c->board_width > 0) {
+        cJSON_AddNumberToObject(j, "board_width", c->board_width);
+        cJSON_AddNumberToObject(j, "board_height", c->board_height);
+    }
     cJSON *prof = cJSON_AddObjectToObject(j, "profile");
     cJSON_AddNumberToObject(prof, "slot_count", job->profile.slot_count);
     cJSON_AddNumberToObject(prof, "slot_ms", job->profile.slot_ms);
@@ -776,7 +804,7 @@ static void *stream_thread(void *arg)
                 if (!fev.one_shot) status_fault(cm, name, fev.raised);
                 uint8_t *jpg = NULL;
                 size_t jl = 0;
-                if (fev.raised) alert_roi_jpeg(roi, inset, &f, &jpg, &jl);
+                if (fev.raised) alert_roi_jpeg(c, roi, inset, &f, &jpg, &jl);
                 alerts_send(cm->app, c, name, state, mono_to_wall(fev.since_ms), mono_to_wall(fev.at_ms),
                             fev.detail, jpg, jl);
                 free(jpg);

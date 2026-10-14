@@ -36,6 +36,8 @@ typedef struct {
     char  stream_params[160];   /* Axis media.amp query string         */
     pc_point roi[4];
     float inset_pct;
+    int   board_width;          /* the screen's resolution in pixels (0 = unknown): the  */
+    int   board_height;         /* straightened PoP image takes its shape, not the view's */
     int   analysis_fps;
     pc_profile profile;
     daypart dayparts[MAX_DAYPARTS];

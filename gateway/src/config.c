@@ -119,6 +119,8 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_str(o, "stream_params", c->stream_params, sizeof c->stream_params);
     get_str(o, "operating_hours", c->operating_hours, sizeof c->operating_hours);
     get_float(o, "inset_pct", &c->inset_pct);
+    get_int(o, "board_width", &c->board_width);
+    get_int(o, "board_height", &c->board_height);
     get_int(o, "analysis_fps", &c->analysis_fps);
     get_int(o, "ptz_check", &c->ptz_check);
     get_int(o, "coverage_min_pct", &c->coverage_min_pct);
@@ -209,6 +211,11 @@ static int validate_camera(camera_cfg *c, int idx, char *err, size_t n)
     if (!*c->site_id) { snprintf(err, n, "camera %d: site_id is required", idx); return -1; }
     if (c->http_port < 0 || c->http_port > 65535 || c->rtsp_port < 0 || c->rtsp_port > 65535) {
         snprintf(err, n, "camera %s: ports must be between 1 and 65535", c->site_id);
+        return -1;
+    }
+    if (c->board_width < 0 || c->board_width > 20000 || c->board_height < 0 || c->board_height > 20000 ||
+        (c->board_width > 0) != (c->board_height > 0)) {
+        snprintf(err, n, "camera %s: screen resolution needs both width and height in pixels, or neither", c->site_id);
         return -1;
     }
     if (c->profile.slot_count < 0 || c->profile.slot_count > 200 || c->profile.slot_ms < 0 ||
