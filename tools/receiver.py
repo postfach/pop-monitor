@@ -1477,15 +1477,27 @@ REFRESH_JS = r'''<script>
 </script>'''
 
 
+def name_order(name):
+    """Sort key for names people read: A to Z ignoring case, numbers in number
+    order ("Site 2" before "Site 10")."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", str(name or "").casefold()) if t]
+
+
+def site_order(cam):
+    """Sites A to Z by the name people see (display name, else site ID)."""
+    return name_order(cam.get("name") or cam.get("site_name") or cam.get("id") or cam.get("site_id") or "")
+
+
 def gateway_cameras():
-    """Live camera status from the gateway (None if it can't be reached)."""
+    """Live camera status from the gateway, A to Z (None if it can't be reached)."""
     url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + "/api/cameras"
     try:
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {ARGS.api_key}"})
         with urllib.request.urlopen(req, timeout=2) as r:
-            return json.loads(r.read())
+            cams = json.loads(r.read())
     except Exception:
         return None
+    return sorted(cams, key=site_order) if isinstance(cams, list) else cams
 
 
 def disp(r):
@@ -1686,7 +1698,7 @@ def health_data():
         if h and h.get("ntp_synced") is False:
             warn.append("clock not NTP-synced: PoP times may be off")
         cams = []
-        for c in hb.get("cameras", []):
+        for c in sorted(hb.get("cameras", []), key=site_order):
             cw = []
             if not c.get("connected"):
                 cw.append("video not connected")
@@ -1833,6 +1845,7 @@ def doohly_players():
                                    "slot_s": lp.get("slot_s"),
                                    "board_width": (p.get("frame") or {}).get("width"),
                                    "board_height": (p.get("frame") or {}).get("height")}))
+    out.sort(key=lambda p: name_order(p.get("screen") or p.get("name")))
     return {"at": local_time(d.get("generated_at"), True), "players": out}
 
 
@@ -1929,7 +1942,7 @@ def vault_screens():
         for sc in p.get("screens") or []:
             if sc.get("name"):
                 names.setdefault(screen_key(sc["name"]), sc["name"])
-    return sorted(names.values(), key=str.lower)
+    return sorted(names.values(), key=name_order)
 
 
 def iso_to_ts(v):
@@ -3639,7 +3652,7 @@ def render_page(site):
         newest = {}
         for r in pops:
             newest[r.get("site_id")] = r
-        pops = sorted(newest.values(), key=lambda r: disp(r).lower())
+        pops = sorted(newest.values(), key=lambda r: name_order(disp(r)))
     alerts = [r for r in recs if r.get("type") == "fault"][-50:][::-1]
     hb = {}
     if live is not None:
@@ -3662,7 +3675,7 @@ def render_page(site):
         f"<td class='bad'>{esc(', '.join(c.get('active_faults', [])))}</td>"
         f"<td><a href='/roi?site={urllib.parse.quote(k or '')}'>Edit region</a> &middot; "
         f"<a href='/site?site={urllib.parse.quote(k or '')}'>Settings</a></td></tr>"
-        for k, c in sorted(hb.items()) if not site or k == site) or "<tr><td colspan=8 class='muted'>No heartbeat yet</td></tr>"
+        for k, c in sorted(hb.items(), key=lambda kc: site_order(dict(kc[1], id=kc[0]))) if not site or k == site) or "<tr><td colspan=8 class='muted'>No heartbeat yet</td></tr>"
     cards = []
     camp_cache = {}
     for r in pops:
@@ -3735,6 +3748,11 @@ class H(BaseHTTPRequestHandler):
                     if "Name or service not known" in str(e) or "not known" in str(e)
                     else "check that the gateway is running and control_port is 8090")
             return self.reply(502, {"error": f"cannot reach the gateway at {base}: {hint} ({e})"})
+        if method == "GET" and self.path.split("?")[0] == "/api/cameras" and code == 200:
+            try:                                  # every page lists the sites A to Z
+                body = json.dumps(sorted(json.loads(body), key=site_order)).encode()
+            except (ValueError, TypeError):
+                pass
         if method in ("PUT", "POST", "DELETE") and re.match(r"/api/cameras", self.path) and 200 <= code < 300:
             nudge_sync("sites changed")           # only re-syncs if a Vault screen changed
         m = re.fullmatch(r"/api/cameras/([^/?]+)", self.path)
@@ -3804,7 +3822,7 @@ class H(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             return self.proxy("GET")
         if path == "/records/sites":
-            return self.reply(200, sorted(recorded_sites().values(), key=lambda e: e["site_id"] or ""))
+            return self.reply(200, sorted(recorded_sites().values(), key=lambda e: name_order(e.get("name") or e["site_id"])))
         if path == "/health.json":
             return self.reply(200, health_data())
         if path == "/health/storage":
