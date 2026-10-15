@@ -305,8 +305,9 @@ int config_parse_region(const void *obj, pc_region *r)
         if (!strcmp(sh->valuestring, "curve")) r->shape = PC_SHAPE_CURVE;
         else if (!strcmp(sh->valuestring, "fold")) r->shape = PC_SHAPE_FOLD;
     }
-    pc_point m[4], f[2];
-    if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_mid"), m, 4) == 0) memcpy(r->mid, m, sizeof m);
+    pc_point m[8], f[2];
+    if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_curve"), m, 8) == 0) memcpy(r->curve, m, sizeof m);
+    else if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_mid"), m, 4) == 0) pc_region_curve_from_mids(r, m);
     if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_fold"), f, 2) == 0) memcpy(r->fold, f, sizeof f);
     const cJSON *fp = cJSON_GetObjectItemCaseSensitive(o, "fold_pct");
     if (cJSON_IsNumber(fp)) r->fold_u = (float)(fp->valuedouble / 100.0);
@@ -324,8 +325,9 @@ void config_region_to_json(void *obj, const pc_region *r)
     } else {
         put(o, "roi_shape", cJSON_CreateString(names[s]));
     }
-    if (s == PC_SHAPE_CURVE) put(o, "roi_mid", points_json(r->mid, 4));
-    else cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_mid");
+    cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_mid");          /* the earlier one-handle curve */
+    if (s == PC_SHAPE_CURVE) put(o, "roi_curve", points_json(r->curve, 8));
+    else cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_curve");
     if (s == PC_SHAPE_FOLD) {
         put(o, "roi_fold", points_json(r->fold, 2));
         put(o, "fold_pct", cJSON_CreateNumber(round((double)r->fold_u * 1000) / 10));
@@ -367,8 +369,8 @@ int config_region_valid(const pc_region *r, char *why, size_t n)
         return 0;
     }
     if (r->shape == PC_SHAPE_CURVE) {
-        for (int i = 0; i < 4; i++)
-            if (!in01(r->mid[i])) {
+        for (int i = 0; i < 8; i++)
+            if (!in01(r->curve[i])) {
                 snprintf(why, n, "curve points must be inside the picture");
                 return 0;
             }

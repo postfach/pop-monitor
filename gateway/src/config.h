@@ -91,7 +91,8 @@ int  config_active_count(const gateway_cfg *g);
 void config_library_path(const gateway_cfg *g, const char *site_id, char *out, size_t n);
 void config_free(gateway_cfg *g);
 /* A camera object's region: "roi" (4 corners, required), "roi_shape"
- * ("standard", "curve", "fold"), "roi_mid" (curve: 4 edge midpoints),
+ * ("standard", "curve", "fold"), "roi_curve" (curve: 2 handles per edge,
+ * see pc_region; an earlier "roi_mid", one per edge, is converted),
  * "roi_fold" (fold: top and bottom of the fold line), "fold_pct" (share of
  * the width left of the fold). 0, or -1 without valid corners. */
 int  config_parse_region(const void *obj, pc_region *r);

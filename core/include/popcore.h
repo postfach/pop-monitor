@@ -61,23 +61,28 @@ typedef struct {
 } pc_warp;
 
 /* The screen's outline in the camera view. Standard: four corners, flat
- * screen. Curve: also a point on the middle of each edge (top, right,
- * bottom, left), which the edge bends through (a midpoint left on the
- * straight edge = no bend). Fold: two flat faces meeting at a corner of
- * a building; fold[0] / fold[1] are the top and bottom of the fold line
- * and fold_u is the share of the screen's width left of it. */
+ * screen. Curve: also two handles on each edge, at a third and two thirds
+ * of the way along it (curve[0..1] top, left to right; [2..3] right, top
+ * to bottom; [4..5] bottom, left to right; [6..7] left, top to bottom);
+ * the edge bends smoothly through them (handles left on the straight edge
+ * = no bend). Fold: two flat faces meeting at a corner of a building;
+ * fold[0] / fold[1] are the top and bottom of the fold line and fold_u is
+ * the share of the screen's width left of it. */
 typedef enum { PC_SHAPE_STANDARD = 0, PC_SHAPE_CURVE = 1, PC_SHAPE_FOLD = 2 } pc_shape;
 typedef struct {
     pc_point c[4];
     int      shape;
-    pc_point mid[4];
+    pc_point curve[8];
     pc_point fold[2];
     float    fold_u;
 } pc_region;
 
-/* A standard region from four corners (curve midpoints on the straight
+/* A standard region from four corners (curve handles on the straight
  * edges and the fold down the middle, ready if the shape is changed). */
 void pc_region_from_corners(pc_region *r, const pc_point corners[4]);
+/* Curve handles from one point on the middle of each edge (top, right,
+ * bottom, left; the earlier single-handle curve): the same parabolic bend. */
+void pc_region_curve_from_mids(pc_region *r, const pc_point mid[4]);
 /* Point of the camera view (normalised) for (u, v) on the flat screen,
  * both 0..1 from the top-left. 0, or -1 for a degenerate region. */
 int  pc_region_point(const pc_region *r, double u, double v, pc_point *out);

@@ -63,11 +63,16 @@ static int quad_h(pc_point a, pc_point b, pc_point c, pc_point d, double h[9])
     return unit_square_to_quad(qx, qy, h);
 }
 
+/* Where each curve handle sits on the flat screen: top and bottom at
+ * u = 1/3, 2/3; right and left at v = 1/3, 2/3 (see pc_region). */
+static const double CURVE_AT[8][2] = {{1. / 3, 0}, {2. / 3, 0}, {1, 1. / 3}, {1, 2. / 3},
+                                      {1. / 3, 1}, {2. / 3, 1}, {0, 1. / 3}, {0, 2. / 3}};
+
 /* The mapping, prepared once: homographies and the curve's bends. */
 typedef struct {
     int    shape;
     double h[9], hl[9], hr[9];
-    double bend[4][2];      /* curve: top, right, bottom, left midpoint offsets */
+    double bend[8][2];      /* curve: each handle's offset from the straight edge */
     double fu;
 } rmap;
 
@@ -77,12 +82,11 @@ static int rmap_init(rmap *m, const pc_region *r)
     m->shape = r->shape;
     if (quad_h(r->c[0], r->c[1], r->c[2], r->c[3], m->h) != 0) return -1;
     if (r->shape == PC_SHAPE_CURVE) {
-        static const double at[4][2] = {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}};
-        for (int e = 0; e < 4; e++) {
+        for (int k = 0; k < 8; k++) {
             double x, y;
-            hmap(m->h, at[e][0], at[e][1], &x, &y);
-            m->bend[e][0] = r->mid[e].x - x;
-            m->bend[e][1] = r->mid[e].y - y;
+            hmap(m->h, CURVE_AT[k][0], CURVE_AT[k][1], &x, &y);
+            m->bend[k][0] = r->curve[k].x - x;
+            m->bend[k][1] = r->curve[k].y - y;
         }
     } else if (r->shape == PC_SHAPE_FOLD) {
         m->fu = r->fold_u < 0.05f ? 0.05 : r->fold_u > 0.95f ? 0.95 : r->fold_u;
@@ -90,6 +94,14 @@ static int rmap_init(rmap *m, const pc_region *r)
         if (quad_h(r->fold[0], r->c[1], r->c[2], r->fold[1], m->hr) != 0) return -1;
     }
     return 0;
+}
+
+/* Weights of the two handles of an edge at s (0..1 along it): the cubic
+ * through 0 at both corners and the handles' bends at s = 1/3 and 2/3. */
+static void thirds(double s, double *w1, double *w2)
+{
+    *w1 = 13.5 * s * (s - 2. / 3) * (s - 1);
+    *w2 = -13.5 * s * (s - 1. / 3) * (s - 1);
 }
 
 static void rmap_point(const rmap *m, double u, double v, double *x, double *y)
@@ -101,13 +113,15 @@ static void rmap_point(const rmap *m, double u, double v, double *x, double *y)
     }
     hmap(m->h, u, v, x, y);
     if (m->shape == PC_SHAPE_CURVE) {
-        /* each edge bends as a parabola through its midpoint; the bend fades
-         * linearly towards the opposite edge (a Coons-style blend) */
-        double bu = 4 * u * (1 - u), bv = 4 * v * (1 - v);
-        double wt[4] = {bu * (1 - v), bv * u, bu * v, bv * (1 - u)};
-        for (int e = 0; e < 4; e++) {
-            *x += wt[e] * m->bend[e][0];
-            *y += wt[e] * m->bend[e][1];
+        /* each edge bends as a smooth curve through its two handles; the bend
+         * fades linearly towards the opposite edge (a Coons-style blend) */
+        double a1, a2, b1, b2;
+        thirds(u, &a1, &a2);
+        thirds(v, &b1, &b2);
+        double wt[8] = {a1 * (1 - v), a2 * (1 - v), b1 * u, b2 * u, a1 * v, a2 * v, b1 * (1 - u), b2 * (1 - u)};
+        for (int k = 0; k < 8; k++) {
+            *x += wt[k] * m->bend[k][0];
+            *y += wt[k] * m->bend[k][1];
         }
     }
 }
@@ -118,23 +132,47 @@ void pc_region_from_corners(pc_region *r, const pc_point corners[4])
     memcpy(r->c, corners, sizeof r->c);
     r->fold_u = 0.5f;
     double h[9], x, y;
-    if (quad_h(corners[0], corners[1], corners[2], corners[3], h) != 0) {
-        for (int e = 0; e < 4; e++) {
-            r->mid[e].x = (corners[e].x + corners[(e + 1) % 4].x) / 2;
-            r->mid[e].y = (corners[e].y + corners[(e + 1) % 4].y) / 2;
+    int ok = quad_h(corners[0], corners[1], corners[2], corners[3], h) == 0;
+    for (int k = 0; k < 8; k++) {
+        if (ok) {
+            hmap(h, CURVE_AT[k][0], CURVE_AT[k][1], &x, &y);
+        } else {                         /* degenerate: along the straight edges */
+            double u = CURVE_AT[k][0], v = CURVE_AT[k][1];
+            x = (1 - u) * (1 - v) * corners[0].x + u * (1 - v) * corners[1].x + u * v * corners[2].x + (1 - u) * v * corners[3].x;
+            y = (1 - u) * (1 - v) * corners[0].y + u * (1 - v) * corners[1].y + u * v * corners[2].y + (1 - u) * v * corners[3].y;
         }
-        r->fold[0] = r->mid[0];
-        r->fold[1] = r->mid[2];
-        return;
+        r->curve[k].x = (float)x;
+        r->curve[k].y = (float)y;
     }
+    for (int k = 0; k < 2; k++) {        /* fold down the middle */
+        double v = k;
+        if (ok) hmap(h, 0.5, v, &x, &y);
+        else {
+            x = (corners[k ? 3 : 0].x + corners[k ? 2 : 1].x) / 2;
+            y = (corners[k ? 3 : 0].y + corners[k ? 2 : 1].y) / 2;
+        }
+        r->fold[k].x = (float)x;
+        r->fold[k].y = (float)y;
+    }
+}
+
+void pc_region_curve_from_mids(pc_region *r, const pc_point mid[4])
+{
+    rmap m;
+    if (quad_h(r->c[0], r->c[1], r->c[2], r->c[3], m.h) != 0) return;
     static const double at[4][2] = {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}};
     for (int e = 0; e < 4; e++) {
-        hmap(h, at[e][0], at[e][1], &x, &y);
-        r->mid[e].x = (float)x;
-        r->mid[e].y = (float)y;
+        double x, y;
+        hmap(m.h, at[e][0], at[e][1], &x, &y);
+        double bx = mid[e].x - x, by = mid[e].y - y;   /* a parabola's bend at 1/3 and 2/3 is 8/9 of it */
+        for (int k = 0; k < 2; k++) {
+            int i = 2 * e + k;
+            double px, py;
+            hmap(m.h, CURVE_AT[i][0], CURVE_AT[i][1], &px, &py);
+            r->curve[i].x = (float)(px + bx * 8 / 9);
+            r->curve[i].y = (float)(py + by * 8 / 9);
+        }
     }
-    r->fold[0] = r->mid[0];
-    r->fold[1] = r->mid[2];
 }
 
 int pc_region_point(const pc_region *r, double u, double v, pc_point *out)

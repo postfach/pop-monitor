@@ -588,6 +588,7 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
   <button id="snap">New snapshot</button>
   <button id="revert">Undo changes</button>
   <label>Screen <select id="shape"><option value="standard">Standard (flat)</option><option value="curve">Curved</option><option value="fold">Fold (building corner)</option></select></label>
+  <button id="fit" title="Move the handles until recent photos line up with the booked artwork they matched">Fit to artwork</button>
   <label id="foldl" hidden title="How much of the screen's width is on the left face (left of the fold)">Left face <input id="foldpct" type="number" min="5" max="95" step="1"> %</label>
   <label>Inset <input id="inset" type="number" min="0" max="20" step="1"> %</label>
   <button class="primary" id="save" disabled>Save and apply</button>
@@ -608,21 +609,23 @@ const $ = id => document.getElementById(id);
 const c = $('c'), ctx = c.getContext('2d'), pv = $('preview'), pctx = pv.getContext('2d');
 const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently: true});
 let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false, board = 0;
-const LABELS = ['TL', 'TR', 'BR', 'BL'], MLABELS = ['T', 'R', 'B', 'L'], FLABELS = ['fold top', 'fold bottom'];
-let shape = 'standard', mid = null, fold = null;     // curve: edge midpoints (T, R, B, L); fold: top and bottom of the fold
+const LABELS = ['TL', 'TR', 'BR', 'BL'], CLABELS = ['T1', 'T2', 'R1', 'R2', 'B1', 'B2', 'L1', 'L2'], FLABELS = ['fold top', 'fold bottom'];
+// curve: two handles per edge (top and bottom left to right, right and left top to bottom); fold: top and bottom of the fold
+let shape = 'standard', curve = null, fold = null;
 const HOWTO = {
   standard: ['Drag the four handles onto the corners of the lit screen (TL, TR, BR, BL).',
              'Use the magnifier while dragging to land on the exact corner. Arrow keys nudge the last handle.',
              'Raise the inset if the preview still shows bezel or frame.',
              'Save. The gateway uses the new region straight away, from the next play.'],
   curve: ['Drag the four corner handles onto the corners of the lit screen (TL, TR, BR, BL).',
-          'Drag the middle handles (T, R, B, L) onto the middle of each edge, so the outline follows the curve. A handle left on the straight line means that edge is straight.',
+          'Drag the middle handles along each edge, so the outline follows the curve. A handle left on the straight line means that edge is straight.',
+          'Or press Fit to artwork: it moves the handles until a recent photo lines up with the booked artwork it matched.',
           'Check the preview: text and edges should come out straight, not bowed.',
           'Raise the inset if the preview still shows bezel or frame, then save.'],
   fold: ['Drag the four corner handles onto the outer corners of the screen (TL, TR, BR, BL).',
          'Drag the two fold handles onto the top and bottom of the corner where the two faces meet.',
          'Set Left face to how much of the screen\'s width is left of the fold (from the screen\'s layout, e.g. 40% for a 2 m + 3 m wrap).',
-         'Check the preview: the artwork should run straight across the fold. Then save.'],
+         'Check the preview: the artwork should run straight across the fold, or press Fit to artwork to line the fold up with a recent photo. Then save.'],
 };
 
 // homography: unit square -> quad (8x8 solve)
@@ -640,8 +643,9 @@ function homography(q) {
   return [...x, 1];
 }
 const map = (h, u, v) => { const d = h[6]*u + h[7]*v + 1; return [(h[0]*u + h[1]*v + h[2])/d, (h[3]*u + h[4]*v + h[5])/d]; };
-const EDGE_AT = [[0.5,0],[1,0.5],[0.5,1],[0,0.5]];
-function straightMids(P) { const h = homography(P); return EDGE_AT.map(([u,v]) => map(h, u, v)); }
+const CURVE_AT = [[1/3,0],[2/3,0],[1,1/3],[1,2/3],[1/3,1],[2/3,1],[0,1/3],[0,2/3]];
+function straightCurve(P) { const h = homography(P); return CURVE_AT.map(([u,v]) => map(h, u, v)); }
+function thirds(s) { return [13.5*s*(s - 2/3)*(s - 1), -13.5*s*(s - 1/3)*(s - 1)]; }
 
 // the same mapping as the gateway (core/src/warp.c): (u, v) on the flat screen -> point in the picture
 function mapper(scaleX, scaleY) {
@@ -651,11 +655,12 @@ function mapper(scaleX, scaleY) {
     const hl = homography([P[0], F[0], F[1], P[3]]), hr = homography([F[0], P[1], P[2], F[1]]);
     return (u, v) => u < fu ? map(hl, u / fu, v) : map(hr, (u - fu) / (1 - fu), v);
   }
-  if (shape === 'curve' && mid) {
-    const bend = EDGE_AT.map(([u,v], e) => { const s = map(h, u, v); return [mid[e][0]*scaleX - s[0], mid[e][1]*scaleY - s[1]]; });
+  if (shape === 'curve' && curve) {
+    const bend = CURVE_AT.map(([u,v], k) => { const s = map(h, u, v); return [curve[k][0]*scaleX - s[0], curve[k][1]*scaleY - s[1]]; });
     return (u, v) => {
-      const p = map(h, u, v), bu = 4*u*(1-u), bv = 4*v*(1-v), w = [bu*(1-v), bv*u, bu*v, bv*(1-u)];
-      for (let e = 0; e < 4; e++) { p[0] += w[e]*bend[e][0]; p[1] += w[e]*bend[e][1]; }
+      const p = map(h, u, v), [a1, a2] = thirds(u), [b1, b2] = thirds(v);
+      const w = [a1*(1-v), a2*(1-v), b1*u, b2*u, a1*v, a2*v, b1*(1-u), b2*(1-u)];
+      for (let k = 0; k < 8; k++) { p[0] += w[k]*bend[k][0]; p[1] += w[k]*bend[k][1]; }
       return p;
     };
   }
@@ -677,19 +682,22 @@ function outlineFold(m, a, fu) {    // two flat faces: straight edges, a corner 
 // every draggable handle: corners, then the curve's midpoints or the fold's ends
 function handles() {
   const H = pts.map((p, i) => ({p, label: LABELS[i], set: q => moveCorner(i, q)}));
-  if (shape === 'curve' && mid) mid.forEach((p, i) => H.push({p, label: MLABELS[i], small: true, set: q => { mid[i] = q; }}));
+  if (shape === 'curve' && curve) curve.forEach((p, i) => H.push({p, label: CLABELS[i], small: true, set: q => { curve[i] = q; }}));
   if (shape === 'fold' && fold) fold.forEach((p, i) => H.push({p, label: FLABELS[i], small: true, set: q => { fold[i] = q; }}));
   return H;
 }
-function moveCorner(i, q) {          // a curve's neighbouring midpoints follow half the move, keeping the bend
+// how much of each corner's move each curve handle follows (the nearer one 2/3, the farther 1/3), keeping the bend
+const FOLLOW = [[[0, 2/3], [1, 1/3], [6, 2/3], [7, 1/3]], [[0, 1/3], [1, 2/3], [2, 2/3], [3, 1/3]],
+                [[2, 1/3], [3, 2/3], [4, 1/3], [5, 2/3]], [[4, 2/3], [5, 1/3], [6, 1/3], [7, 2/3]]];
+function moveCorner(i, q) {
   const d = [q[0] - pts[i][0], q[1] - pts[i][1]];
   pts[i] = q;
-  if (shape === 'curve' && mid) for (const e of [i, (i + 3) % 4]) mid[e] = [mid[e][0] + d[0]/2, mid[e][1] + d[1]/2];
+  if (shape === 'curve' && curve) for (const [k, f] of FOLLOW[i]) curve[k] = [curve[k][0] + d[0]*f, curve[k][1] + d[1]*f];
 }
 function setShape(s, fresh) {
   shape = s; $('shape').value = s; $('foldl').hidden = s !== 'fold';
-  if (s === 'curve' && (!mid || fresh)) mid = straightMids(pts);
-  if (s === 'fold' && (!fold || fresh)) { const m = straightMids(pts); fold = [m[0], m[2]]; if (!$('foldpct').value) $('foldpct').value = 50; }
+  if (s === 'curve' && (!curve || fresh)) curve = straightCurve(pts);
+  if (s === 'fold' && (!fold || fresh)) { const h = homography(pts); fold = [map(h, 0.5, 0), map(h, 0.5, 1)]; if (!$('foldpct').value) $('foldpct').value = 50; }
   $('howto').innerHTML = HOWTO[s].map(t => `<li>${t}</li>`).join('') + (s !== 'standard' && !board
     ? `<li>Set the screen's resolution on its <a href="/site?site=${encodeURIComponent(name)}">Settings</a> page: a ${s === 'fold' ? 'folded' : 'curved'} screen's shape can't be judged from the camera's view.</li>` : '');
   if (last >= handles().length) last = 0;
@@ -712,7 +720,7 @@ async function load() {
     if (!cam) throw new Error('site "' + name + '" not found on the gateway');
     $('cam').textContent = cam.name; document.title = cam.name + ' – region';
     saved = {roi: cam.roi.map(p => p.slice()), inset: cam.inset_pct, shape: cam.roi_shape || 'standard',
-             mid: copyPts(cam.roi_mid), fold: copyPts(cam.roi_fold), fold_pct: cam.fold_pct || 50};
+             curve: copyPts(cam.roi_curve), fold: copyPts(cam.roi_fold), fold_pct: cam.fold_pct || 50};
     board = cam.board_width > 0 && cam.board_height > 0 ? cam.board_width / cam.board_height : 0;
     restore();
     $('sub').textContent = (cam.name !== cam.id ? cam.id + ' · ' : '') + (cam.model ? cam.model : 'Camera') + (cam.connected ? ' · connected' : ' · video not connected');
@@ -732,7 +740,7 @@ async function snapshot() {
 }
 
 function restore() {
-  pts = saved.roi.map(p => p.slice()); mid = copyPts(saved.mid); fold = copyPts(saved.fold);
+  pts = saved.roi.map(p => p.slice()); curve = copyPts(saved.curve); fold = copyPts(saved.fold);
   $('inset').value = saved.inset; $('foldpct').value = saved.fold_pct;
   setShape(saved.shape, false);
 }
@@ -816,19 +824,41 @@ $('inset').addEventListener('input', () => { setDirty(true); msg('Unsaved change
 $('foldpct').addEventListener('input', () => { setDirty(true); msg('Unsaved changes'); draw(); });
 $('shape').addEventListener('change', e => {
   const s = e.target.value, fresh = !(saved && saved.shape === s);   // a new shape starts from the straight outline
-  setShape(s, fresh && !(s === 'curve' ? mid : fold)); setDirty(true); msg('Unsaved changes'); draw();
+  setShape(s, fresh && !(s === 'curve' ? curve : fold)); setDirty(true); msg('Unsaved changes'); draw();
 });
 $('snap').onclick = snapshot;
+function regionBody() {
+  const body = {roi: pts.map(round4), inset_pct: +$('inset').value || 0, roi_shape: shape};
+  if (shape === 'curve') body.roi_curve = curve.map(round4);
+  if (shape === 'fold') { body.roi_fold = fold.map(round4); body.fold_pct = Math.min(95, Math.max(5, +$('foldpct').value || 50)); }
+  return body;
+}
+$('fit').onclick = async () => {
+  $('fit').disabled = true; msg('Fitting to recent photos of matched creatives (up to half a minute)…');
+  try {
+    const r = await fetch('/roi/fit', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({site_id: name, region: regionBody(), inset_pct: +$('inset').value || 0})});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) { msg('Can\'t fit: ' + (j.error || r.statusText), 'bad'); return; }
+    const n = j.photos.length, pct = x => Math.round(x * 100) + '%';
+    if (!j.better) { msg(`Already as good as it gets with ${n} photo(s) (match ${pct(j.before)}). Nothing changed.`, 'ok'); return; }
+    const g = j.region;
+    pts = g.roi.map(p => p.slice());
+    if (g.roi_curve) curve = g.roi_curve.map(p => p.slice());
+    if (g.roi_fold) fold = g.roi_fold.map(p => p.slice());
+    if (g.fold_pct) $('foldpct').value = g.fold_pct;
+    setDirty(true); draw();
+    msg(`Fitted to ${n} photo(s): match ${pct(j.before)} → ${pct(j.after)}${j.timed_out ? ' (stopped at the time limit; press again to go on)' : ''}. Check the preview, then save.`, 'ok');
+  } finally { $('fit').disabled = false; }
+};
 $('revert').onclick = () => { if (!saved) return; restore(); setDirty(false); msg(''); draw(); };
 $('save').onclick = async () => {
   $('save').disabled = true; msg('Saving…');
-  const body = {roi: pts.map(round4), inset_pct: +$('inset').value || 0, roi_shape: shape};
-  if (shape === 'curve') body.roi_mid = mid.map(round4);
-  if (shape === 'fold') { body.roi_fold = fold.map(round4); body.fold_pct = Math.min(95, Math.max(5, +$('foldpct').value || 50)); }
+  const body = regionBody();
   const r = await fetch(api('/roi'), {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { msg('Not saved: ' + (j.error || r.statusText), 'bad'); $('save').disabled = false; return; }
-  saved = {roi: copyPts(body.roi), inset: body.inset_pct, shape, mid: copyPts(mid), fold: copyPts(fold), fold_pct: body.fold_pct || +$('foldpct').value || 50};
+  saved = {roi: copyPts(body.roi), inset: body.inset_pct, shape, curve: copyPts(curve), fold: copyPts(fold), fold_pct: body.fold_pct || +$('foldpct').value || 50};
   setDirty(false);
   msg('Saved and applied. The next play will use this region.', 'ok');
 };
@@ -2562,6 +2592,338 @@ def artwork_matches(cam, t0, t1):
     return out
 
 
+# ---------------------------------------------------------------- region fitting
+# "Fit to artwork" on the region page: move the region's handles until recent
+# photos of creatives already matched to booked artwork line up with that artwork.
+# The mapping is the gateway's (core/src/warp.c) and the region page's.
+CURVE_AT = [(1 / 3, 0), (2 / 3, 0), (1, 1 / 3), (1, 2 / 3), (1 / 3, 1), (2 / 3, 1), (0, 1 / 3), (0, 2 / 3)]
+FIT_SECONDS = 25
+
+
+def _homog(q):
+    A, b = [], []
+    for (u, v), (X, Y) in zip(((0, 0), (1, 0), (1, 1), (0, 1)), q):
+        A += [[u, v, 1, 0, 0, 0, -u * X, -v * X], [0, 0, 0, u, v, 1, -u * Y, -v * Y]]
+        b += [X, Y]
+    return _np.append(_np.linalg.solve(_np.array(A, float), _np.array(b, float)), 1.0)
+
+
+def _hmap(h, u, v):
+    d = h[6] * u + h[7] * v + 1
+    return (h[0] * u + h[1] * v + h[2]) / d, (h[3] * u + h[4] * v + h[5]) / d
+
+
+def _thirds(s):
+    return 13.5 * s * (s - 2 / 3) * (s - 1), -13.5 * s * (s - 1 / 3) * (s - 1)
+
+
+def region_mapper(reg):
+    """(u, v) on the flat screen -> (x, y) in the picture (both normalised)."""
+    c = reg["roi"]
+    h = _homog(c)
+    shape = reg.get("roi_shape") or "standard"
+    if shape == "fold" and reg.get("roi_fold"):
+        f = reg["roi_fold"]
+        fu = min(0.95, max(0.05, float(reg.get("fold_pct") or 50) / 100))
+        hl, hr = _homog([c[0], f[0], f[1], c[3]]), _homog([f[0], c[1], c[2], f[1]])
+
+        def fold(u, v):
+            xl, yl = _hmap(hl, u / fu, v)
+            xr, yr = _hmap(hr, (u - fu) / (1 - fu), v)
+            left = u < fu
+            return _np.where(left, xl, xr), _np.where(left, yl, yr)
+        return fold
+    if shape == "curve" and reg.get("roi_curve"):
+        bend = []
+        for (u, v), p in zip(CURVE_AT, reg["roi_curve"]):
+            x, y = _hmap(h, u, v)
+            bend.append((p[0] - x, p[1] - y))
+
+        def curve(u, v):
+            x, y = _hmap(h, u, v)
+            a1, a2 = _thirds(u)
+            b1, b2 = _thirds(v)
+            for w, (bx, by) in zip((a1 * (1 - v), a2 * (1 - v), b1 * u, b2 * u, a1 * v, a2 * v, b1 * (1 - u), b2 * (1 - u)), bend):
+                x = x + w * bx
+                y = y + w * by
+            return x, y
+        return curve
+    return lambda u, v: _hmap(h, u, v)
+
+
+def _straighten(gray, reg, inset, ow, oh):
+    """The region of a greyscale frame, straightened to ow x oh (bilinear)."""
+    H, W = gray.shape
+    v, u = _np.mgrid[0:oh, 0:ow].astype(float)
+    u = inset + (1 - 2 * inset) * (u + 0.5) / ow
+    v = inset + (1 - 2 * inset) * (v + 0.5) / oh
+    x, y = region_mapper(reg)(u, v)
+    x = _np.clip(x * (W - 1), 0, W - 1.001)
+    y = _np.clip(y * (H - 1), 0, H - 1.001)
+    x0, y0 = x.astype(int), y.astype(int)
+    ax, ay = x - x0, y - y0
+    g = gray
+    out = (g[y0, x0] * (1 - ax) * (1 - ay) + g[y0, x0 + 1] * ax * (1 - ay) +
+           g[y0 + 1, x0] * (1 - ax) * ay + g[y0 + 1, x0 + 1] * ax * ay)
+    return _Image.fromarray(out.clip(0, 255).astype(_np.uint8))
+
+
+def fit_photos(cam, n=3):
+    """Up to n recent full-frame photos of different creatives matched to booked
+    artwork: [(event id, artwork file, creative id, campaign)]."""
+    now = time.time()
+    res = artwork_matches(cam, now - POP_IMAGE_DAYS * 86400, now)
+    out = []
+    plays = site_plays(cam.get("id"), now - POP_IMAGE_DAYS * 86400, now)
+    for cid, r in sorted(res.items(), key=lambda kv: -kv[1].get("score", 0)):
+        if r.get("status") != "matched":
+            continue
+        art = r.get("frame") or r.get("file")
+        if not art:
+            continue
+        for p in reversed(plays):
+            if p[1] == cid and not p[2] and (len(p) < 7 or p[6]) and \
+                    os.path.exists(os.path.join(ARGS.out, "images", f"{p[4]}.frame.jpg")):
+                out.append((p[4], art, cid, r.get("campaign_id")))
+                break
+        if len(out) >= n:
+            break
+    return out
+
+
+def _hp_img(a, k=6):
+    """Detail of a greyscale array: lightly smoothed (sensor noise, the camera's
+    blur) minus a box blur (lighting, haze and glare)."""
+    im = _Image.fromarray(a.clip(0, 255).astype(_np.uint8))
+    sm = _np.asarray(im.filter(_ImageFilter.GaussianBlur(1.5)), dtype=float)
+    return sm - _np.asarray(im.filter(_ImageFilter.BoxBlur(k)), dtype=float)
+
+
+def _shift_of(tpl, area, r):
+    """Where template tpl best matches inside area (tpl's size + r on every side):
+    (dy, dx) from the centred position, and the normalised correlation there."""
+    t = tpl - tpl.mean()
+    tn = _np.sqrt((t * t).sum())
+    if tn < 1e-6 or t.std() < 2:
+        return None
+    win = _np.lib.stride_tricks.sliding_window_view(area, tpl.shape)       # (2r+1, 2r+1, th, tw)
+    wm = win.mean(axis=(2, 3), keepdims=True)
+    num = _np.einsum("ijkl,kl->ij", win - wm, t)
+    den = _np.sqrt(((win - wm) ** 2).sum(axis=(2, 3))) * tn + 1e-9
+    c = num / den
+    k = _np.unravel_index(int(_np.argmax(c)), c.shape)
+    return (k[0] - r, k[1] - r, float(c[k]))
+
+
+def _matches(gray, reg, art, inset, ow, oh, r):
+    """Correspondences between the artwork and the camera picture: for tiles of
+    the artwork, where they appear once straightened with `reg` ->
+    [(u, v, x, y, weight)] with (u, v) on the flat screen and (x, y) in the picture."""
+    st = _np.asarray(_straighten(gray, reg, inset, ow, oh), dtype=float)
+    hs = _np.pad(_hp_img(st), r, mode="edge")
+    ha = _hp_img(art)
+    m = region_mapper(reg)
+    out = []
+    nx = 12
+    ny = max(3, round(oh / (ow / nx)))
+    tw, th = ow // nx, oh // ny
+    to_uv = lambda f: inset + (1 - 2 * inset) * f
+    for ty in range(ny):
+        for tx in range(nx):
+            y0, x0 = ty * th, tx * tw
+            res = _shift_of(ha[y0:y0 + th, x0:x0 + tw], hs[y0:y0 + th + 2 * r, x0:x0 + tw + 2 * r], r)
+            if not res or res[2] < 0.4:
+                continue
+            dy, dx, conf = res
+            # the artwork at this tile's centre shows at (centre + shift) in the straightened image
+            fu, fv = (x0 + tw / 2) / ow, (y0 + th / 2) / oh
+            su, sv = (x0 + tw / 2 + dx) / ow, (y0 + th / 2 + dy) / oh
+            x, y = m(_np.array(to_uv(su)), _np.array(to_uv(sv)))
+            out.append((to_uv(fu), to_uv(fv), float(x), float(y), conf))
+    return out
+
+
+def _robust(solve, reg, pts, resid):
+    """Solve, drop the correspondences that disagree most (a tile matched to the
+    wrong place), solve again."""
+    out = solve(reg, pts)
+    for _ in range(2):
+        if len(pts) < 16:
+            break
+        r = _np.array([resid(out, p) for p in pts])
+        keep = r <= max(_np.median(r) * 2.5, 1e-4)
+        if keep.all():
+            break
+        pts = [p for p, k in zip(pts, keep) if k]
+        out = solve(reg, pts)
+    return out
+
+
+def _resid(reg, p):
+    x, y = region_mapper(reg)(_np.array(p[0]), _np.array(p[1]))
+    return float(_np.hypot(x - p[2], y - p[3]))
+
+
+def _solve_curve(reg, pts):
+    """Least-squares curve handles (corners fixed) for correspondences."""
+    h = _homog(reg["roi"])
+    rows, bx, by, wts = [], [], [], []
+    for u, v, x, y, w in pts:
+        a1, a2 = _thirds(u)
+        b1, b2 = _thirds(v)
+        rows.append([a1 * (1 - v), a2 * (1 - v), b1 * u, b2 * u, a1 * v, a2 * v, b1 * (1 - u), b2 * (1 - u)])
+        hx, hy = _hmap(h, u, v)
+        bx.append(x - hx)
+        by.append(y - hy)
+        wts.append(w)
+    A, W = _np.array(rows), _np.sqrt(_np.array(wts))[:, None]
+    lam = 0.02 * _np.eye(8)                  # a little pull towards no bend where nothing was seen
+    sol = []
+    for b in (_np.array(bx), _np.array(by)):
+        Aw, bw = A * W, b * W[:, 0]
+        sol.append(_np.linalg.solve(Aw.T @ Aw + lam, Aw.T @ bw))
+    reg = json.loads(json.dumps(reg))
+    reg["roi_curve"] = [[min(1.0, max(0.0, float(_hmap(h, u, v)[0] + sol[0][k]))),
+                         min(1.0, max(0.0, float(_hmap(h, u, v)[1] + sol[1][k])))] for k, (u, v) in enumerate(CURVE_AT)]
+    return reg
+
+
+def _solve_corners(reg, pts):
+    """Least-squares homography (DLT) for correspondences; the corners it puts on the screen."""
+    A = []
+    for u, v, x, y, w in pts:
+        A.append(_np.array([u, v, 1, 0, 0, 0, -u * x, -v * x, -x]) * w)
+        A.append(_np.array([0, 0, 0, u, v, 1, -u * y, -v * y, -y]) * w)
+    _, _, vt = _np.linalg.svd(_np.array(A))
+    h = vt[-1] / vt[-1][-1]
+    reg = json.loads(json.dumps(reg))
+    reg["roi"] = [[float(c) for c in _hmap(h, u, v)] for u, v in ((0, 0), (1, 0), (1, 1), (0, 1))]
+    return reg
+
+
+def fit_region(cam, reg, inset_pct):
+    """Move the handles of `reg` (standard: the corners, a little; curve: the
+    edge handles; fold: the fold line and the left face's share) so the photos
+    line up with their artwork. Returns a result dict."""
+    if not ART_OK:
+        return {"error": "fitting needs numpy and Pillow"}
+    photos = fit_photos(cam)
+    if not photos:
+        return {"error": f"no photo of a creative matched to booked artwork in the last {POP_IMAGE_DAYS:g} days: "
+                         "fitting needs at least one (see the Bookings page)"}
+    inset = max(0.0, min(0.4, float(inset_pct or 0) / 100))
+    px = board_px(cam)
+    data = []                                     # (grey frame, artwork array at the fit size, fingerprint grid, fingerprint)
+    for eid, art, _, _ in photos:
+        a = creative_file(art)
+        if not a:
+            continue
+        with _Image.open(os.path.join(ARGS.out, "images", f"{eid}.frame.jpg")) as im:
+            g = _np.asarray(im.convert("L"), dtype=float)
+        with _Image.open(a) as im:
+            aspect = (px[0] / px[1]) if px else im.size[0] / im.size[1]
+            ow = 480
+            oh = max(60, min(960, round(ow / aspect)))
+            w, h = im.size
+            crop = im.convert("L").crop((w * inset, h * inset, w * (1 - inset), h * (1 - inset)))
+            arr = _np.asarray(crop.resize((ow, oh), _Image.BILINEAR), dtype=float)
+        grid = art_grid(aspect)
+        ref = _ref_fp(art, inset, grid)
+        if ref is not None:
+            data.append((g, arr, grid, ref, ow, oh))
+    if not data:
+        return {"error": "the matched artwork files couldn't be read"}
+
+    def score(r):                                 # the matching score, averaged over the photos
+        tot = 0.0
+        for g, _, grid, ref, _, _ in data:
+            im = _straighten(g, r, inset, grid[0] * 4, grid[1] * 4)
+            tot += float(_scores(_prep(im, 0.0, grid), ref[None])[0])
+        return tot / len(data)
+
+    shape = reg.get("roi_shape") or "standard"
+    reg = json.loads(json.dumps(reg))
+    before = score(reg)
+    best, best_reg = before, reg
+    t0 = time.time()
+    if shape in ("curve", "standard"):
+        # find where tiles of the artwork are in each photo, then solve for the handles; repeat with a narrower search
+        cur = reg
+        # coarse first (half size, so a 24 px search reaches 10% of the width), then finer
+        schedule = [(True, 24), (True, 24), (False, 16), (False, 8), (False, 4)]
+        last_best = best
+        for _ in range(4):                        # again while it keeps getting better
+            for half, radius in schedule:
+                if time.time() - t0 > FIT_SECONDS:
+                    break
+                pts = []
+                for g, arr, _, _, ow, oh in data:
+                    if half:
+                        a2 = _np.asarray(_Image.fromarray(arr.astype(_np.uint8)).resize((ow // 2, oh // 2), _Image.BILINEAR),
+                                         dtype=float)
+                        pts += _matches(g, cur, a2, inset, ow // 2, oh // 2, radius)
+                    else:
+                        pts += _matches(g, cur, arr, inset, ow, oh, radius)
+                if len(pts) < 12:
+                    break
+                try:
+                    cand = _robust(_solve_curve if shape == "curve" else _solve_corners, cur, pts, _resid)
+                    sc = score(cand)
+                except (_np.linalg.LinAlgError, ValueError):
+                    break
+                cur = cand                        # a step can look worse on the way (a coarse pass); the best is kept
+                if sc > best:
+                    best, best_reg = sc, cand
+            if best < last_best + 0.005 or time.time() - t0 > FIT_SECONDS:
+                break
+            last_best, cur = best, best_reg
+        if shape == "standard":                   # corners: a nudge only, never a new region
+            moved = max(abs(a - b) for p, q in zip(best_reg["roi"], reg["roi"]) for a, b in zip(p, q))
+            if moved > 0.03:
+                best, best_reg = before, reg
+    else:
+        # fold: few parameters, so search them directly
+        params = [("roi_fold", i, ax) for i in range(2) for ax in (0, 1)] + [("fold_pct", None, None)]
+        H, W = data[0][0].shape
+        cur = json.loads(json.dumps(reg))
+
+        def get(r, p):
+            return float(r[p[0]]) if p[1] is None else r[p[0]][p[1]][p[2]]
+
+        def put(r, p, val):
+            if p[1] is None:
+                r[p[0]] = min(95.0, max(5.0, val))
+            else:
+                r[p[0]][p[1]][p[2]] = min(1.0, max(0.0, val))
+        for px_step in (32, 16, 8, 4, 2, 1):
+            improved = True
+            while improved and time.time() - t0 < FIT_SECONDS:
+                improved = False
+                for p in params:
+                    step = px_step * 0.5 if p[1] is None else px_step / (W - 1 if p[2] == 0 else H - 1)
+                    v0 = get(cur, p)
+                    for d in (step, -step):
+                        put(cur, p, v0 + d)
+                        try:
+                            sc = score(cur)
+                        except _np.linalg.LinAlgError:
+                            sc = -1
+                        if sc > best + 0.002:
+                            best, v0, improved = sc, v0 + d, True
+                            break
+                        put(cur, p, v0)
+        best_reg = cur
+    rounded = lambda pts: [[round(x, 4), round(y, 4)] for x, y in pts]
+    for k in ("roi", "roi_curve", "roi_fold"):
+        if best_reg.get(k):
+            best_reg[k] = rounded(best_reg[k])
+    if "fold_pct" in best_reg:
+        best_reg["fold_pct"] = round(float(best_reg["fold_pct"]), 1)
+    return {"region": best_reg, "before": round(before, 3), "after": round(best, 3), "better": best > before + 0.01,
+            "seconds": round(time.time() - t0, 1), "timed_out": time.time() - t0 >= FIT_SECONDS,
+            "photos": [{"event_id": e, "creative_id": c, "campaign_id": camp} for e, _, c, camp in photos]}
+
+
 def lookalikes(site_id, cids, eids):
     """Group creatives whose PoP images look like the same artwork (the gateway
     can give one artwork several IDs, e.g. by day and by night). Returns a list
@@ -3615,6 +3977,21 @@ class H(BaseHTTPRequestHandler):
                         os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
             print(f"creatives reset for site {sid}" + (f"; deleted {deleted} record(s) and its links" if history else ""), flush=True)
             return self.reply(200, {"reset": True, "history": history, "deleted": deleted})
+        if self.path == "/roi/fit":                # region page: fit the handles to matched artwork
+            if not self.authorised():
+                return
+            try:
+                d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 65536)))
+                sid, reg = str(d["site_id"]), d["region"]
+                _homog(reg["roi"])
+            except (ValueError, KeyError, TypeError, IndexError):
+                return self.reply(400, {"error": "site_id and region (roi, roi_shape, …) required"})
+            except Exception:
+                return self.reply(400, {"error": "the region's corners don't form a box"})
+            cam = next((c for c in gateway_cameras() or [] if c.get("id") == sid), None)
+            if not cam:
+                return self.reply(404, {"error": f"site {sid} not found on the gateway"})
+            return self.reply(200, fit_region(cam, reg, d.get("inset_pct", cam.get("inset_pct"))))
         if self.path == "/sites/rotation":         # Site page: follow Doohly's loop, or set by hand
             if not self.authorised():
                 return

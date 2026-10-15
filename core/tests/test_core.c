@@ -552,24 +552,34 @@ static void test_regions(void)
             }
         CHECK(worst < 1e-4, "shape %d with neutral handles matches standard (off by %.6f)", shape, worst);
     }
-    /* curve: corners stay put, each edge passes through its midpoint */
+    /* curve: corners stay put, each edge passes through its two handles */
     r = std_r;
     r.shape = PC_SHAPE_CURVE;
-    r.mid[0].y -= 0.05f;               /* top bows up */
-    r.mid[2].y += 0.04f;               /* bottom bows down */
+    r.curve[0].y -= 0.05f;             /* top bows up */
+    r.curve[1].y -= 0.04f;
+    r.curve[4].y += 0.04f;             /* bottom bows down */
+    r.curve[5].y += 0.03f;
     pc_point p;
     pc_region_point(&r, 0, 0, &p);
     CHECK(fabs(p.x - q[0].x) < 1e-5 && fabs(p.y - q[0].y) < 1e-5, "curve keeps the top-left corner");
-    pc_region_point(&r, 0.5, 0, &p);
-    CHECK(fabs(p.x - r.mid[0].x) < 1e-5 && fabs(p.y - r.mid[0].y) < 1e-5, "top edge passes through its midpoint");
-    pc_region_point(&r, 0.5, 1, &p);
-    CHECK(fabs(p.y - r.mid[2].y) < 1e-5, "bottom edge passes through its midpoint");
-    pc_point c0, c1;
-    pc_region_point(&std_r, 0.5, 0.5, &c0);
-    pc_region_point(&r, 0.5, 0.5, &c1);
-    CHECK(fabs((c1.y - c0.y) - (-0.05f + 0.04f) / 2) < 1e-4, "the centre moves by the average bend (%.4f)", c1.y - c0.y);
+    pc_region_point(&r, 1. / 3, 0, &p);
+    CHECK(fabs(p.x - r.curve[0].x) < 1e-5 && fabs(p.y - r.curve[0].y) < 1e-5, "top edge passes through its first handle");
+    pc_region_point(&r, 2. / 3, 1, &p);
+    CHECK(fabs(p.x - r.curve[5].x) < 1e-5 && fabs(p.y - r.curve[5].y) < 1e-5, "bottom edge passes through its second handle");
     float a0 = pc_region_aspect(&std_r, 1920, 1080), a1 = pc_region_aspect(&r, 1920, 1080);
     CHECK(a1 > a0 && a1 < a0 * 1.1f, "bowed edges are measured along the curve (%.3f vs %.3f)", a1, a0);
+    /* the earlier one-handle curve converts to the same parabola */
+    pc_region q1 = std_r;
+    q1.shape = PC_SHAPE_CURVE;
+    pc_point mids[4];
+    for (int e = 0; e < 4; e++) {
+        static const double at[4][2] = {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}};
+        pc_region_point(&std_r, at[e][0], at[e][1], &mids[e]);
+    }
+    mids[0].y -= 0.06f;
+    pc_region_curve_from_mids(&q1, mids);
+    pc_region_point(&q1, 0.5, 0, &p);
+    CHECK(fabs(p.y - mids[0].y) < 2e-3, "converted curve passes near the old midpoint (%.4f vs %.4f)", p.y, mids[0].y);
 
     /* fold: two faces of a corner; the fold line maps to u = fold_u */
     pc_point f[4] = {{0.1f, 0.3f}, {0.9f, 0.3f}, {0.9f, 0.7f}, {0.1f, 0.7f}};

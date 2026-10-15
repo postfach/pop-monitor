@@ -533,7 +533,7 @@ static void handle_set_roi(int fd, int idx, const char *body)
     if (!j || config_parse_region(j, &r) != 0) {
         cJSON_Delete(j);
         respond_error(fd, 400, "expected {\"roi\": [[x,y],[x,y],[x,y],[x,y]], \"inset_pct\": n, "
-                               "\"roi_shape\": \"standard\"|\"curve\"|\"fold\", \"roi_mid\": [4 points], "
+                               "\"roi_shape\": \"standard\"|\"curve\"|\"fold\", \"roi_curve\": [8 points], "
                                "\"roi_fold\": [2 points], \"fold_pct\": n}");
         return;
     }

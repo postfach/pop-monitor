@@ -387,22 +387,33 @@ Region edits are saved by the gateway in `cameras.json` (see above), so they sur
 **Curved and folded screens.** The **Screen** list on the region page picks the shape:
 
 * **Standard (flat)**, the default: four corners.
-* **Curved**: four corners plus a handle on the middle of each edge (T, R, B, L). Drag each one
-  onto the middle of its edge so the outline follows the curve; one left on the straight line
-  keeps that edge straight. Each edge bends as a smooth arc through its handle, the bend
-  fading towards the opposite edge. On rendered test views of curved screens, artwork
-  fingerprints agreed 0.93 to 0.99 with the artwork after straightening (0.67 to 0.90 with four
-  corners) for curves up to about 45 degrees, and 0.76 (0.41) for a strong 75 degree wrap
-  seen from the side.
+* **Curved**: four corners plus two handles along each edge (T1, T2 on the top, and so on).
+  Drag them along each edge so the outline follows the curve; handles left on the straight
+  line keep that edge straight. Each edge bends smoothly through its two handles, the bend
+  fading towards the opposite edge. With the handles at the right places, rendered test
+  views of curved screens came out at 0.98 to 0.99 against their artwork for curves of 46 and
+  74 degrees (0.42 to 0.68 with four corners), and 0.87 for a 115 degree wrap.
 * **Fold (building corner)**: two flat faces meeting at a corner. Four outer corners plus the top
   and bottom of the fold line, and **Left face**, the share of the screen's width left of the
   fold (from the screen's layout: 40% for a 2 m + 3 m wrap). Each face is straightened on its
   own and the two are joined at the fold (0.998 on a rendered test view, 0.46 with four corners).
 
+**Fit to artwork** (any shape) finds the right places for you: it takes recent photos of up
+to 3 creatives already matched to booked artwork (last 3 days), finds where parts of the
+artwork appear in each photo, and moves the handles to line them up (for a flat screen, the
+corners by at most 3% of the picture; for a fold, the fold line and the left face's share).
+It shows the match before and after; check the preview and save. On the rendered test views,
+from handles left straight or placed by eye it reached 0.97 to 0.99 for curves up to 74
+degrees (also with a blurred, hazy, noisy photo), 0.97 for a fold placed 2% off at the wrong
+share, and 0.99 for a flat screen with two corners a few pixels off. Placing the handles
+where they look evenly spaced, without fitting, gives about 0.6: on a curved screen seen at
+an angle the near side looks wider, so the true thirds aren't where they appear.
+
 For both, set the screen's resolution on the site's Settings page: the straightened image's
 shape can't be judged from the camera's view. Changing the shape is a region change, like
 moving a corner (detection starts afresh for that site). In the camera's JSON the region is
-`roi` (corners) plus `roi_shape` (`curve` or `fold`), `roi_mid` (the curve's 4 edge midpoints),
+`roi` (corners) plus `roi_shape` (`curve` or `fold`), `roi_curve` (the curve's 8 handles; an earlier
+`roi_mid`, one per edge, is converted),
 `roi_fold` (the fold's top and bottom) and `fold_pct`; PoP metadata carries the same.
 
 **Screen resolution.** A camera sees the board at an angle, which squeezes it (a 576 × 396
