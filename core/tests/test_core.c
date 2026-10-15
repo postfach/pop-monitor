@@ -531,6 +531,68 @@ static void test_profile(void)
     CHECK(t.loop_ms == 60000 && t.expected_per_hour == 360, "loop and plays per hour");
 }
 
+static void test_regions(void)
+{
+    const pc_point q[4] = {{0.2f, 0.15f}, {0.85f, 0.22f}, {0.8f, 0.8f}, {0.18f, 0.86f}};
+    pc_region std_r, r;
+    pc_region_from_corners(&std_r, q);
+    /* a curve with its midpoints on the straight edges, and a fold down the
+     * screen's true middle, are the same as the plain region */
+    for (int shape = PC_SHAPE_CURVE; shape <= PC_SHAPE_FOLD; shape++) {
+        r = std_r;
+        r.shape = shape;
+        double worst = 0;
+        for (int i = 0; i <= 10; i++)
+            for (int j = 0; j <= 10; j++) {
+                pc_point a, b;
+                pc_region_point(&std_r, i / 10.0, j / 10.0, &a);
+                pc_region_point(&r, i / 10.0, j / 10.0, &b);
+                double d = fabs(a.x - b.x) + fabs(a.y - b.y);
+                if (d > worst) worst = d;
+            }
+        CHECK(worst < 1e-4, "shape %d with neutral handles matches standard (off by %.6f)", shape, worst);
+    }
+    /* curve: corners stay put, each edge passes through its midpoint */
+    r = std_r;
+    r.shape = PC_SHAPE_CURVE;
+    r.mid[0].y -= 0.05f;               /* top bows up */
+    r.mid[2].y += 0.04f;               /* bottom bows down */
+    pc_point p;
+    pc_region_point(&r, 0, 0, &p);
+    CHECK(fabs(p.x - q[0].x) < 1e-5 && fabs(p.y - q[0].y) < 1e-5, "curve keeps the top-left corner");
+    pc_region_point(&r, 0.5, 0, &p);
+    CHECK(fabs(p.x - r.mid[0].x) < 1e-5 && fabs(p.y - r.mid[0].y) < 1e-5, "top edge passes through its midpoint");
+    pc_region_point(&r, 0.5, 1, &p);
+    CHECK(fabs(p.y - r.mid[2].y) < 1e-5, "bottom edge passes through its midpoint");
+    pc_point c0, c1;
+    pc_region_point(&std_r, 0.5, 0.5, &c0);
+    pc_region_point(&r, 0.5, 0.5, &c1);
+    CHECK(fabs((c1.y - c0.y) - (-0.05f + 0.04f) / 2) < 1e-4, "the centre moves by the average bend (%.4f)", c1.y - c0.y);
+    float a0 = pc_region_aspect(&std_r, 1920, 1080), a1 = pc_region_aspect(&r, 1920, 1080);
+    CHECK(a1 > a0 && a1 < a0 * 1.1f, "bowed edges are measured along the curve (%.3f vs %.3f)", a1, a0);
+
+    /* fold: two faces of a corner; the fold line maps to u = fold_u */
+    pc_point f[4] = {{0.1f, 0.3f}, {0.9f, 0.3f}, {0.9f, 0.7f}, {0.1f, 0.7f}};
+    pc_region_from_corners(&r, f);
+    r.shape = PC_SHAPE_FOLD;
+    r.fold[0] = (pc_point){0.4f, 0.2f};
+    r.fold[1] = (pc_point){0.4f, 0.8f};
+    r.fold_u = 0.3f;
+    pc_region_point(&r, 0.3, 0, &p);
+    CHECK(fabs(p.x - 0.4f) < 1e-5 && fabs(p.y - 0.2f) < 1e-5, "fold top at u = 0.3");
+    pc_region_point(&r, 0.3, 1, &p);
+    CHECK(fabs(p.y - 0.8f) < 1e-5, "fold bottom at u = 0.3");
+    pc_region_point(&r, 1, 1, &p);
+    CHECK(fabs(p.x - 0.9f) < 1e-5 && fabs(p.y - 0.7f) < 1e-5, "fold keeps the bottom-right corner");
+    pc_warp w;
+    CHECK(pc_warp_init_region(&w, 640, 360, &r, 0.f, 96, 48) == 0, "fold warp builds");
+    /* output column at u = 0.3 samples the fold line */
+    int col = (int)(0.3 * 96);
+    double sx = w.lut[((size_t)24 * 96 + col) * 2] / 65536.0 / 639.0;
+    CHECK(fabs(sx - 0.4) < 0.02, "fold column samples the fold line (x %.3f)", sx);
+    pc_warp_free(&w);
+}
+
 int main(void)
 {
     pc_warp w;
@@ -551,6 +613,7 @@ int main(void)
     test_faults();
     test_share_of_time();
     test_snapshot_score();
+    test_regions();
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("all popcore tests passed\n");
     return 0;

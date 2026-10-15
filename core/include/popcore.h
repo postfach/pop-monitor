@@ -57,11 +57,38 @@ typedef struct {
     int       src_w, src_h;
     int       out_w, out_h;
     int32_t  *lut;      /* out_w*out_h*2 fixed-point 16.16 source coords */
-    double    h[9];     /* homography: output pixel -> source pixel      */
+    double    h[9];     /* corners' homography: unit square -> source pixels */
 } pc_warp;
+
+/* The screen's outline in the camera view. Standard: four corners, flat
+ * screen. Curve: also a point on the middle of each edge (top, right,
+ * bottom, left), which the edge bends through (a midpoint left on the
+ * straight edge = no bend). Fold: two flat faces meeting at a corner of
+ * a building; fold[0] / fold[1] are the top and bottom of the fold line
+ * and fold_u is the share of the screen's width left of it. */
+typedef enum { PC_SHAPE_STANDARD = 0, PC_SHAPE_CURVE = 1, PC_SHAPE_FOLD = 2 } pc_shape;
+typedef struct {
+    pc_point c[4];
+    int      shape;
+    pc_point mid[4];
+    pc_point fold[2];
+    float    fold_u;
+} pc_region;
+
+/* A standard region from four corners (curve midpoints on the straight
+ * edges and the fold down the middle, ready if the shape is changed). */
+void pc_region_from_corners(pc_region *r, const pc_point corners[4]);
+/* Point of the camera view (normalised) for (u, v) on the flat screen,
+ * both 0..1 from the top-left. 0, or -1 for a degenerate region. */
+int  pc_region_point(const pc_region *r, double u, double v, pc_point *out);
+/* Apparent width / height of the screen in a fw x fh frame (edges measured
+ * along their curve or fold). */
+float pc_region_aspect(const pc_region *r, int fw, int fh);
 
 int  pc_warp_init(pc_warp *w, int src_w, int src_h, const pc_point corners[4],
                   float inset_pct, int out_w, int out_h);
+int  pc_warp_init_region(pc_warp *w, int src_w, int src_h, const pc_region *r,
+                         float inset_pct, int out_w, int out_h);
 void pc_warp_free(pc_warp *w);
 /* Output planes are out_w*out_h bytes each (full-resolution chroma). */
 void pc_warp_apply(const pc_warp *w, const pc_frame *f,
@@ -378,6 +405,9 @@ typedef struct {
 int pc_snapshot_score(const pc_frame *f, const pc_point corners[4], float inset_pct,
                       const pc_features *ref, pc_snapshot_quality *q,
                       uint8_t **board_y, int *board_w, int *board_h);
+int pc_snapshot_score_region(const pc_frame *f, const pc_region *r, float inset_pct,
+                             const pc_features *ref, pc_snapshot_quality *q,
+                             uint8_t **board_y, int *board_w, int *board_h);
 
 /* Blown out = clipped highlights this much beyond what the creative
  * normally shows (artwork with a lot of white clips on camera every time). */

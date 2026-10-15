@@ -28,7 +28,7 @@ typedef struct {
     int      stream_lost, camera_moved;
     pc_profile profile;
     int      expected_per_hour;
-    pc_point roi[4];                 /* live region (editable at runtime) */
+    pc_region region;                /* live region (editable at runtime) */
     float    inset_pct;
     unsigned roi_version;            /* bumped on every change            */
     int      low_coverage;           /* low_coverage fault active          */
@@ -85,10 +85,10 @@ static inline double status_uptime(const cam_status *s, int64_t now)
 }
 
 /* copy the live region (takes the status mutex) */
-static inline unsigned status_get_roi(cam_status *s, pc_point roi[4], float *inset)
+static inline unsigned status_get_roi(cam_status *s, pc_region *roi, float *inset)
 {
     pthread_mutex_lock(&s->mu);
-    for (int i = 0; i < 4; i++) roi[i] = s->roi[i];
+    *roi = s->region;
     *inset = s->inset_pct;
     unsigned v = s->roi_version;
     pthread_mutex_unlock(&s->mu);

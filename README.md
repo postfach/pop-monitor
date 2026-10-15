@@ -384,6 +384,27 @@ camera so the edit itself isn't logged as a play.
 
 Region edits are saved by the gateway in `cameras.json` (see above), so they survive restarts.
 
+**Curved and folded screens.** The **Screen** list on the region page picks the shape:
+
+* **Standard (flat)**, the default: four corners.
+* **Curved**: four corners plus a handle on the middle of each edge (T, R, B, L). Drag each one
+  onto the middle of its edge so the outline follows the curve; one left on the straight line
+  keeps that edge straight. Each edge bends as a smooth arc through its handle, the bend
+  fading towards the opposite edge. On rendered test views of curved screens, artwork
+  fingerprints agreed 0.93 to 0.99 with the artwork after straightening (0.67 to 0.90 with four
+  corners) for curves up to about 45 degrees, and 0.76 (0.41) for a strong 75 degree wrap
+  seen from the side.
+* **Fold (building corner)**: two flat faces meeting at a corner. Four outer corners plus the top
+  and bottom of the fold line, and **Left face**, the share of the screen's width left of the
+  fold (from the screen's layout: 40% for a 2 m + 3 m wrap). Each face is straightened on its
+  own and the two are joined at the fold (0.998 on a rendered test view, 0.46 with four corners).
+
+For both, set the screen's resolution on the site's Settings page: the straightened image's
+shape can't be judged from the camera's view. Changing the shape is a region change, like
+moving a corner (detection starts afresh for that site). In the camera's JSON the region is
+`roi` (corners) plus `roi_shape` (`curve` or `fold`), `roi_mid` (the curve's 4 edge midpoints),
+`roi_fold` (the fold's top and bottom) and `fold_pct`; PoP metadata carries the same.
+
 **Screen resolution.** A camera sees the board at an angle, which squeezes it (a 576 × 396
 screen seen from the side can look nearly square). With the screen's resolution set on the
 site's Settings page (*Screen*, or `board_width` / `board_height` in the camera's JSON), the

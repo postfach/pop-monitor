@@ -2,6 +2,7 @@
 #include "util.h"
 
 #include <cjson/cJSON.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,7 +80,7 @@ static void camera_defaults(camera_cfg *c)
 {
     memset(c, 0, sizeof *c);
     pc_point full[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    memcpy(c->roi, full, sizeof full);
+    pc_region_from_corners(&c->region, full);
     c->inset_pct = 3.f;
     c->analysis_fps = 5;
     snprintf(c->operating_hours, sizeof c->operating_hours, "00:00-24:00");
@@ -131,16 +132,7 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_int(o, "realtime", &c->realtime);
     get_int(o, "loop", &c->loop);
 
-    const cJSON *roi = cJSON_GetObjectItemCaseSensitive(o, "roi");
-    if (cJSON_IsArray(roi) && cJSON_GetArraySize(roi) == 4) {
-        for (int i = 0; i < 4; i++) {
-            const cJSON *pt = cJSON_GetArrayItem(roi, i);
-            if (cJSON_IsArray(pt) && cJSON_GetArraySize(pt) == 2) {
-                c->roi[i].x = (float)cJSON_GetArrayItem(pt, 0)->valuedouble;
-                c->roi[i].y = (float)cJSON_GetArrayItem(pt, 1)->valuedouble;
-            }
-        }
-    }
+    config_parse_region(o, &c->region);
 
     get_profile(cJSON_GetObjectItemCaseSensitive(o, "profile"), &c->profile);
     const cJSON *take = cJSON_GetObjectItemCaseSensitive(o, "takeover");
@@ -260,12 +252,143 @@ static int validate_camera(camera_cfg *c, int idx, char *err, size_t n)
     if (c->analysis_fps > 15) c->analysis_fps = 15;
     if (c->snap.burst < 1) c->snap.burst = 1;
     if (c->snap.burst > 8) c->snap.burst = 8;
-    for (int i = 0; i < 4; i++)
-        if (c->roi[i].x < 0 || c->roi[i].x > 1 || c->roi[i].y < 0 || c->roi[i].y > 1) {
-            snprintf(err, n, "camera %s: roi points must be normalised 0..1", c->name);
-            return -1;
-        }
+    char why[160];
+    if (!config_region_valid(&c->region, why, sizeof why)) {
+        snprintf(err, n, "camera %s: region: %s", c->name, why);
+        return -1;
+    }
     return 0;
+}
+
+/* ---------------- regions ---------------- */
+
+static int parse_points(const cJSON *arr, pc_point *p, int n)
+{
+    if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) != n) return -1;
+    for (int i = 0; i < n; i++) {
+        const cJSON *pt = cJSON_GetArrayItem(arr, i);
+        if (!cJSON_IsArray(pt) || cJSON_GetArraySize(pt) != 2) return -1;
+        const cJSON *x = cJSON_GetArrayItem(pt, 0), *y = cJSON_GetArrayItem(pt, 1);
+        if (!cJSON_IsNumber(x) || !cJSON_IsNumber(y)) return -1;
+        p[i].x = (float)x->valuedouble;
+        p[i].y = (float)y->valuedouble;
+    }
+    return 0;
+}
+
+static cJSON *points_json(const pc_point *p, int n)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int k = 0; k < n; k++) {
+        cJSON *pt = cJSON_CreateArray();
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)p[k].x * 10000) / 10000));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)p[k].y * 10000) / 10000));
+        cJSON_AddItemToArray(arr, pt);
+    }
+    return arr;
+}
+
+static void put(cJSON *obj, const char *key, cJSON *val)
+{
+    if (cJSON_GetObjectItemCaseSensitive(obj, key)) cJSON_ReplaceItemInObjectCaseSensitive(obj, key, val);
+    else cJSON_AddItemToObject(obj, key, val);
+}
+
+int config_parse_region(const void *obj, pc_region *r)
+{
+    const cJSON *o = obj;
+    pc_point c[4];
+    if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi"), c, 4) != 0) return -1;
+    pc_region_from_corners(r, c);
+    const cJSON *sh = cJSON_GetObjectItemCaseSensitive(o, "roi_shape");
+    if (cJSON_IsString(sh)) {
+        if (!strcmp(sh->valuestring, "curve")) r->shape = PC_SHAPE_CURVE;
+        else if (!strcmp(sh->valuestring, "fold")) r->shape = PC_SHAPE_FOLD;
+    }
+    pc_point m[4], f[2];
+    if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_mid"), m, 4) == 0) memcpy(r->mid, m, sizeof m);
+    if (parse_points(cJSON_GetObjectItemCaseSensitive(o, "roi_fold"), f, 2) == 0) memcpy(r->fold, f, sizeof f);
+    const cJSON *fp = cJSON_GetObjectItemCaseSensitive(o, "fold_pct");
+    if (cJSON_IsNumber(fp)) r->fold_u = (float)(fp->valuedouble / 100.0);
+    return 0;
+}
+
+void config_region_to_json(void *obj, const pc_region *r)
+{
+    cJSON *o = obj;
+    put(o, "roi", points_json(r->c, 4));
+    static const char *names[] = {"standard", "curve", "fold"};
+    int s = r->shape >= 0 && r->shape <= 2 ? r->shape : 0;
+    if (s == PC_SHAPE_STANDARD) {
+        cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_shape");
+    } else {
+        put(o, "roi_shape", cJSON_CreateString(names[s]));
+    }
+    if (s == PC_SHAPE_CURVE) put(o, "roi_mid", points_json(r->mid, 4));
+    else cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_mid");
+    if (s == PC_SHAPE_FOLD) {
+        put(o, "roi_fold", points_json(r->fold, 2));
+        put(o, "fold_pct", cJSON_CreateNumber(round((double)r->fold_u * 1000) / 10));
+    } else {
+        cJSON_DeleteItemFromObjectCaseSensitive(o, "roi_fold");
+        cJSON_DeleteItemFromObjectCaseSensitive(o, "fold_pct");
+    }
+}
+
+static double cross(pc_point o, pc_point a, pc_point b)
+{
+    return (double)(a.x - o.x) * (b.y - o.y) - (double)(a.y - o.y) * (b.x - o.x);
+}
+
+static int convex(pc_point a, pc_point b, pc_point c, pc_point d, double *area)
+{
+    double s0 = cross(a, b, c), s1 = cross(b, c, d), s2 = cross(c, d, a), s3 = cross(d, a, b);
+    int pos = (s0 > 0) + (s1 > 0) + (s2 > 0) + (s3 > 0);
+    *area = fabs(s0 + s2) / 2;
+    return pos == 4 || pos == 0;
+}
+
+static int in01(pc_point p) { return p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1; }
+
+int config_region_valid(const pc_region *r, char *why, size_t n)
+{
+    for (int i = 0; i < 4; i++)
+        if (!in01(r->c[i])) {
+            snprintf(why, n, "corners must be between 0 and 1");
+            return 0;
+        }
+    double area;
+    if (!convex(r->c[0], r->c[1], r->c[2], r->c[3], &area)) {
+        snprintf(why, n, "corners must form a box in the order top-left, top-right, bottom-right, bottom-left");
+        return 0;
+    }
+    if (area < 0.0005) {
+        snprintf(why, n, "region is too small");
+        return 0;
+    }
+    if (r->shape == PC_SHAPE_CURVE) {
+        for (int i = 0; i < 4; i++)
+            if (!in01(r->mid[i])) {
+                snprintf(why, n, "curve points must be inside the picture");
+                return 0;
+            }
+    } else if (r->shape == PC_SHAPE_FOLD) {
+        if (!in01(r->fold[0]) || !in01(r->fold[1])) {
+            snprintf(why, n, "the fold line must be inside the picture");
+            return 0;
+        }
+        if (!(r->fold_u >= 0.05f && r->fold_u <= 0.95f)) {
+            snprintf(why, n, "the left face must be 5-95%% of the screen's width");
+            return 0;
+        }
+        double a1, a2;
+        if (!convex(r->c[0], r->fold[0], r->fold[1], r->c[3], &a1) ||
+            !convex(r->fold[0], r->c[1], r->c[2], r->fold[1], &a2) || a1 < 0.0001 || a2 < 0.0001) {
+            snprintf(why, n, "the fold line must run from the top edge to the bottom edge, between the corners");
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int config_load(const char *path, gateway_cfg *g, char *err, size_t n)

@@ -57,13 +57,13 @@ static int64_t mono_to_wall(int64_t mono)
     return mono + (util_wall_ms() - util_mono_ms());
 }
 
-static int roi_height_for(const pc_point r[4], int fw, int fh, int ow);
+static int roi_height_for(const pc_region *r, int fw, int fh, int ow);
 
 /* Size of a straightened board image whose longer side is `longest`. With the
  * screen's resolution known it has the screen's shape (the camera sees the
  * board at an angle, which squeezes it); otherwise the shape the camera sees.
  * The pixel size is set by `longest`, not the screen's resolution. */
-static void board_size(const camera_cfg *c, const pc_point roi[4], int fw, int fh, int longest, int *ow, int *oh)
+static void board_size(const camera_cfg *c, const pc_region *roi, int fw, int fh, int longest, int *ow, int *oh)
 {
     if (c && c->board_width > 0 && c->board_height > 0) {
         double a = (double)c->board_width / c->board_height;
@@ -80,7 +80,7 @@ static void board_size(const camera_cfg *c, const pc_point roi[4], int fw, int f
 }
 
 /* Straightened ROI of the current analysis frame as a small JPEG, for alerts. */
-static void alert_roi_jpeg(const camera_cfg *c, const pc_point roi[4], float inset, const pc_frame *f,
+static void alert_roi_jpeg(const camera_cfg *c, const pc_region *roi, float inset, const pc_frame *f,
                            uint8_t **jpg, size_t *len)
 {
     *jpg = NULL;
@@ -89,7 +89,7 @@ static void alert_roi_jpeg(const camera_cfg *c, const pc_point roi[4], float ins
     pc_warp w;
     int ow, oh;
     board_size(c, roi, f->width, f->height, 480, &ow, &oh);
-    if (pc_warp_init(&w, f->width, f->height, roi, inset, ow, oh) != 0) return;
+    if (pc_warp_init_region(&w, f->width, f->height, roi, inset, ow, oh) != 0) return;
     uint8_t *rgb = malloc((size_t)ow * oh * 3);
     if (rgb) {
         pc_warp_apply_rgb(&w, f, rgb);
@@ -157,15 +157,11 @@ static void coverage_check(camera *cm, int reset)
     }
 }
 
-/* Board aspect from the ROI corners, for warp output sizes. */
-static int roi_height_for(const pc_point r[4], int fw, int fh, int ow)
+/* Board aspect from the region (edges measured along their curve or fold), for warp output sizes. */
+static int roi_height_for(const pc_region *r, int fw, int fh, int ow)
 {
-    float tw = hypotf((r[1].x - r[0].x) * fw, (r[1].y - r[0].y) * fh);
-    float bw = hypotf((r[2].x - r[3].x) * fw, (r[2].y - r[3].y) * fh);
-    float lh = hypotf((r[3].x - r[0].x) * fw, (r[3].y - r[0].y) * fh);
-    float rh = hypotf((r[2].x - r[1].x) * fw, (r[2].y - r[1].y) * fh);
-    float w = (tw + bw) / 2, h = (lh + rh) / 2;
-    int oh = w > 1 ? (int)lroundf(ow * h / w) : ow / 2;
+    float a = pc_region_aspect(r, fw, fh);
+    int oh = a > 0.01f ? (int)lroundf(ow / a) : ow / 2;
     if (oh < ow / 8) oh = ow / 8;
     if (oh > ow * 2) oh = ow * 2;
     return oh & ~1;
@@ -248,9 +244,9 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     int64_t due = job->settled_mono + c->snap.delay_ms;
     int64_t now = util_mono_ms();
     if (due > now) util_sleep_ms((int)(due - now));
-    pc_point roi_pts[4];
+    pc_region roi_pts;
     float inset;
-    status_get_roi(cm->st, roi_pts, &inset);
+    status_get_roi(cm->st, &roi_pts, &inset);
 
     char query[160];
     snprintf(query, sizeof query, "compression=%d%s%s", c->snap.compression,
@@ -277,7 +273,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
         if (jpeg_decode_rgb(jpg, len, &rgb, &w, &h) != 0) { free(jpg); continue; }
         if (got && (w != ws[0] || h != hs[0])) { free(jpg); free(rgb); continue; }
         pc_frame f = {PC_FMT_RGB24, w, h, {rgb, NULL, NULL}, {w * 3, 0, 0}};
-        if (pc_snapshot_score(&f, roi_pts, inset, ref, &qs[got], &ys[got], &bw, &bh) != 0) {
+        if (pc_snapshot_score_region(&f, &roi_pts, inset, ref, &qs[got], &ys[got], &bw, &bh) != 0) {
             free(jpg); free(rgb);
             continue;
         }
@@ -330,9 +326,9 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     size_t roi_len = 0;
     if (best_rgb) {
         int ow, oh;
-        board_size(c, roi_pts, best_w, best_h, c->snap.roi_width > 64 ? c->snap.roi_width : 1024, &ow, &oh);
+        board_size(c, &roi_pts, best_w, best_h, c->snap.roi_width > 64 ? c->snap.roi_width : 1024, &ow, &oh);
         pc_warp w;
-        if (pc_warp_init(&w, best_w, best_h, roi_pts, inset, ow, oh) == 0) {
+        if (pc_warp_init_region(&w, best_w, best_h, &roi_pts, inset, ow, oh) == 0) {
             uint8_t *rgb = malloc((size_t)ow * oh * 3);
             pc_frame f = {PC_FMT_RGB24, best_w, best_h, {best_rgb, NULL, NULL}, {best_w * 3, 0, 0}};
             pc_warp_apply_rgb(&w, &f, rgb);
@@ -372,13 +368,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     cJSON_AddNumberToObject(j, "confidence", round((double)job->ev.confidence * 100) / 100);
     cJSON_AddBoolToObject(j, "is_blank", job->ev.is_blank);
     cJSON_AddBoolToObject(j, "video_creative", job->ev.motion);
-    cJSON *roi = cJSON_AddArrayToObject(j, "roi");
-    for (int i = 0; i < 4; i++) {
-        cJSON *pt = cJSON_CreateArray();
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)roi_pts[i].x * 10000) / 10000));
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)roi_pts[i].y * 10000) / 10000));
-        cJSON_AddItemToArray(roi, pt);
-    }
+    config_region_to_json(j, &roi_pts);
     cJSON_AddNumberToObject(j, "inset_pct", inset);
     if (c->board_width > 0) {
         cJSON_AddNumberToObject(j, "board_width", c->board_width);
@@ -680,9 +670,9 @@ static void *stream_thread(void *arg)
 
     pc_warp warp = {0};
     int ow = 192, oh = 96;
-    pc_point roi[4];
+    pc_region roi;
     float inset;
-    unsigned roi_ver = status_get_roi(st, roi, &inset);
+    unsigned roi_ver = status_get_roi(st, &roi, &inset);
     unsigned expect_ver = (unsigned)-1;
     pthread_mutex_lock(&st->mu);
     unsigned reset_ver = st->reset_applied;   /* a reset asked for while restarting still applies */
@@ -826,7 +816,7 @@ static void *stream_thread(void *arg)
             if (roi_changed) {
                 /* region edited from the review page: re-warp and start the
                  * detector afresh so the change itself isn't counted as a play */
-                roi_ver = status_get_roi(st, roi, &inset);
+                roi_ver = status_get_roi(st, &roi, &inset);
                 pc_warp_free(&warp);
                 uint64_t seq = det.sequence;          /* keep play numbering continuous */
                 int next_id = det.library.next_id;    /* new framing: new fingerprints, */
@@ -838,15 +828,16 @@ static void *stream_thread(void *arg)
                 pc_faults_set_operating(&fm, util_in_time_range(c->operating_hours, util_wall_ms()), now);
                 cov_reset = 1;
                 expect_ver = (unsigned)-1;
-                LOGI(c->name, "region updated: (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f), inset %.0f%%",
-                     roi[0].x, roi[0].y, roi[1].x, roi[1].y, roi[2].x, roi[2].y, roi[3].x, roi[3].y, inset);
+                LOGI(c->name, "region updated: %s (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f) (%.3f,%.3f), inset %.0f%%",
+                     roi.shape == PC_SHAPE_CURVE ? "curve" : roi.shape == PC_SHAPE_FOLD ? "fold" : "standard",
+                     roi.c[0].x, roi.c[0].y, roi.c[1].x, roi.c[1].y, roi.c[2].x, roi.c[2].y, roi.c[3].x, roi.c[3].y, inset);
             }
             if (paused) continue;
 
             if (!warp.lut || warp.src_w != f.width || warp.src_h != f.height) {
                 pc_warp_free(&warp);
-                oh = roi_height_for(roi, f.width, f.height, ow);
-                if (pc_warp_init(&warp, f.width, f.height, roi, inset, ow, oh) != 0) {
+                oh = roi_height_for(&roi, f.width, f.height, ow);
+                if (pc_warp_init_region(&warp, f.width, f.height, &roi, inset, ow, oh) != 0) {
                     LOGE(c->name, "invalid ROI");
                     break;
                 }
@@ -878,7 +869,7 @@ static void *stream_thread(void *arg)
                 if (!fev.one_shot) status_fault(cm, name, fev.raised);
                 uint8_t *jpg = NULL;
                 size_t jl = 0;
-                if (fev.raised) alert_roi_jpeg(c, roi, inset, &f, &jpg, &jl);
+                if (fev.raised) alert_roi_jpeg(c, &roi, inset, &f, &jpg, &jl);
                 alerts_send(cm->app, c, name, state, mono_to_wall(fev.since_ms), mono_to_wall(fev.at_ms),
                             fev.detail, jpg, jl);
                 free(jpg);

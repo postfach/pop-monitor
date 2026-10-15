@@ -50,17 +50,141 @@ static int unit_square_to_quad(const double qx[4], const double qy[4], double h[
     return 0;
 }
 
+static void hmap(const double h[9], double u, double v, double *x, double *y)
+{
+    double d = h[6] * u + h[7] * v + h[8];
+    *x = (h[0] * u + h[1] * v + h[2]) / d;
+    *y = (h[3] * u + h[4] * v + h[5]) / d;
+}
+
+static int quad_h(pc_point a, pc_point b, pc_point c, pc_point d, double h[9])
+{
+    double qx[4] = {a.x, b.x, c.x, d.x}, qy[4] = {a.y, b.y, c.y, d.y};
+    return unit_square_to_quad(qx, qy, h);
+}
+
+/* The mapping, prepared once: homographies and the curve's bends. */
+typedef struct {
+    int    shape;
+    double h[9], hl[9], hr[9];
+    double bend[4][2];      /* curve: top, right, bottom, left midpoint offsets */
+    double fu;
+} rmap;
+
+static int rmap_init(rmap *m, const pc_region *r)
+{
+    memset(m, 0, sizeof *m);
+    m->shape = r->shape;
+    if (quad_h(r->c[0], r->c[1], r->c[2], r->c[3], m->h) != 0) return -1;
+    if (r->shape == PC_SHAPE_CURVE) {
+        static const double at[4][2] = {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}};
+        for (int e = 0; e < 4; e++) {
+            double x, y;
+            hmap(m->h, at[e][0], at[e][1], &x, &y);
+            m->bend[e][0] = r->mid[e].x - x;
+            m->bend[e][1] = r->mid[e].y - y;
+        }
+    } else if (r->shape == PC_SHAPE_FOLD) {
+        m->fu = r->fold_u < 0.05f ? 0.05 : r->fold_u > 0.95f ? 0.95 : r->fold_u;
+        if (quad_h(r->c[0], r->fold[0], r->fold[1], r->c[3], m->hl) != 0) return -1;
+        if (quad_h(r->fold[0], r->c[1], r->c[2], r->fold[1], m->hr) != 0) return -1;
+    }
+    return 0;
+}
+
+static void rmap_point(const rmap *m, double u, double v, double *x, double *y)
+{
+    if (m->shape == PC_SHAPE_FOLD) {
+        if (u < m->fu) hmap(m->hl, u / m->fu, v, x, y);
+        else hmap(m->hr, (u - m->fu) / (1 - m->fu), v, x, y);
+        return;
+    }
+    hmap(m->h, u, v, x, y);
+    if (m->shape == PC_SHAPE_CURVE) {
+        /* each edge bends as a parabola through its midpoint; the bend fades
+         * linearly towards the opposite edge (a Coons-style blend) */
+        double bu = 4 * u * (1 - u), bv = 4 * v * (1 - v);
+        double wt[4] = {bu * (1 - v), bv * u, bu * v, bv * (1 - u)};
+        for (int e = 0; e < 4; e++) {
+            *x += wt[e] * m->bend[e][0];
+            *y += wt[e] * m->bend[e][1];
+        }
+    }
+}
+
+void pc_region_from_corners(pc_region *r, const pc_point corners[4])
+{
+    memset(r, 0, sizeof *r);
+    memcpy(r->c, corners, sizeof r->c);
+    r->fold_u = 0.5f;
+    double h[9], x, y;
+    if (quad_h(corners[0], corners[1], corners[2], corners[3], h) != 0) {
+        for (int e = 0; e < 4; e++) {
+            r->mid[e].x = (corners[e].x + corners[(e + 1) % 4].x) / 2;
+            r->mid[e].y = (corners[e].y + corners[(e + 1) % 4].y) / 2;
+        }
+        r->fold[0] = r->mid[0];
+        r->fold[1] = r->mid[2];
+        return;
+    }
+    static const double at[4][2] = {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}};
+    for (int e = 0; e < 4; e++) {
+        hmap(h, at[e][0], at[e][1], &x, &y);
+        r->mid[e].x = (float)x;
+        r->mid[e].y = (float)y;
+    }
+    r->fold[0] = r->mid[0];
+    r->fold[1] = r->mid[2];
+}
+
+int pc_region_point(const pc_region *r, double u, double v, pc_point *out)
+{
+    rmap m;
+    if (rmap_init(&m, r) != 0) return -1;
+    double x, y;
+    rmap_point(&m, u, v, &x, &y);
+    out->x = (float)x;
+    out->y = (float)y;
+    return 0;
+}
+
+float pc_region_aspect(const pc_region *r, int fw, int fh)
+{
+    rmap m;
+    if (rmap_init(&m, r) != 0) return 2.f;
+    const int N = 16;
+    double len[4] = {0};               /* top, bottom, left, right */
+    for (int k = 0; k < N; k++) {
+        double a = (double)k / N, b = (double)(k + 1) / N, x0, y0, x1, y1;
+        double seg[4][4] = {{a, 0, b, 0}, {a, 1, b, 1}, {0, a, 0, b}, {1, a, 1, b}};
+        for (int e = 0; e < 4; e++) {
+            rmap_point(&m, seg[e][0], seg[e][1], &x0, &y0);
+            rmap_point(&m, seg[e][2], seg[e][3], &x1, &y1);
+            len[e] += hypot((x1 - x0) * fw, (y1 - y0) * fh);
+        }
+    }
+    double w = (len[0] + len[1]) / 2, h = (len[2] + len[3]) / 2;
+    return h > 1 ? (float)(w / h) : 2.f;
+}
+
 int pc_warp_init(pc_warp *w, int src_w, int src_h, const pc_point corners[4],
                  float inset_pct, int out_w, int out_h)
 {
+    pc_region r;
+    pc_region_from_corners(&r, corners);
+    return pc_warp_init_region(w, src_w, src_h, &r, inset_pct, out_w, out_h);
+}
+
+int pc_warp_init_region(pc_warp *w, int src_w, int src_h, const pc_region *r,
+                        float inset_pct, int out_w, int out_h)
+{
     memset(w, 0, sizeof *w);
     if (src_w <= 1 || src_h <= 1 || out_w <= 0 || out_h <= 0) return -1;
-    double qx[4], qy[4];
-    for (int i = 0; i < 4; i++) {
-        qx[i] = corners[i].x * (src_w - 1);
-        qy[i] = corners[i].y * (src_h - 1);
-    }
-    if (unit_square_to_quad(qx, qy, w->h) != 0) return -1;
+    rmap m;
+    if (rmap_init(&m, r) != 0) return -1;
+    /* the corners' homography, unit square -> source pixels */
+    for (int k = 0; k < 9; k++)
+        w->h[k] = m.h[k] * (k < 3 ? src_w - 1 : k < 6 ? src_h - 1 : 1);
 
     w->lut = malloc((size_t)out_w * out_h * 2 * sizeof(int32_t));
     if (!w->lut) return -1;
@@ -69,14 +193,14 @@ int pc_warp_init(pc_warp *w, int src_w, int src_h, const pc_point corners[4],
     double in = inset_pct / 100.0;
     if (in < 0) in = 0;
     if (in > 0.4) in = 0.4;
-    const double *h = w->h;
     for (int j = 0; j < out_h; j++) {
         double v = in + (1 - 2 * in) * (j + 0.5) / out_h;
         for (int i = 0; i < out_w; i++) {
             double u = in + (1 - 2 * in) * (i + 0.5) / out_w;
-            double d = h[6] * u + h[7] * v + h[8];
-            double X = (h[0] * u + h[1] * v + h[2]) / d;
-            double Y = (h[3] * u + h[4] * v + h[5]) / d;
+            double X, Y;
+            rmap_point(&m, u, v, &X, &Y);
+            X *= src_w - 1;
+            Y *= src_h - 1;
             if (X < 0) X = 0;
             if (Y < 0) Y = 0;
             if (X > src_w - 1.001) X = src_w - 1.001;

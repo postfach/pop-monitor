@@ -34,7 +34,7 @@ typedef struct {
     int   camera_tls_insecure;  /* accept the camera's self-signed cert */
     char  rtsp_transport[8];    /* "tcp" (default) or "http" (RTSP tunnelled over the web port) */
     char  stream_params[160];   /* Axis media.amp query string         */
-    pc_point roi[4];
+    pc_region region;           /* the screen's outline: corners, shape (curve, fold) */
     float inset_pct;
     int   board_width;          /* the screen's resolution in pixels (0 = unknown): the  */
     int   board_height;         /* straightened PoP image takes its shape, not the view's */
@@ -90,6 +90,15 @@ int  config_active_count(const gateway_cfg *g);
 /* File holding a site's creative library (keyed by site ID). */
 void config_library_path(const gateway_cfg *g, const char *site_id, char *out, size_t n);
 void config_free(gateway_cfg *g);
+/* A camera object's region: "roi" (4 corners, required), "roi_shape"
+ * ("standard", "curve", "fold"), "roi_mid" (curve: 4 edge midpoints),
+ * "roi_fold" (fold: top and bottom of the fold line), "fold_pct" (share of
+ * the width left of the fold). 0, or -1 without valid corners. */
+int  config_parse_region(const void *obj, pc_region *r);
+/* Write a region into a camera object (or status JSON) in that form. */
+void config_region_to_json(void *obj, const pc_region *r);
+/* Corners in 0..1 forming a convex box; a fold's faces convex too. */
+int  config_region_valid(const pc_region *r, char *why, size_t n);
 /* Profile in force now for this camera (dayparts, else default). */
 pc_profile config_active_profile(const camera_cfg *c, int64_t epoch_ms);
 

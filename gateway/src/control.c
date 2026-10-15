@@ -29,58 +29,6 @@ static int listen_fd = -1;
 
 /* ---------------- helpers ---------------- */
 
-static double cross(pc_point o, pc_point a, pc_point b)
-{
-    return (double)(a.x - o.x) * (b.y - o.y) - (double)(a.y - o.y) * (b.x - o.x);
-}
-
-/* Four corners TL,TR,BR,BL inside 0..1, forming a convex quad of real size. */
-static int roi_valid(const pc_point r[4], char *why, size_t n)
-{
-    for (int i = 0; i < 4; i++)
-        if (!(r[i].x >= 0 && r[i].x <= 1 && r[i].y >= 0 && r[i].y <= 1)) {
-            snprintf(why, n, "corners must be between 0 and 1");
-            return 0;
-        }
-    double s0 = cross(r[0], r[1], r[2]), s1 = cross(r[1], r[2], r[3]);
-    double s2 = cross(r[2], r[3], r[0]), s3 = cross(r[3], r[0], r[1]);
-    int pos = (s0 > 0) + (s1 > 0) + (s2 > 0) + (s3 > 0);
-    if (pos != 4 && pos != 0) {
-        snprintf(why, n, "corners must form a box in the order top-left, top-right, bottom-right, bottom-left");
-        return 0;
-    }
-    if (fabs(s0 + s2) / 2 < 0.0005) {
-        snprintf(why, n, "region is too small");
-        return 0;
-    }
-    return 1;
-}
-
-static int parse_roi(const cJSON *arr, pc_point r[4])
-{
-    if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) != 4) return -1;
-    for (int i = 0; i < 4; i++) {
-        const cJSON *pt = cJSON_GetArrayItem(arr, i);
-        if (!cJSON_IsArray(pt) || cJSON_GetArraySize(pt) != 2) return -1;
-        const cJSON *x = cJSON_GetArrayItem(pt, 0), *y = cJSON_GetArrayItem(pt, 1);
-        if (!cJSON_IsNumber(x) || !cJSON_IsNumber(y)) return -1;
-        r[i].x = (float)x->valuedouble;
-        r[i].y = (float)y->valuedouble;
-    }
-    return 0;
-}
-
-static cJSON *roi_json(const pc_point r[4])
-{
-    cJSON *arr = cJSON_CreateArray();
-    for (int k = 0; k < 4; k++) {
-        cJSON *pt = cJSON_CreateArray();
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].x * 10000) / 10000));
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber(round((double)r[k].y * 10000) / 10000));
-        cJSON_AddItemToArray(arr, pt);
-    }
-    return arr;
-}
 
 static void set_item(cJSON *obj, const char *key, cJSON *val)
 {
@@ -91,13 +39,13 @@ static void set_item(cJSON *obj, const char *key, cJSON *val)
 /* Put the camera's live region into its JSON object (call with cams_mu held). */
 static void sync_roi_to_json(int i)
 {
-    pc_point r[4];
+    pc_region r;
     float inset;
-    status_get_roi(&A->status[i], r, &inset);
+    status_get_roi(&A->status[i], &r, &inset);
     cJSON *obj = A->cfg->cam_json[i];
-    set_item(obj, "roi", roi_json(r));
+    config_region_to_json(obj, &r);
     set_item(obj, "inset_pct", cJSON_CreateNumber(inset));
-    memcpy(A->cfg->cameras[i].roi, r, sizeof r);
+    A->cfg->cameras[i].region = r;
     A->cfg->cameras[i].inset_pct = inset;
 }
 
@@ -118,7 +66,7 @@ static void status_init_from_cfg(int i)
     status_reset(s);
     s->expected_creatives = A->cfg->cameras[i].expected_creatives;
     s->expect_version = 1;
-    memcpy(s->roi, A->cfg->cameras[i].roi, sizeof s->roi);
+    s->region = A->cfg->cameras[i].region;
     s->inset_pct = A->cfg->cameras[i].inset_pct;
 }
 
@@ -144,11 +92,11 @@ void control_init_regions(app_ctx *app)
     for (int i = 0; cams && i < g->n_cameras; i++) {
         if (!g->cameras[i].active) continue;
         const cJSON *c = cJSON_GetObjectItemCaseSensitive(cams, g->cameras[i].name);
-        pc_point r[4];
+        pc_region r;
         char why[160];
-        if (!c || parse_roi(cJSON_GetObjectItemCaseSensitive(c, "roi"), r) != 0 || !roi_valid(r, why, sizeof why))
+        if (!c || config_parse_region(c, &r) != 0 || !config_region_valid(&r, why, sizeof why))
             continue;
-        memcpy(app->status[i].roi, r, sizeof r);
+        app->status[i].region = r;
         const cJSON *in = cJSON_GetObjectItemCaseSensitive(c, "inset_pct");
         if (cJSON_IsNumber(in)) app->status[i].inset_pct = (float)in->valuedouble;
         sync_roi_to_json(i);
@@ -306,7 +254,7 @@ static cJSON *camera_json(int i)
     if (s->stream_lost) cJSON_AddItemToArray(f, cJSON_CreateString("stream_lost"));
     if (s->camera_moved) cJSON_AddItemToArray(f, cJSON_CreateString("camera_moved"));
     if (s->low_coverage) cJSON_AddItemToArray(f, cJSON_CreateString("low_coverage"));
-    cJSON_AddItemToObject(j, "roi", roi_json(s->roi));
+    config_region_to_json(j, &s->region);
     cJSON_AddNumberToObject(j, "inset_pct", s->inset_pct);
     pthread_mutex_unlock(&s->mu);
     return j;
@@ -417,12 +365,13 @@ static void handle_create(int fd, const char *body, int dry_run)
     if (!cJSON_IsObject(in)) { cJSON_Delete(in); respond_error(fd, 400, "expected a JSON object"); return; }
     cJSON *obj = cJSON_CreateObject();
     merge_form(obj, in);
-    pc_point r[4];
-    if (parse_roi(cJSON_GetObjectItemCaseSensitive(in, "roi"), r) != 0) {
+    pc_region r;
+    char rwhy[160];
+    if (config_parse_region(in, &r) != 0 || !config_region_valid(&r, rwhy, sizeof rwhy)) {
         pc_point full[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};   /* set it on the region page next */
-        memcpy(r, full, sizeof r);
+        pc_region_from_corners(&r, full);
     }
-    set_item(obj, "roi", roi_json(r));
+    config_region_to_json(obj, &r);
     cJSON_Delete(in);
 
     camera_cfg c;
@@ -579,14 +528,16 @@ static void handle_snapshot(int fd, int idx)
 static void handle_set_roi(int fd, int idx, const char *body)
 {
     cJSON *j = cJSON_Parse(body);
-    pc_point r[4];
+    pc_region r;
     char why[160];
-    if (!j || parse_roi(cJSON_GetObjectItemCaseSensitive(j, "roi"), r) != 0) {
+    if (!j || config_parse_region(j, &r) != 0) {
         cJSON_Delete(j);
-        respond_error(fd, 400, "expected {\"roi\": [[x,y],[x,y],[x,y],[x,y]], \"inset_pct\": n}");
+        respond_error(fd, 400, "expected {\"roi\": [[x,y],[x,y],[x,y],[x,y]], \"inset_pct\": n, "
+                               "\"roi_shape\": \"standard\"|\"curve\"|\"fold\", \"roi_mid\": [4 points], "
+                               "\"roi_fold\": [2 points], \"fold_pct\": n}");
         return;
     }
-    if (!roi_valid(r, why, sizeof why)) {
+    if (!config_region_valid(&r, why, sizeof why)) {
         cJSON_Delete(j);
         respond_error(fd, 400, why);
         return;
@@ -595,7 +546,7 @@ static void handle_set_roi(int fd, int idx, const char *body)
     cam_status *s = &A->status[idx];
     const cJSON *in = cJSON_GetObjectItemCaseSensitive(j, "inset_pct");
     pthread_mutex_lock(&s->mu);
-    memcpy(s->roi, r, sizeof r);
+    s->region = r;
     if (cJSON_IsNumber(in) && in->valuedouble >= 0 && in->valuedouble <= 20) s->inset_pct = (float)in->valuedouble;
     s->roi_version++;
     pthread_mutex_unlock(&s->mu);

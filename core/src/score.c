@@ -5,12 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static float dist(pc_point a, pc_point b, int w, int h)
-{
-    float dx = (a.x - b.x) * w, dy = (a.y - b.y) * h;
-    return sqrtf(dx * dx + dy * dy);
-}
-
 static float base_score(const pc_snapshot_quality *q)
 {
     float s = logf(1.f + q->sharpness) * (1.f - 2.f * q->clipped)
@@ -23,19 +17,25 @@ int pc_snapshot_score(const pc_frame *f, const pc_point corners[4], float inset_
                       const pc_features *ref, pc_snapshot_quality *q,
                       uint8_t **board_y, int *board_w, int *board_h)
 {
+    pc_region r;
+    pc_region_from_corners(&r, corners);
+    return pc_snapshot_score_region(f, &r, inset_pct, ref, q, board_y, board_w, board_h);
+}
+
+int pc_snapshot_score_region(const pc_frame *f, const pc_region *r, float inset_pct,
+                             const pc_features *ref, pc_snapshot_quality *q,
+                             uint8_t **board_y, int *board_w, int *board_h)
+{
     memset(q, 0, sizeof *q);
     if (board_y) *board_y = NULL;
-    float bw = 0.5f * (dist(corners[0], corners[1], f->width, f->height) +
-                       dist(corners[3], corners[2], f->width, f->height));
-    float bh = 0.5f * (dist(corners[0], corners[3], f->width, f->height) +
-                       dist(corners[1], corners[2], f->width, f->height));
+    float aspect = pc_region_aspect(r, f->width, f->height);
     int ow = 384;
-    int oh = bw > 1 ? (int)(ow * bh / bw) : 192;
+    int oh = aspect > 0.01f ? (int)(ow / aspect) : 192;
     if (oh < 64) oh = 64;
     if (oh > 384) oh = 384;
 
     pc_warp w;
-    if (pc_warp_init(&w, f->width, f->height, corners, inset_pct, ow, oh) != 0) return -1;
+    if (pc_warp_init_region(&w, f->width, f->height, r, inset_pct, ow, oh) != 0) return -1;
     size_t n = (size_t)ow * oh;
     uint8_t *buf = malloc(n * 3);
     if (!buf) { pc_warp_free(&w); return -1; }

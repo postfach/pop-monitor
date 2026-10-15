@@ -569,6 +569,7 @@ main{max-width:1200px;margin:0 auto;padding:20px 16px 40px} h1{font-size:20px;ma
 .muted{color:var(--muted)} .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0 10px}
 button{border:1px solid var(--line);background:transparent;color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff} button:disabled{opacity:.5;cursor:default}
+select{font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
 input[type=number]{width:60px;font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg)}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
 @media (max-width:860px){.layout{grid-template-columns:1fr}}
@@ -586,6 +587,8 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 <div class="bar">
   <button id="snap">New snapshot</button>
   <button id="revert">Undo changes</button>
+  <label>Screen <select id="shape"><option value="standard">Standard (flat)</option><option value="curve">Curved</option><option value="fold">Fold (building corner)</option></select></label>
+  <label id="foldl" hidden title="How much of the screen's width is on the left face (left of the fold)">Left face <input id="foldpct" type="number" min="5" max="95" step="1"> %</label>
   <label>Inset <input id="inset" type="number" min="0" max="20" step="1"> %</label>
   <button class="primary" id="save" disabled>Save and apply</button>
   <span id="msg"></span>
@@ -595,11 +598,7 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
   <div class="side">
     <div class="panel"><h2>What the gateway will analyse</h2><canvas id="preview"></canvas>
       <p class="muted" style="margin:6px 0 0">Straightened, with the inset trimmed. It should show only the screen.</p></div>
-    <div class="panel"><h2>How to</h2><ol>
-      <li>Drag the four handles onto the corners of the lit screen (TL, TR, BR, BL).</li>
-      <li>Use the magnifier while dragging to land on the exact corner. Arrow keys nudge the last handle.</li>
-      <li>Raise the inset if the preview still shows bezel or frame.</li>
-      <li>Save. The gateway uses the new region straight away, from the next play.</li></ol></div>
+    <div class="panel"><h2>How to</h2><ol id="howto"></ol></div>
   </div>
 </div>
 </main>
@@ -609,7 +608,95 @@ const $ = id => document.getElementById(id);
 const c = $('c'), ctx = c.getContext('2d'), pv = $('preview'), pctx = pv.getContext('2d');
 const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently: true});
 let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false, board = 0;
-const LABELS = ['TL', 'TR', 'BR', 'BL'];
+const LABELS = ['TL', 'TR', 'BR', 'BL'], MLABELS = ['T', 'R', 'B', 'L'], FLABELS = ['fold top', 'fold bottom'];
+let shape = 'standard', mid = null, fold = null;     // curve: edge midpoints (T, R, B, L); fold: top and bottom of the fold
+const HOWTO = {
+  standard: ['Drag the four handles onto the corners of the lit screen (TL, TR, BR, BL).',
+             'Use the magnifier while dragging to land on the exact corner. Arrow keys nudge the last handle.',
+             'Raise the inset if the preview still shows bezel or frame.',
+             'Save. The gateway uses the new region straight away, from the next play.'],
+  curve: ['Drag the four corner handles onto the corners of the lit screen (TL, TR, BR, BL).',
+          'Drag the middle handles (T, R, B, L) onto the middle of each edge, so the outline follows the curve. A handle left on the straight line means that edge is straight.',
+          'Check the preview: text and edges should come out straight, not bowed.',
+          'Raise the inset if the preview still shows bezel or frame, then save.'],
+  fold: ['Drag the four corner handles onto the outer corners of the screen (TL, TR, BR, BL).',
+         'Drag the two fold handles onto the top and bottom of the corner where the two faces meet.',
+         'Set Left face to how much of the screen\'s width is left of the fold (from the screen\'s layout, e.g. 40% for a 2 m + 3 m wrap).',
+         'Check the preview: the artwork should run straight across the fold. Then save.'],
+};
+
+// homography: unit square -> quad (8x8 solve)
+function homography(q) {
+  const U = [[0,0],[1,0],[1,1],[0,1]], A = [], b = [];
+  for (let i = 0; i < 4; i++) { const [u,v] = U[i], [X,Y] = q[i];
+    A.push([u,v,1,0,0,0,-u*X,-v*X]); b.push(X); A.push([0,0,0,u,v,1,-u*Y,-v*Y]); b.push(Y); }
+  for (let col = 0; col < 8; col++) { let p = col;
+    for (let r = col+1; r < 8; r++) if (Math.abs(A[r][col]) > Math.abs(A[p][col])) p = r;
+    [A[col],A[p]] = [A[p],A[col]]; [b[col],b[p]] = [b[p],b[col]];
+    for (let r = col+1; r < 8; r++) { const f = A[r][col]/A[col][col];
+      for (let k = col; k < 8; k++) A[r][k] -= f*A[col][k]; b[r] -= f*b[col]; } }
+  const x = Array(8);
+  for (let r = 7; r >= 0; r--) { let s = b[r]; for (let k = r+1; k < 8; k++) s -= A[r][k]*x[k]; x[r] = s/A[r][r]; }
+  return [...x, 1];
+}
+const map = (h, u, v) => { const d = h[6]*u + h[7]*v + 1; return [(h[0]*u + h[1]*v + h[2])/d, (h[3]*u + h[4]*v + h[5])/d]; };
+const EDGE_AT = [[0.5,0],[1,0.5],[0.5,1],[0,0.5]];
+function straightMids(P) { const h = homography(P); return EDGE_AT.map(([u,v]) => map(h, u, v)); }
+
+// the same mapping as the gateway (core/src/warp.c): (u, v) on the flat screen -> point in the picture
+function mapper(scaleX, scaleY) {
+  const P = pts.map(p => [p[0]*scaleX, p[1]*scaleY]), h = homography(P);
+  if (shape === 'fold' && fold) {
+    const F = fold.map(p => [p[0]*scaleX, p[1]*scaleY]), fu = Math.min(0.95, Math.max(0.05, (+$('foldpct').value || 50) / 100));
+    const hl = homography([P[0], F[0], F[1], P[3]]), hr = homography([F[0], P[1], P[2], F[1]]);
+    return (u, v) => u < fu ? map(hl, u / fu, v) : map(hr, (u - fu) / (1 - fu), v);
+  }
+  if (shape === 'curve' && mid) {
+    const bend = EDGE_AT.map(([u,v], e) => { const s = map(h, u, v); return [mid[e][0]*scaleX - s[0], mid[e][1]*scaleY - s[1]]; });
+    return (u, v) => {
+      const p = map(h, u, v), bu = 4*u*(1-u), bv = 4*v*(1-v), w = [bu*(1-v), bv*u, bu*v, bv*(1-u)];
+      for (let e = 0; e < 4; e++) { p[0] += w[e]*bend[e][0]; p[1] += w[e]*bend[e][1]; }
+      return p;
+    };
+  }
+  return (u, v) => map(h, u, v);
+}
+function outline(m, a) {             // boundary of the screen (or its inset) as a path
+  if (shape === 'fold') return outlineFold(m, a, Math.min(0.95, Math.max(0.05, (+$('foldpct').value || 50) / 100)));
+  const N = shape === 'standard' ? 1 : 24, P = [], b = 1 - a, step = t => a + (b - a) * t;
+  for (let k = 0; k < N; k++) P.push(m(step(k/N), a));
+  for (let k = 0; k < N; k++) P.push(m(b, step(k/N)));
+  for (let k = 0; k < N; k++) P.push(m(step(1 - k/N), b));
+  for (let k = 0; k < N; k++) P.push(m(a, step(1 - k/N)));
+  return P;
+}
+function outlineFold(m, a, fu) {    // two flat faces: straight edges, a corner at the fold
+  const b = 1 - a, us = [a, fu, b].filter((x, i, arr) => i === 0 || x > arr[i-1]);
+  return [...us.map(u => m(u, a)), ...us.slice().reverse().map(u => m(u, b))];
+}
+// every draggable handle: corners, then the curve's midpoints or the fold's ends
+function handles() {
+  const H = pts.map((p, i) => ({p, label: LABELS[i], set: q => moveCorner(i, q)}));
+  if (shape === 'curve' && mid) mid.forEach((p, i) => H.push({p, label: MLABELS[i], small: true, set: q => { mid[i] = q; }}));
+  if (shape === 'fold' && fold) fold.forEach((p, i) => H.push({p, label: FLABELS[i], small: true, set: q => { fold[i] = q; }}));
+  return H;
+}
+function moveCorner(i, q) {          // a curve's neighbouring midpoints follow half the move, keeping the bend
+  const d = [q[0] - pts[i][0], q[1] - pts[i][1]];
+  pts[i] = q;
+  if (shape === 'curve' && mid) for (const e of [i, (i + 3) % 4]) mid[e] = [mid[e][0] + d[0]/2, mid[e][1] + d[1]/2];
+}
+function setShape(s, fresh) {
+  shape = s; $('shape').value = s; $('foldl').hidden = s !== 'fold';
+  if (s === 'curve' && (!mid || fresh)) mid = straightMids(pts);
+  if (s === 'fold' && (!fold || fresh)) { const m = straightMids(pts); fold = [m[0], m[2]]; if (!$('foldpct').value) $('foldpct').value = 50; }
+  $('howto').innerHTML = HOWTO[s].map(t => `<li>${t}</li>`).join('') + (s !== 'standard' && !board
+    ? `<li>Set the screen's resolution on its <a href="/site?site=${encodeURIComponent(name)}">Settings</a> page: a ${s === 'fold' ? 'folded' : 'curved'} screen's shape can't be judged from the camera's view.</li>` : '');
+  if (last >= handles().length) last = 0;
+}
+const clamp01 = p => [Math.min(1, Math.max(0, p[0])), Math.min(1, Math.max(0, p[1]))];
+const round4 = p => [Math.round(p[0]*1e4)/1e4, Math.round(p[1]*1e4)/1e4];
+const copyPts = a => a ? a.map(p => p.slice()) : null;
 $('cam').textContent = name;
 if (new URLSearchParams(location.search).get('new')) setTimeout(() => msg('Site added. Now drag the corners onto the screen and save.', 'ok'), 1500);
 
@@ -624,10 +711,10 @@ async function load() {
     const cam = (await r.json()).find(x => x.id === name);
     if (!cam) throw new Error('site "' + name + '" not found on the gateway');
     $('cam').textContent = cam.name; document.title = cam.name + ' – region';
-    saved = {roi: cam.roi.map(p => p.slice()), inset: cam.inset_pct};
+    saved = {roi: cam.roi.map(p => p.slice()), inset: cam.inset_pct, shape: cam.roi_shape || 'standard',
+             mid: copyPts(cam.roi_mid), fold: copyPts(cam.roi_fold), fold_pct: cam.fold_pct || 50};
     board = cam.board_width > 0 && cam.board_height > 0 ? cam.board_width / cam.board_height : 0;
-    pts = saved.roi.map(p => p.slice());
-    $('inset').value = saved.inset;
+    restore();
     $('sub').textContent = (cam.name !== cam.id ? cam.id + ' · ' : '') + (cam.model ? cam.model : 'Camera') + (cam.connected ? ' · connected' : ' · video not connected');
     await snapshot();
   } catch (e) { $('sub').textContent = ''; msg(String(e.message || e), 'bad'); }
@@ -644,34 +731,27 @@ async function snapshot() {
   draw();
 }
 
-// homography: unit square -> pixel quad (8x8 solve)
-function homography(q) {
-  const U = [[0,0],[1,0],[1,1],[0,1]], A = [], b = [];
-  for (let i = 0; i < 4; i++) { const [u,v] = U[i], [X,Y] = q[i];
-    A.push([u,v,1,0,0,0,-u*X,-v*X]); b.push(X); A.push([0,0,0,u,v,1,-u*Y,-v*Y]); b.push(Y); }
-  for (let col = 0; col < 8; col++) { let p = col;
-    for (let r = col+1; r < 8; r++) if (Math.abs(A[r][col]) > Math.abs(A[p][col])) p = r;
-    [A[col],A[p]] = [A[p],A[col]]; [b[col],b[p]] = [b[p],b[col]];
-    for (let r = col+1; r < 8; r++) { const f = A[r][col]/A[col][col];
-      for (let k = col; k < 8; k++) A[r][k] -= f*A[col][k]; b[r] -= f*b[col]; } }
-  const x = Array(8);
-  for (let r = 7; r >= 0; r--) { let s = b[r]; for (let k = r+1; k < 8; k++) s -= A[r][k]*x[k]; x[r] = s/A[r][r]; }
-  return [...x, 1];
+function restore() {
+  pts = saved.roi.map(p => p.slice()); mid = copyPts(saved.mid); fold = copyPts(saved.fold);
+  $('inset').value = saved.inset; $('foldpct').value = saved.fold_pct;
+  setShape(saved.shape, false);
 }
-const map = (h, u, v) => { const d = h[6]*u + h[7]*v + 1; return [(h[0]*u + h[1]*v + h[2])/d, (h[3]*u + h[4]*v + h[5])/d]; };
 
 function preview() {
   if (!pixels) return;
-  const W = img.width, H = img.height, q = pts.map(p => [p[0]*(W-1), p[1]*(H-1)]);
-  const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
-  const bw = (dist(q[0],q[1]) + dist(q[3],q[2]))/2, bh = (dist(q[0],q[3]) + dist(q[1],q[2]))/2;
-  // the screen's shape when its resolution is set (as the gateway does), else the shape seen
+  const W = img.width, H = img.height, m = mapper(W - 1, H - 1);
+  const len = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+  // apparent size along the (curved or folded) edges, as the gateway measures it
+  let top = 0, bot = 0, left = 0, right = 0; const N = 16;
+  for (let k = 0; k < N; k++) { const a = k/N, b = (k+1)/N;
+    top += len(m(a,0), m(b,0)); bot += len(m(a,1), m(b,1)); left += len(m(0,a), m(0,b)); right += len(m(1,a), m(1,b)); }
+  const bw = (top + bot)/2, bh = (left + right)/2;
   const ow = 320, oh = Math.max(40, Math.min(640, Math.round(board ? ow / board : ow * bh / Math.max(1, bw))));
   pv.width = ow; pv.height = oh;
-  const h = homography(q), out = pctx.createImageData(ow, oh), inset = Math.min(0.4, (+$('inset').value || 0)/100);
+  const out = pctx.createImageData(ow, oh), inset = Math.min(0.4, (+$('inset').value || 0)/100);
   for (let j = 0; j < oh; j++) for (let i = 0; i < ow; i++) {
     const u = inset + (1-2*inset)*(i+0.5)/ow, v = inset + (1-2*inset)*(j+0.5)/oh;
-    let [x, y] = map(h, u, v); x = Math.min(W-1, Math.max(0, x|0)); y = Math.min(H-1, Math.max(0, y|0));
+    let [x, y] = m(u, v); x = Math.min(W-1, Math.max(0, x|0)); y = Math.min(H-1, Math.max(0, y|0));
     const s = (y*W + x)*4, d = (j*ow + i)*4;
     out.data[d] = pixels.data[s]; out.data[d+1] = pixels.data[s+1]; out.data[d+2] = pixels.data[s+2]; out.data[d+3] = 255;
   }
@@ -680,24 +760,24 @@ function preview() {
 
 function draw() {
   if (!img) return;
-  const W = c.width, H = c.height, scale = W / c.getBoundingClientRect().width || 1;
+  const W = c.width, H = c.height, scale = W / c.getBoundingClientRect().width || 1, m = mapper(W, H);
   ctx.drawImage(img, 0, 0);
-  const P = pts.map(p => [p[0]*W, p[1]*H]);
+  const path = (P, close) => { ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); if (close) ctx.closePath(); };
   ctx.lineWidth = 2*scale; ctx.strokeStyle = '#d4237a'; ctx.fillStyle = 'rgba(212,35,122,0.12)';
-  ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.closePath(); ctx.fill(); ctx.stroke();
-  // inset outline
-  const inset = Math.min(0.4, (+$('inset').value || 0)/100), h = homography(P);
-  ctx.setLineDash([6*scale, 5*scale]); ctx.beginPath();
-  [[inset,inset],[1-inset,inset],[1-inset,1-inset],[inset,1-inset]].forEach((uv, i) => { const p = map(h, ...uv); i ? ctx.lineTo(...p) : ctx.moveTo(...p); });
-  ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+  path(outline(m, 0), true); ctx.fill(); ctx.stroke();
+  const inset = Math.min(0.4, (+$('inset').value || 0)/100);
+  ctx.setLineDash([6*scale, 5*scale]); path(outline(m, inset), true); ctx.stroke();
+  if (shape === 'fold' && fold) { path(fold.map(p => [p[0]*W, p[1]*H]), false); ctx.stroke(); }
+  ctx.setLineDash([]);
   const r = 9*scale; ctx.font = `600 ${Math.round(13*scale)}px system-ui`;
-  P.forEach((p, i) => {
-    ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.fillStyle = i === last ? '#d4237a' : '#fff'; ctx.fill(); ctx.stroke();
+  handles().forEach((hd, i) => {
+    const p = [hd.p[0]*W, hd.p[1]*H], rr = hd.small ? r*0.75 : r;
+    ctx.beginPath(); ctx.arc(p[0], p[1], rr, 0, 7); ctx.fillStyle = i === last ? '#d4237a' : hd.small ? '#ffd2e8' : '#fff'; ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 3*scale;
-    ctx.strokeText(LABELS[i], p[0] + r*1.4, p[1] - r); ctx.fillText(LABELS[i], p[0] + r*1.4, p[1] - r);
+    ctx.strokeText(hd.label, p[0] + rr*1.4, p[1] - rr); ctx.fillText(hd.label, p[0] + rr*1.4, p[1] - rr);
     ctx.strokeStyle = '#d4237a'; ctx.lineWidth = 2*scale;
   });
-  if (drag >= 0 && cursor) loupe(P[drag], scale);
+  if (drag >= 0 && cursor) { const hp = handles()[drag].p; loupe([hp[0]*W, hp[1]*H], scale); }
   preview();
 }
 
@@ -714,33 +794,42 @@ function pos(e) { const b = c.getBoundingClientRect(); return [(e.clientX - b.le
 c.addEventListener('pointerdown', e => {
   if (!img) return;
   const p = pos(e), b = c.getBoundingClientRect(); let best = -1, bd = 1e9;
-  pts.forEach((q, i) => { const d = Math.hypot((q[0]-p[0])*b.width, (q[1]-p[1])*b.height); if (d < bd) { bd = d; best = i; } });
+  handles().forEach((hd, i) => { const q = hd.p, d = Math.hypot((q[0]-p[0])*b.width, (q[1]-p[1])*b.height); if (d < bd) { bd = d; best = i; } });
   if (bd < 36) { drag = last = best; cursor = p; c.setPointerCapture(e.pointerId); draw(); }
 });
 c.addEventListener('pointermove', e => {
   if (drag < 0) return;
   const p = pos(e); cursor = p;
-  pts[drag] = [Math.min(1, Math.max(0, p[0])), Math.min(1, Math.max(0, p[1]))];
+  handles()[drag].set(clamp01(p));
   setDirty(true); msg('Unsaved changes'); requestAnimationFrame(draw);
 });
 c.addEventListener('pointerup', () => { drag = -1; cursor = null; draw(); });
 document.addEventListener('keydown', e => {
-  if (!img || document.activeElement === $('inset')) return;
+  if (!img || ['inset', 'foldpct', 'shape'].includes(document.activeElement && document.activeElement.id)) return;
   const step = (e.shiftKey ? 10 : 1) / img.width, d = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]}[e.key];
   if (!d) return; e.preventDefault();
-  pts[last] = [Math.min(1, Math.max(0, pts[last][0] + d[0]*step)), Math.min(1, Math.max(0, pts[last][1] + d[1]*step*img.width/img.height))];
+  const hd = handles()[last];
+  hd.set(clamp01([hd.p[0] + d[0]*step, hd.p[1] + d[1]*step*img.width/img.height]));
   setDirty(true); msg('Unsaved changes'); draw();
 });
 $('inset').addEventListener('input', () => { setDirty(true); msg('Unsaved changes'); draw(); });
+$('foldpct').addEventListener('input', () => { setDirty(true); msg('Unsaved changes'); draw(); });
+$('shape').addEventListener('change', e => {
+  const s = e.target.value, fresh = !(saved && saved.shape === s);   // a new shape starts from the straight outline
+  setShape(s, fresh && !(s === 'curve' ? mid : fold)); setDirty(true); msg('Unsaved changes'); draw();
+});
 $('snap').onclick = snapshot;
-$('revert').onclick = () => { if (!saved) return; pts = saved.roi.map(p => p.slice()); $('inset').value = saved.inset; setDirty(false); msg(''); draw(); };
+$('revert').onclick = () => { if (!saved) return; restore(); setDirty(false); msg(''); draw(); };
 $('save').onclick = async () => {
   $('save').disabled = true; msg('Saving…');
-  const body = {roi: pts.map(p => [Math.round(p[0]*1e4)/1e4, Math.round(p[1]*1e4)/1e4]), inset_pct: +$('inset').value || 0};
+  const body = {roi: pts.map(round4), inset_pct: +$('inset').value || 0, roi_shape: shape};
+  if (shape === 'curve') body.roi_mid = mid.map(round4);
+  if (shape === 'fold') { body.roi_fold = fold.map(round4); body.fold_pct = Math.min(95, Math.max(5, +$('foldpct').value || 50)); }
   const r = await fetch(api('/roi'), {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { msg('Not saved: ' + (j.error || r.statusText), 'bad'); $('save').disabled = false; return; }
-  saved = {roi: body.roi.map(p => p.slice()), inset: body.inset_pct}; setDirty(false);
+  saved = {roi: copyPts(body.roi), inset: body.inset_pct, shape, mid: copyPts(mid), fold: copyPts(fold), fold_pct: body.fold_pct || +$('foldpct').value || 50};
+  setDirty(false);
   msg('Saved and applied. The next play will use this region.', 'ok');
 };
 window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
