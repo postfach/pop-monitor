@@ -494,6 +494,29 @@ static void test_snapshot_score(void)
     CHECK(qd.usable, "matching frame usable (%s, hd %d gd %.1f)", qd.reason, qd.hash_distance, qd.grid_distance);
     CHECK(!qe.usable, "different creative rejected (hd %d gd %.1f)", qe.hash_distance, qe.grid_distance);
     pc_warp_free(&w);
+
+    /* clipping is judged against what the creative usually shows: artwork with
+     * a lot of white clips on camera every time, and isn't "blown out" */
+    pc_snapshot_quality qw;
+    memset(&qw, 0, sizeof qw);
+    qw.clipped = 0.30f;
+    pc_snapshot_judge(&qw, 0.f);
+    CHECK(!qw.usable && strstr(qw.reason, "blown out"), "30%% clipped, usually none: blown out (%s)", qw.reason);
+    pc_snapshot_judge(&qw, 0.25f);
+    CHECK(qw.usable, "30%% clipped, usually 25%%: fine (%s)", qw.reason);
+    qw.clipped = 0.55f;
+    pc_snapshot_judge(&qw, 0.25f);
+    CHECK(!qw.usable && strstr(qw.reason, "usually 25%"), "55%% clipped, usually 25%%: blown out (%s)", qw.reason);
+    qw.clipped = 0.40f;
+    pc_snapshot_judge(&qw, -1.f);
+    CHECK(qw.usable, "40%% clipped, usual not known yet: fine (%s)", qw.reason);
+    qw.clipped = 0.60f;
+    pc_snapshot_judge(&qw, -1.f);
+    CHECK(!qw.usable, "60%% clipped, usual not known yet: blown out");
+    qw.clipped = 0.05f;
+    qw.mismatch = 1;
+    pc_snapshot_judge(&qw, 0.25f);
+    CHECK(!qw.usable && strstr(qw.reason, "does not match"), "mismatch still caught (%s)", qw.reason);
     free(a);
     free(b);
 }

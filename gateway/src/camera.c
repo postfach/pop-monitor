@@ -19,6 +19,8 @@
 
 #define JOBQ 4
 #define IMGMAP 512
+#define CLIPN 48            /* snapshots remembered per creative, day and night */
+#define CLIP_MIN 6          /* ...needed before its usual clipping is trusted   */
 
 typedef struct {
     pc_event   ev;
@@ -38,6 +40,10 @@ typedef struct {
     snap_job    jobs[JOBQ];
     int         jh, jn;
     struct { int id; int64_t last; } imgmap[IMGMAP];
+    /* Recent clipping of each creative's snapshots, by day and by night:
+     * artwork with a lot of white always clips on camera, so "blown out"
+     * means well beyond what that creative usually shows. */
+    struct { int id; uint8_t v[2][CLIPN]; uint8_t n[2], head[2]; } clipmap[IMGMAP];
     float       pan0, tilt0, zoom0;
     int         ptz_baseline, ptz_fail, ptz_unsupported;
     volatile int stop;          /* this camera is being stopped (edited/removed) */
@@ -167,6 +173,59 @@ static int roi_height_for(const pc_point r[4], int fw, int fh, int ow)
 
 /* ---------------- snapshot thread ---------------- */
 
+static int clip_slot(camera *cm, int creative_id)
+{
+    int slot = -1;
+    for (int i = 0; i < IMGMAP; i++) {
+        if (cm->clipmap[i].id == creative_id) return i;
+        if (slot < 0 && cm->clipmap[i].id == 0) slot = i;
+    }
+    if (slot < 0) slot = creative_id % IMGMAP;
+    memset(&cm->clipmap[slot], 0, sizeof cm->clipmap[slot]);
+    cm->clipmap[slot].id = creative_id;
+    return slot;
+}
+
+static int cmp_u8c(const void *a, const void *b) { return *(const uint8_t *)a - *(const uint8_t *)b; }
+
+/* The creative's usual clipping (fraction) by day or night: the lower quartile
+ * of its recent snapshots, so a spell of sunstrike doesn't become "usual".
+ * -1 while there are too few. */
+static float clip_typical(camera *cm, int creative_id, int night)
+{
+    int s = clip_slot(cm, creative_id), n = cm->clipmap[s].n[night];
+    if (n < CLIP_MIN) return -1.f;
+    uint8_t v[CLIPN];
+    memcpy(v, cm->clipmap[s].v[night], (size_t)n);
+    qsort(v, (size_t)n, 1, cmp_u8c);
+    return v[n / 4] / 200.f;
+}
+
+static void clip_note(camera *cm, int creative_id, int night, float clipped)
+{
+    int s = clip_slot(cm, creative_id);
+    int h = cm->clipmap[s].head[night];
+    float c = clipped * 200.f;
+    cm->clipmap[s].v[night][h] = (uint8_t)(c < 0 ? 0 : c > 200 ? 200 : c + 0.5f);
+    cm->clipmap[s].head[night] = (uint8_t)((h + 1) % CLIPN);
+    if (cm->clipmap[s].n[night] < CLIPN) cm->clipmap[s].n[night]++;
+}
+
+/* Night if the whole camera view is dark (sampled every 16th pixel). */
+static int frame_is_night(const pc_frame *f)
+{
+    const uint8_t *p = f->plane[0];
+    double s = 0;
+    long n = 0;
+    for (int y = 0; y < f->height; y += 16)
+        for (int x = 0; x < f->width; x += 16) {
+            const uint8_t *q = p + (size_t)y * f->stride[0] + (size_t)x * 3;
+            s += 0.299 * q[0] + 0.587 * q[1] + 0.114 * q[2];
+            n++;
+        }
+    return n && s / n < 55.0;
+}
+
 static int image_due(camera *cm, int creative_id, int64_t now)
 {
     if (!cm->cfg->snap.first_per_hour) return 1;
@@ -207,6 +266,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     int ws[8], hs[8], bw = 0, bh = 0, got = 0;
     int64_t walls[8];
     pc_snapshot_quality qs[8];
+    int night = 0;
     for (int i = 0; i < n && RUNNING(cm); i++) {
         if (i) util_sleep_ms(c->snap.interval_ms);
         uint8_t *jpg, *rgb;
@@ -221,9 +281,20 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
             free(jpg); free(rgb);
             continue;
         }
+        if (!got) night = frame_is_night(&f);
         jpgs[got] = jpg; lens[got] = len; rgbs[got] = rgb;
         ws[got] = w; hs[got] = h; walls[got] = t;
         got++;
+    }
+    /* blown out = clipped well beyond what this creative usually shows */
+    if (got && !job->ev.is_blank) {
+        float typ = clip_typical(cm, job->ev.creative_id, night);
+        float lo = qs[0].clipped;
+        for (int i = 0; i < got; i++) {
+            pc_snapshot_judge(&qs[i], typ);
+            if (qs[i].clipped < lo) lo = qs[i].clipped;
+        }
+        clip_note(cm, job->ev.creative_id, night, lo);   /* the burst's cleanest frame */
     }
     /* banding needs the whole burst: static content cancels, rolling bands don't */
     if (got >= 3 && !job->ev.motion) {
@@ -324,6 +395,9 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
         cJSON *qj = cJSON_AddObjectToObject(j, "quality");
         cJSON_AddNumberToObject(qj, "sharpness", roundf(best_q.sharpness));
         cJSON_AddNumberToObject(qj, "clipped", round((double)best_q.clipped * 1000) / 1000);
+        if (best_q.clip_typical >= 0)
+            cJSON_AddNumberToObject(qj, "clipped_usual", round((double)best_q.clip_typical * 1000) / 1000);
+        cJSON_AddBoolToObject(qj, "night", night);
         cJSON_AddNumberToObject(qj, "banding", round((double)best_q.banding * 100) / 100);
         cJSON_AddBoolToObject(qj, "usable", best_q.usable);
         if (!best_q.usable) cJSON_AddStringToObject(qj, "reason", best_q.reason);

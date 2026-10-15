@@ -435,6 +435,14 @@ Alert metadata: `type: "fault"`, `fault`, `state` (`raised`, `cleared`, `occurre
 `gateway_offline` (with an empty `site_id` and a `gateway_id`). When a site is edited or
 removed, the gateway sends `cleared` for each of its open faults.
 
+`poor_pop_image` "blown out" compares a snapshot with what that creative usually shows: the
+gateway remembers the clipping (pixels at full white) of each creative's last 48 snapshots,
+by day and by night, and calls a snapshot blown out only when it clips more than 15% of the
+board beyond the usual (the lower quarter of those snapshots, so a spell of sunstrike doesn't
+become usual). Artwork with a lot of white clips on camera every time and isn't flagged.
+Until a creative has 6 snapshots (after a restart, or a new creative) only more than 50%
+counts. `quality` in the PoP metadata carries `clipped_usual` and `night`.
+
 **`POST /v1/heartbeat`** (JSON, every `heartbeat_s`): per camera `connected`, `state`,
 `fps`, `last_frame_at`, `last_play_at`, `plays_last_hour`, `expected_per_hour`,
 `coverage`, `coverage_data_min`, `coverage_window_pct`, `uptime_pct`, `reconnects`,

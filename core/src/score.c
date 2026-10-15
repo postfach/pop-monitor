@@ -59,16 +59,31 @@ int pc_snapshot_score(const pc_frame *f, const pc_point corners[4], float inset_
         free(buf);
     }
 
+    q->mismatch = ref && fe.std_y >= 6.f && (q->hash_distance > 18 || q->grid_distance > 22.f);
+    pc_snapshot_judge(q, 0.f);
+    return 0;
+}
+
+void pc_snapshot_judge(pc_snapshot_quality *q, float typical)
+{
+    int known = typical >= 0.f;
+    if (!known) typical = PC_CLIP_UNKNOWN_MAX - PC_CLIP_EXCESS;
+    if (typical > 0.85f) typical = 0.85f;
+    q->clip_typical = known ? typical : -1.f;
     q->usable = 1;
-    if (q->clipped > 0.15f) {
+    q->reason[0] = 0;
+    if (q->clipped > PC_CLIP_EXCESS && q->clipped - typical > PC_CLIP_EXCESS) {
         q->usable = 0;
-        snprintf(q->reason, sizeof q->reason, "%.0f%% of board blown out", q->clipped * 100);
-    } else if (ref && fe.std_y >= 6.f && (q->hash_distance > 18 || q->grid_distance > 22.f)) {
+        if (known && typical > 0.005f)
+            snprintf(q->reason, sizeof q->reason, "%.0f%% of board blown out (usually %.0f%%)",
+                     q->clipped * 100, typical * 100);
+        else
+            snprintf(q->reason, sizeof q->reason, "%.0f%% of board blown out", q->clipped * 100);
+    } else if (q->mismatch) {
         q->usable = 0;
         snprintf(q->reason, sizeof q->reason, "frame does not match the settled creative");
     }
     q->score = base_score(q);
-    return 0;
 }
 
 static int cmp_u8(const void *a, const void *b) { return *(const uint8_t *)a - *(const uint8_t *)b; }

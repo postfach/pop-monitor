@@ -363,6 +363,9 @@ typedef struct {
     float banding;        /* LED refresh banding, from pc_burst_banding() */
     int   hash_distance;  /* to the settled creative fingerprint          */
     float grid_distance;
+    float clip_typical;   /* what this creative usually shows clipped (the
+                             verdict's baseline; 0 = judged absolutely)   */
+    int   mismatch;       /* doesn't look like the settled creative       */
     float score;          /* higher is better                             */
     int   usable;         /* passes all hard checks                       */
     char  reason[96];     /* why not usable                               */
@@ -375,6 +378,16 @@ typedef struct {
 int pc_snapshot_score(const pc_frame *f, const pc_point corners[4], float inset_pct,
                       const pc_features *ref, pc_snapshot_quality *q,
                       uint8_t **board_y, int *board_w, int *board_h);
+
+/* Blown out = clipped highlights this much beyond what the creative
+ * normally shows (artwork with a lot of white clips on camera every time). */
+#define PC_CLIP_EXCESS 0.15f
+/* Until a creative's usual clipping is known, only this much counts. */
+#define PC_CLIP_UNKNOWN_MAX 0.50f
+/* Judge a scored snapshot again against the creative's usual clipping
+ * (`typical`, a fraction; < 0 = not known yet; pc_snapshot_score() judges
+ * with 0). Call before pc_snapshot_apply_banding(). */
+void pc_snapshot_judge(pc_snapshot_quality *q, float typical);
 
 /* LED refresh banding across a burst of the same static creative: each
  * frame's difference from the burst median, row energy vs column energy.
