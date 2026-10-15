@@ -258,6 +258,14 @@ artwork or linked to the same campaign are bundled, and unassigned IDs whose PoP
 alike are bundled too. The row's campaign list sets all its IDs at once; "N IDs" opens the
 individual IDs, each of which can still be set on its own.
 
+Creatives seen at most twice that week (`BOOKINGS_MINOR_PLAYS`, 2) with nothing linked or
+matched are folded into one line at the bottom ("N creative(s) seen only once or twice this
+week"), click it to show them. They are mostly moments the gateway caught mid-change, or a
+creative that has since stopped; they hold well under a slot per loop, so they don't change
+the totals. Nothing is deleted, and one that plays again (or is linked) comes back as its own
+row. A creative whose plays are all older than the photo retention shows *photo removed
+after 3 days* instead of a blank; *no photo* means none of its plays got a usable photo.
+
 **Merging IDs at the gateway.** When the receiver is sure two IDs are one artwork, it merges
 them: both match the same booked image, or (unassigned) several good PoP images of each look
 alike (median at least 0.75), and each has at least 3 plays this week. The newer ID is then read

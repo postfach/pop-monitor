@@ -1040,6 +1040,8 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 button.link{background:none;border:0;padding:0 0 0 4px;color:var(--muted);cursor:pointer;font:inherit;font-size:12px}
 button.link:hover{color:var(--fg);text-decoration:underline}
 tr.sub td{background:var(--panel);padding-top:3px;padding-bottom:3px} tr.sub .thumb{width:54px;height:30px}
+.nophoto{display:inline-block;font-size:11px;line-height:1.25;color:var(--muted);text-align:center;width:72px}
+tr.minor td{background:var(--panel)} tr.minor .muted{font-size:12px;margin-left:6px}
 .top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px;margin:12px 0}
 .tile{background:var(--panel);border-radius:8px;padding:9px 11px} .tile .k{font-size:12px;color:var(--muted)} .tile .v{font-size:18px;font-weight:600} .tile .s{font-size:12px;color:var(--muted)}
@@ -1134,12 +1136,19 @@ function site(s, rep) {
      opt('programmatic', 'Programmatic', sel) + opt('house', 'House', sel) +
      `<optgroup label="Booked this week">` + s.campaigns.map(c => opt(c.campaign_id, c.name, sel)).join('') + `</optgroup>` +
      (sel && sel !== 'programmatic' && sel !== 'house' && !s.campaigns.some(c => c.campaign_id === sel) ? opt(sel, sel + ' (not booked this week)', sel) : '');
-  const pop = cr => cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt="PoP image"></a>` : '';
+  const days = rep.image_days || 3;
+  const pop = cr => cr.image ? `<a href="/images/${cr.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${cr.image}.roi.jpg" alt="PoP image"></a>`
+     : cr.blank ? '' : cr.last_play && Date.now() / 1000 - cr.last_play > days * 86400
+     ? `<span class="nophoto" title="Last seen ${new Date(cr.last_play * 1000).toLocaleString()}; photos are kept ${days} days (the best ones are in SharePoint)">photo removed<br>after ${days} days</span>`
+     : '<span class="nophoto" title="No usable photo was taken of its plays">no photo</span>';
   const pick = (cr, ids) => cr.blank ? '<span class="muted">blank screen</span>'
      : `<select data-site="${esc(s.site_id)}" data-ids="${esc(ids.join(','))}">${opts(cr.mixed ? '\u0000' : cr.link, cr)}</select>
        ${cr.mixed ? '<span class="pill">mixed</span>' : artPill(cr, s, cname)}${cr.assigned === 'unassigned' ? ' <span class="pill warn">unassigned</span>' : ''}${cr.off_schedule && !(cr.art || {}).off_schedule ? ' <span class="pill warn">off schedule</span>' : ''}`;
   const groups = s.groups || [];
-  const crs = groups.map(g => {
+  // seen once or twice, nothing linked or matched: mostly moments caught mid-change
+  const minor = g => !g.blank && g.plays <= (rep.minor_plays ?? 2) && !g.link && !g.mixed && g.assigned === 'unassigned' &&
+     !(g.art && g.art.status === 'matched') && g.share < 0.05;
+  const row = g => {
     const ids = g.members.map(m => m.creative_id), many = ids.length > 1, open = OPEN_GROUPS.has(s.site_id + '|' + g.key);
     const label = many ? `<b>${esc(g.creative_id)}</b> <button type="button" class="link" data-group="${esc(s.site_id + '|' + g.key)}" title="${esc(ids.join(', '))}">${open ? '&#9662;' : '&#9656;'} ${ids.length} IDs</button>` : `<b>${esc(g.creative_id)}</b>`;
     const head = `<tr class="grp${open ? ' open' : ''}"><td>${pop(g)}</td><td>${refThumb(g)}</td>
@@ -1148,7 +1157,12 @@ function site(s, rep) {
     if (!many || !open) return head;
     return head + g.members.map(m => `<tr class="sub"><td>${pop(m)}</td><td></td><td class="muted">${esc(m.creative_id)}</td>
      <td class="n">${m.plays}</td><td class="n">${one(m.share)}</td><td>${pick(m, [m.creative_id])}</td></tr>`).join('');
-  }).join('');
+  };
+  const few = groups.filter(minor), mkey = s.site_id + '|minor', mopen = OPEN_GROUPS.has(mkey);
+  const crs = groups.filter(g => !minor(g)).map(row).join('') + (few.length ? `<tr class="grp minor${mopen ? ' open' : ''}"><td colspan="6">
+     <button type="button" class="link" data-group="${esc(mkey)}">${mopen ? '&#9662;' : '&#9656;'} ${few.length} creative(s) seen only ${(rep.minor_plays ?? 2) > 1 ? 'once or twice' : 'once'} this week</button>
+     <span class="muted">${few.reduce((n, g) => n + g.plays, 0)} play(s) in all, nothing linked or matched: mostly moments caught mid-change, or a creative that has since stopped.</span></td></tr>` +
+     (mopen ? few.map(row).join('') : '') : '');
   const nIds = groups.reduce((n, g) => n + g.members.length, 0);
   const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
   const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < s.booked_per_loop
@@ -1992,11 +2006,12 @@ def observed(site_id, t0, t1, S, N):
         r = min(r, typ.get(p[1], 1))
         frac = (min(e, t1) - max(s, t0)) / (e - s)
         c = out.setdefault(p[1], {"creative_id": p[1], "slots": 0.0, "plays": 0, "blank": p[2], "video": p[3],
-                                  "image": None, "last": 0})
+                                  "image": None, "last": 0, "last_play": 0})
         c["slots"] += r * frac
         seen_s += r * frac * S
         if s >= t0:
             c["plays"] += 1
+            c["last_play"] = max(c["last_play"], s)
         if p[5] and s > c["last"]:
             c["image"], c["last"] = p[4], s
     return list(out.values()), seen_s
@@ -2514,7 +2529,8 @@ def group_creatives(site_id, crs):
         links = {c.get("link") or "" for c in ms}
         out.append({"key": "|".join(str(k) for k in key), "creative_id": head["creative_id"],
                     "members": [{k: c.get(k) for k in ("creative_id", "plays", "share", "image", "link", "by",
-                                                       "assigned", "art", "video", "blank")} for c in ms],
+                                                       "assigned", "art", "video", "blank", "last_play")} for c in ms],
+                    "last_play": max((c.get("last_play") or 0) for c in ms),
                     "plays": sum(c["plays"] for c in ms), "share": sum(c["share"] for c in ms),
                     "image": next((c["image"] for c in ms if c.get("image")), None),
                     "blank": key[0] == "blank", "video": all(c.get("video") for c in ms),
@@ -2696,6 +2712,8 @@ def cached_report(week, max_age=REPORT_MAX_AGE):
         t = time.time()
         rep = bookings_report(week, cams)
         rep["built_at"] = local_time(iso(t), True)
+        rep["image_days"] = POP_IMAGE_DAYS
+        rep["minor_plays"] = MINOR_PLAYS
         rep["build_s"] = round(time.time() - t, 2)
         REPORTS["weeks"][key] = (t, ver, rep)
         for k in [k for k, v in REPORTS["weeks"].items() if time.time() - v[0] > 3600]:
@@ -2838,6 +2856,9 @@ try:
 except ImportError:                                   # pragma: no cover
     _ps = None
 POP_IMAGE_DAYS = store.IMAGE_DAYS
+# Creatives seen only this often in a week, with nothing linked or matched, are folded
+# away on the Bookings page: mostly moments caught mid-change, not real artwork.
+MINOR_PLAYS = int(os.environ.get("BOOKINGS_MINOR_PLAYS", "2"))
 POP_SAMPLES = int(os.environ.get("POP_BEST_SAMPLES", "240"))   # photos scored per version and window
 POP_DEFAULT_COORDS = os.environ.get("POP_DEFAULT_COORDS", "-36.85,174.76")   # Auckland
 PREP_CACHE = {}                    # event id -> popscore.prep() of its region image
