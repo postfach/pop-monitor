@@ -29,9 +29,15 @@ older naming are renamed to the current one at the next run (same photo, time an
 
 * The first run after a campaign starts at a site puts its best photo up.
 * Each later run looks at the new photos and replaces the one in SharePoint only with a
-  photo that **scores higher** (the new file is added, the old one deleted). The photo
-  already up is scored again alongside the new ones, so a dull or rainy day can't make
-  an average photo look better than it is.
+  photo that **scores higher** (the new file is added, the old one deleted). Scores are
+  relative to each run's photos (a dull or rainy day lowers them all), so the photo already
+  up is scored again alongside the new ones, and that score is the one to beat, in the whole
+  numbers the file names show (a tie never replaces). The receiver keeps the photos that are
+  up in SharePoint, and their records, for as long as they are up (other photos go after 3
+  days), so they can always be scored again; a photo is released once it has been replaced.
+  For a photo uploaded before the receiver kept them, its score from when it was uploaded
+  counts. **Latest uploads** shows both: "replaced a 100, which scored 96 against today's
+  photos".
 * The year and month folder is the month the campaign was first seen at the site, and
   stays that way, so a long campaign's photos stay together.
 * Creatives not linked to a campaign on the Bookings page (unassigned, programmatic,

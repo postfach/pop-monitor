@@ -1126,7 +1126,7 @@ async function load() {
     document.getElementById('gws').innerHTML = gws.map(gateway).join('');
     const st = await (await fetch('/health/storage')).json().catch(() => null);
     if (st) $sub.innerHTML += `<br>This server: ${st.records.toLocaleString()} PoP and alert record(s) since ${esc(st.oldest || '–')} (${st.db_mb} MB), ` +
-      `${st.photo_files.toLocaleString()} photo file(s) (${st.photo_mb} MB) · photos kept ${st.image_days} day(s), alert photos ${st.alert_image_days}, records ${st.record_days} · ` +
+      `${st.photo_files.toLocaleString()} photo file(s) (${st.photo_mb} MB) · photos kept ${st.image_days} day(s) (and the ${st.pinned || 0} best ones in SharePoint, for as long as they are up), alert photos ${st.alert_image_days}, records ${st.record_days} · ` +
       `<span class="${st.free_gb < 5 ? 'bad' : ''}">${st.free_gb} GB free</span> of ${st.disk_gb} GB`;
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
@@ -1411,7 +1411,7 @@ async function loadSync() {
     document.getElementById('poprecent').hidden = !rec.length;
     document.getElementById('poprecent').innerHTML = `<summary>Latest uploads (${rec.length})</summary>` +
       rec.map(r => `<div><a href="${esc(r.url || '#')}" target="_blank" rel="noopener">${esc(r.name)}</a>` +
-        ` <span class="muted">${esc(fmtT(r.at))}${r.was != null ? ` · replaced a ${Math.round(r.was)}` : ''}</span></div>`).join('');
+        ` <span class="muted">${esc(fmtT(r.at))}${r.was != null ? ` · replaced a ${Math.round(r.was)}` + (r.was_now != null && Math.round(r.was_now) !== Math.round(r.was) ? `, which scored ${Math.round(r.was_now)} against today's photos` : '') : ''}</span></div>`).join('');
   }
   txt.innerHTML = h;
   clearTimeout(syncTimer);
@@ -1665,7 +1665,7 @@ def storage_data():
     du = shutil.disk_usage(ARGS.out)
     d = dict(STORE.counts(), photo_files=n, photo_mb=round(size / 1e6, 1), free_gb=round(du.free / 1e9, 1),
              disk_gb=round(du.total / 1e9, 1), image_days=store.IMAGE_DAYS, alert_image_days=store.ALERT_IMAGE_DAYS,
-             record_days=store.RECORD_DAYS)
+             record_days=store.RECORD_DAYS, pinned=len(STORE.pinned()))
     d["oldest"] = local_time(iso(d["oldest"]), True) if d.get("oldest") else None
     STORAGE.update(at=time.time(), data=d)
     return d
@@ -3901,6 +3901,9 @@ class H(BaseHTTPRequestHandler):
                 cur = {str(k): str(v) for k, v in (d.get("current") or {}).items()}
             except (KeyError, ValueError, TypeError, AssertionError):
                 return self.reply(400, {"error": "since (unix time), until, phase=day|night, current; 15 days at most"})
+            # the photos up in SharePoint are kept here (record and photo) past the usual 3 days,
+            # so each run scores them again alongside the new ones; one replaced is released
+            STORE.set_pins(f"best-{ph}", cur.values())
             return self.reply(200, best_pops(t0, t1, ph, cur))
         if self.path.startswith("/api/"):          # review page -> gateway
             if self.authorised():

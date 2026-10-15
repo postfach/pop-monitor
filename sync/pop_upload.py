@@ -274,9 +274,13 @@ class PopUploader:
             self.rename_if_needed(cur, it, phase, ck)
             if it["event_id"] == cur.get("event_id"):
                 return False                             # what is up there is still the best
-            # scored again with today's photos when the receiver still has it, else as uploaded
-            ref = it.get("current_score") if it.get("current_event_id") == cur.get("event_id") else None
-            if float(it["score"]) <= float(ref if ref is not None else cur.get("score", 0)):
+            # Scores are relative to each run's photos, so the photo up there is scored again
+            # alongside the new ones (the receiver keeps it for this) and that is the score to
+            # beat, in the whole numbers the file names show. Only if the receiver no longer has
+            # it (uploaded before it kept them) does its score from when it was uploaded count.
+            again = it.get("current_score") if it.get("current_event_id") == cur.get("event_id") else None
+            bar = round(float(again if again is not None else cur.get("score", 0)))
+            if round(float(it["score"])) <= bar:
                 return False
         folder = self.st["folders"].get(ck) or month_folder(it.get("first_seen") or it["taken_at"])
         vers = self.st["versions"].setdefault(ck, {})
@@ -298,8 +302,11 @@ class PopUploader:
                                  "replaced": (cur or {}).get("name")}
         recent = self.st["status"].setdefault("recent", [])
         recent.insert(0, {"name": name, "url": new.get("webUrl"), "score": it["score"], "site": it.get("screen"),
-                          "at": self.st["items"][key]["uploaded_at"], "was": (cur or {}).get("score")})
+                          "at": self.st["items"][key]["uploaded_at"], "was": (cur or {}).get("score"),
+                          "was_now": it.get("current_score") if cur and it.get("current_event_id") == cur.get("event_id") else None})
         del recent[15:]
         self.save()                                      # after every file: a crash never orphans one
-        self.log(f"pop-upload: {rel} ({it['score']}" + (f", was {cur['score']})" if cur else ")"))
+        again = it.get("current_score") if cur and it.get("current_event_id") == cur.get("event_id") else None
+        self.log(f"pop-upload: {rel} ({it['score']}" + (f", was {cur['score']}" + (f", {again} today" if again is not None else "") + ")"
+                                                       if cur else ")"))
         return True

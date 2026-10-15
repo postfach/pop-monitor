@@ -330,6 +330,7 @@ clean-up keeps the disk from filling:
 | What | Kept | Setting |
 |---|---|---|
 | PoP photos (full frame and screen crop) | 3 days | `POP_IMAGE_DAYS` |
+| The best photos up in SharePoint (photo and record) | while they are up | |
 | Photos attached to alerts | 30 days | `POP_ALERT_IMAGE_DAYS` |
 | PoP and alert records (the details of every play) | 90 days | `POP_RECORD_DAYS` |
 | Gateway heartbeats | 7 days | `POP_HEARTBEAT_DAYS` |

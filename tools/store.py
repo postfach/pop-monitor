@@ -48,6 +48,9 @@ CREATE INDEX IF NOT EXISTS records_t ON records (t);
 CREATE TABLE IF NOT EXISTS heartbeats (t REAL NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS heartbeats_t ON heartbeats (t);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+-- records kept with their photos whatever their age: the best photos uploaded to
+-- SharePoint, so each can be scored again against new ones (tag: who pinned it)
+CREATE TABLE IF NOT EXISTS pins (event_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (event_id, tag));
 """
 
 
@@ -246,6 +249,22 @@ class Store:
             self.version += 1
         return len(rows)
 
+    # ---------------------------------------------------------------- pins
+    def set_pins(self, tag, event_ids):
+        """Keep exactly these records (and their photos) under this tag; others
+        under the tag are released to the usual retention."""
+        ids = sorted({str(e) for e in event_ids if e})
+        with self.wlock:
+            db = self.db()
+            db.execute("BEGIN")
+            db.execute("DELETE FROM pins WHERE tag=?", (tag,))
+            db.executemany("INSERT OR IGNORE INTO pins (event_id, tag) VALUES (?, ?)", [(e, tag) for e in ids])
+            db.execute("COMMIT")
+        return len(ids)
+
+    def pinned(self):
+        return {e for (e,) in self.db().execute("SELECT DISTINCT event_id FROM pins")}
+
     # ---------------------------------------------------------------- housekeeping
     def housekeep(self, now=None):
         """Remove photos and rows past their retention. Returns what was removed."""
@@ -255,7 +274,8 @@ class Store:
             cut = now - days * 86400
             while True:
                 eids = [e for (e,) in self.db().execute(
-                    "SELECT event_id FROM records WHERE type=? AND t<? AND (has_roi OR has_frame) LIMIT 2000",
+                    "SELECT event_id FROM records WHERE type=? AND t<? AND (has_roi OR has_frame) "
+                    "AND event_id NOT IN (SELECT event_id FROM pins) LIMIT 2000",
                     (typ, cut))]
                 if not eids:
                     break
@@ -268,9 +288,10 @@ class Store:
                     self.version += 1
         with self.wlock:
             db = self.db()
-            old = [e for (e,) in db.execute("SELECT event_id FROM records WHERE t<?", (now - RECORD_DAYS * 86400,))]
+            keep = "AND event_id NOT IN (SELECT event_id FROM pins)"
+            old = [e for (e,) in db.execute(f"SELECT event_id FROM records WHERE t<? {keep}", (now - RECORD_DAYS * 86400,))]
             self._remove_images(old)
-            done["records"] = db.execute("DELETE FROM records WHERE t<?", (now - RECORD_DAYS * 86400,)).rowcount
+            done["records"] = db.execute(f"DELETE FROM records WHERE t<? {keep}", (now - RECORD_DAYS * 86400,)).rowcount
             done["heartbeats"] = db.execute("DELETE FROM heartbeats WHERE t<?", (now - HEARTBEAT_DAYS * 86400,)).rowcount
             if done["records"]:
                 self.version += 1

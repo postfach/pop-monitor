@@ -117,6 +117,21 @@ class Uploads(unittest.TestCase):
         self.run_with([item(90, "e3", current_event_id="e3", current_score=90)])
         self.assertEqual(len(self.g.files), 1)
 
+    def test_beats_todays_score_of_the_photo_up_there(self):
+        self.run_with([item(99.4, "e1")])                                     # up there as Score99
+        # scored 96 against today's photos: a 97 is better today, and replaces it
+        self.run_with([item(97.2, "e2", current_event_id="e1", current_score=96.3)])
+        (path,) = self.g.files.values()
+        self.assertTrue(path.endswith("_Score97_v1.jpg"), path)
+        self.assertEqual(self.u.st["status"]["recent"][0]["was_now"], 96.3)
+        # a tie in whole numbers doesn't
+        self.run_with([item(97.4, "e3", current_event_id="e2", current_score=96.6)])
+        (path2,) = self.g.files.values()
+        self.assertEqual(path, path2)
+        # the receiver no longer has the photo up there: its uploaded score counts
+        self.run_with([item(97.4, "e4", current_event_id=None, current_score=None)])
+        self.assertEqual(list(self.g.files.values()), [path])
+
     def test_advertiser_in_name_and_old_files_renamed(self):
         self.assertEqual(pu.adv_part("HBO Max"), "HBO.Max")
         self.assertEqual(pu.adv_part("Tui Garden Products!"), "Tui.Garden.Products")

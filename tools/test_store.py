@@ -74,6 +74,21 @@ class StoreTest(unittest.TestCase):
         self.assertEqual((done["records"], done["orphans"]), (1, 1))
         self.assertFalse(self.s.seen("ancient") or os.path.exists(stray))
 
+    def test_pinned_best_photos_outlive_retention(self):
+        for eid, days in (("old", 10), ("best", 10), ("ancient", 120), ("best2", 120)):
+            self.s.add(pop(eid, "S1", self.now - days * 86400))
+            self.photo(eid)
+        self.s.set_pins("best-day", ["best", "best2"])
+        self.s.housekeep(self.now)
+        have = sorted(os.listdir(os.path.join(self.dir, "images")))
+        self.assertEqual(have, ["best.frame.jpg", "best.roi.jpg", "best2.frame.jpg", "best2.roi.jpg"])
+        self.assertIsNotNone(self.s.play("best2"))                         # kept past the 90 days too
+        self.assertIsNone(self.s.play("ancient"))
+        self.s.set_pins("best-day", ["best2"])                             # replaced in SharePoint: released
+        self.s.housekeep(self.now)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "images"))), ["best2.frame.jpg", "best2.roi.jpg"])
+        self.assertEqual(self.s.pinned(), {"best2"})
+
     def test_rename_and_delete_site(self):
         self.s.add(pop("a", "OLD", self.now - 10))
         self.photo("a")
