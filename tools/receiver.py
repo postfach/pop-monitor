@@ -2593,12 +2593,15 @@ def artwork_matches(cam, t0, t1):
             state[cid] = st
             ART_STATE["dirty"] = True
         res = dict(st["res"])
-        # played outside the dates its Material Instructions give it (e.g. a teaser left on)
+        # played outside the dates it is booked for (e.g. a teaser left on). The same file
+        # can be booked several times (this week's booking and next week's): any of them counts.
         if res["status"] == "matched":
-            last = datetime.fromtimestamp(ps[-1][0], LOCAL_TZ).date().isoformat()
-            first = datetime.fromtimestamp(ps[0][0], LOCAL_TZ).date().isoformat()
-            res["off_schedule"] = ("late" if res.get("to") and last > res["to"] else
-                                   "early" if res.get("from") and first < res["from"] else "")
+            periods = book_periods(cands, res["campaign_id"], res.get("name"))
+            if periods:
+                res["from"], res["to"] = periods[0][0], periods[-1][1]
+                res["periods"] = periods
+            days = sorted({datetime.fromtimestamp(p[0], LOCAL_TZ).date().isoformat() for p in ps})
+            res["off_schedule"] = off_schedule(days, periods)
         res["eid"] = st.get("eid")
         out[cid] = res
     save_art_state()
@@ -2937,6 +2940,37 @@ def fit_region(cam, reg, inset_pct):
             "photos": [{"event_id": e, "creative_id": c, "campaign_id": camp} for e, _, c, camp in photos]}
 
 
+def book_periods(entries, campaign_id, name):
+    """The dates a campaign's file is booked for, from every library entry of it
+    (one per booking or Material Instructions row), joined where they meet:
+    [(from, to)] with open ends as "" / "9999-12-31"."""
+    raw = sorted((x.get("from") or "", x.get("to") or "9999-12-31") for x in entries
+                 if x.get("campaign_id") == campaign_id and x.get("name") == name)
+    def next_day(d):
+        try:
+            return (datetime.fromisoformat(d).date() + timedelta(days=1)).isoformat()
+        except ValueError:
+            return d
+    out = []
+    for a, z in raw:
+        if out and a <= next_day(out[-1][1]):           # overlaps or follows on: one period
+            out[-1] = (out[-1][0], max(out[-1][1], z))
+        else:
+            out.append((a, z))
+    return out
+
+
+def off_schedule(days, periods):
+    """"early", "late" or "between" when any of these play dates is outside every
+    booked period, else ""."""
+    if not periods or not days:
+        return ""
+    for d in days:
+        if not any(a <= d <= z for a, z in periods):
+            return "early" if d < periods[0][0] else "late" if d > periods[-1][1] else "between"
+    return ""
+
+
 def lookalikes(site_id, cids, eids):
     """Group creatives whose PoP images look like the same artwork (the gateway
     can give one artwork several IDs, e.g. by day and by night). Returns a list
@@ -3099,8 +3133,9 @@ def site_bookings(cam, week, links_all):
         if a.get("off_schedule"):
             offs.setdefault((a["campaign_id"], a.get("name"), a["off_schedule"], a.get("from"), a.get("to")), []).append(cr["creative_id"])
     for (camp, name, kind, frm, to), ids in offs.items():
-        when = f"after its end date ({to})" if kind == "late" else f"before its start date ({frm})"
-        res["warnings"].append(f"{name} ({camp}) played {when} in its Material Instructions"
+        when = (f"after its end date ({to})" if kind == "late" else f"before its start date ({frm})" if kind == "early"
+                else "between its booked periods")
+        res["warnings"].append(f"{name} ({camp}) played {when}"
                                f" (seen as {', '.join(sorted(ids))}).")
     if ds and loops >= 20 and (ds.get("loop") or {}).get("programmatic") is not False:
         dbooked = sum(c["plays_per_loop"] for c in campaigns)          # sold, bonus and bonus-if-room

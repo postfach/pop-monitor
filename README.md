@@ -237,8 +237,10 @@ leaving out house and unbooked fill.
    * **looks like …?**: 30–40%, or too close to another campaign. Stays unassigned.
    * **matches no booked artwork**: usually programmatic, house, or artwork missing from
      SharePoint.
-   * **off schedule**: matched artwork that played outside its dates in the Material
-     Instructions (a teaser left on, a new creative started early).
+   * **off schedule**: matched artwork that played outside the dates it is booked for (Doohly's
+     bookings, else the Material Instructions): a teaser left on, a new creative started early,
+     or one playing in a gap between two bookings. A file booked more than once (this week's
+     booking and next week's) counts as booked for all of them.
    Anything can be set by hand to a campaign, **Programmatic** or **House**; that always wins
    and is kept for later weeks (a creative linked to a campaign that isn't booked that week is
    counted with house).
