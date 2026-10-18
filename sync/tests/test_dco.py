@@ -144,6 +144,7 @@ class SyncRun(unittest.TestCase):
                  "start_time": "00:00", "end_time": "23:59", "creatives": [{"name": "other.zip", "type": "html"}]}]}}}, f)
         png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16             # the bytes aren't looked at here
         g, real_library = FakeGraph(), cs.Library
+        self.fetched = fetched = []
 
         class G:
             calls = 0
@@ -164,7 +165,8 @@ class SyncRun(unittest.TestCase):
             def month_folder(self, today):
                 return {"id": "M10", "_path": "2026/10. October", "webUrl": "u"}
 
-            def download(self, iid):
+            def download(self, iid, drive=None):
+                fetched.append((iid, drive))
                 return png
 
         class Dco(cs.DcoLibrary):
@@ -176,8 +178,6 @@ class SyncRun(unittest.TestCase):
                 self.root = {k: v for k, v in g.items["root"].items() if k != "kids"}
                 return self
 
-            def download(self, iid):
-                return png
         cs.Graph, cs.Library, cs.DcoLibrary = G, Lib, Dco
         cs.fetch_inputs = lambda: {"bookings": {"proposals": []}, "screens": ["Greenlane", "Beach"]}
 
@@ -192,6 +192,9 @@ class SyncRun(unittest.TestCase):
         self.assertIn("Sunny 12:14-15:10 (SUN-HL)", {c["variant"] for c in mine})
         self.assertTrue(os.path.exists(os.path.join(cs.OUT, mine[0]["file"])))
         self.assertEqual(res["dco"], 1)
+        # the renders are downloaded from the library they are in (IT), not Sales
+        self.assertEqual(len(self.fetched), 4)
+        self.assertTrue(all(d == "d1" for _, d in self.fetched), self.fetched)
         miss = {m["campaign_id"]: m for m in man["missing"]}
         self.assertNotIn("LUMO_19409", miss)
         m = miss["LUMO_19410"]                    # DCO with no renders anywhere: missing, and says why

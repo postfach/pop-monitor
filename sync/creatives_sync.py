@@ -333,15 +333,16 @@ class Library:
                     out += self.tree(c, depth + 1, f"{prefix}{c['name']}/")
             elif "file" in c:
                 img = c.get("image") or c.get("video") or {}
-                out.append({"id": c["id"], "name": c["name"], "etag": c.get("eTag") or c.get("cTag") or "",
+                out.append({"id": c["id"], "drive": self.drive, "name": c["name"], "etag": c.get("eTag") or c.get("cTag") or "",
                             "modified": c.get("lastModifiedDateTime", ""), "size_b": c.get("size"),
                             "width": img.get("width"), "height": img.get("height"),
                             "rel": prefix + c["name"], "folder_rel": prefix.rstrip("/"),
                             "folder_url": c.get("webUrl", "").rsplit("/", 1)[0]})
         return out
 
-    def download(self, item_id):
-        return self.g.request("GET", f"/drives/{self.drive}/items/{item_id}/content").content
+    def download(self, item_id, drive=None):
+        """A file's bytes, from this library or the one it came from (DCO renders are in IT)."""
+        return self.g.request("GET", f"/drives/{drive or self.drive}/items/{item_id}/content").content
 
 
 class DcoLibrary(Library):
@@ -979,7 +980,7 @@ class Syncer:
             tag = hashlib.sha1(f"{f['id']}|{f['etag']}".encode()).hexdigest()[:20]
             cached = os.path.join(cache, tag + os.path.splitext(f["name"])[1].lower())
             if not os.path.exists(cached):
-                data = lib.download(f["id"])
+                data = lib.download(f["id"], f.get("drive"))
                 with open(cached + ".part", "wb") as o:
                     o.write(data)
                 os.replace(cached + ".part", cached)
@@ -1007,7 +1008,7 @@ class Syncer:
         if have.get(rel) != tag or not os.path.isdir(dest):
             cached = os.path.join(cache, tag + os.path.splitext(f["name"])[1].lower())
             if not os.path.exists(cached):
-                data = lib.download(f["id"])
+                data = lib.download(f["id"], f.get("drive"))
                 with open(cached + ".part", "wb") as o:
                     o.write(data)
                 os.replace(cached + ".part", cached)

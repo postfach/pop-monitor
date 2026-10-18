@@ -26,7 +26,7 @@ class VideoFrames(unittest.TestCase):
         class Lib:
             downloads = 0
 
-            def download(self, item_id):
+            def download(self, item_id, drive=None):
                 Lib.downloads += 1
                 return data
         cs.OUT, cs.STATE = os.path.join(tmp, "out"), os.path.join(tmp, "out", ".sync")
