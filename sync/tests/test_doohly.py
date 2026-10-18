@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import doohly  # noqa: E402
@@ -116,7 +116,7 @@ class WatcherRun(unittest.TestCase):
                  {"site_id": "PARNELL", "name": "parnell", "vault_screen": "Parnell"}]
         w = doohly.Watcher(tmp, tmp, lambda: {"sites": sites}, NZ, lambda *a: None,
                            lambda t, ok=False, title=None: notes.append(title), atomic, read, changes.append)
-        today = date.today()
+        today = datetime.now(NZ).date()          # the watcher's day is NZ's, not the machine's (UTC in Docker)
         w.c = FakeClient([booking("b1", "LUMO_19649", today.isoformat(), today.isoformat(), ptype="Non-Guaranteed Bonus",
                                   creatives=[creative("AUM26 LUMO-Beach (576 x 396 px) A.png")]),
                           booking("old", "LUMO_1", "2020-01-01", "2020-01-07")])
