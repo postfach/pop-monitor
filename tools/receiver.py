@@ -1126,7 +1126,7 @@ async function load() {
     document.getElementById('gws').innerHTML = gws.map(gateway).join('');
     const st = await (await fetch('/health/storage')).json().catch(() => null);
     if (st) $sub.innerHTML += `<br>This server: ${st.records.toLocaleString()} PoP and alert record(s) since ${esc(st.oldest || '–')} (${st.db_mb} MB), ` +
-      `${st.photo_files.toLocaleString()} photo file(s) (${st.photo_mb} MB) · photos kept ${st.image_days} day(s) (and the ${st.pinned || 0} best ones in SharePoint, for as long as they are up), alert photos ${st.alert_image_days}, records ${st.record_days} · ` +
+      `${st.photo_files.toLocaleString()} photo file(s) (${st.photo_mb} MB) · photos kept ${st.image_days} day(s), their full camera frames until the day and night best-photo runs have been through them (the ${st.pinned || 0} best kept as long as they are in SharePoint), alert photos ${st.alert_image_days}, records ${st.record_days} · ` +
       `<span class="${st.free_gb < 5 ? 'bad' : ''}">${st.free_gb} GB free</span> of ${st.disk_gb} GB`;
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
@@ -1443,6 +1443,15 @@ document.getElementById('up').onchange = async e => {
 load();
 </script></body></html>'''
 
+
+# Every page: a photo or artwork that fails to load (the receiver was busy, a
+# connection dropped) is asked for again a few times instead of staying black.
+IMG_RETRY = b"""<script>addEventListener('error', e => {
+  const i = e.target; if (!(i instanceof HTMLImageElement)) return;
+  const n = +(i.dataset.retry || 0); if (n >= 4) return; i.dataset.retry = n + 1;
+  const src = i.getAttribute('src').replace(/[?&]retry=\\d+$/, '');
+  setTimeout(() => { i.src = src + (src.includes('?') ? '&' : '?') + 'retry=' + (n + 1); }, 800 * (n + 1));
+}, true);</script>"""
 
 REFRESH_JS = r'''<script>
 (() => {
@@ -3174,6 +3183,7 @@ def site_bookings(cam, week, links_all):
 
 REPORTS = {"gen": 0, "weeks": {}}
 REPORT_LOCK = threading.Lock()
+REPORT_LOCKS = {}
 REPORT_MAX_AGE = 60                # seconds a Bookings report is served from cache
 
 
@@ -3193,9 +3203,70 @@ def report_version(cams):
                  c.get("inset_pct")) for c in cams))
 
 
+# ---------------------------------------------------------------- worker process
+# The Bookings report and the best-photo runs are heavy Python (every play of the
+# week, photo scoring). Done in this process they hold the interpreter and the web
+# pages and photos wait (and can fail to load). They run in a separate worker
+# process instead, which reads the same database and files.
+IN_WORKER = False
+_POOL = {"pool": None, "broken": False}
+_POOL_LOCK = threading.Lock()
+
+
+def _worker_init(out, api_key, hmac_key):
+    global IN_WORKER, ARGS, STORE
+    IN_WORKER = True
+    ARGS = argparse.Namespace(out=out, api_key=api_key, hmac_key=hmac_key)
+    STORE = store.Store(out, log=lambda m: print(m, flush=True), migrate=False)
+
+
+def _worker_report(week_iso, cams):
+    week = datetime.fromisoformat(week_iso).date()
+    return _build_report(week, cams)
+
+
+def _worker_best(t0, t1, phase, current):
+    return best_pops(t0, t1, phase, current)
+
+
+def in_worker(fn, *args, timeout=900):
+    """Run fn(*args) in the worker process (in this one if it can't start)."""
+    if IN_WORKER or _POOL["broken"] or os.environ.get("POP_WORKER", "1") == "0":
+        return None
+    with _POOL_LOCK:
+        if _POOL["pool"] is None:
+            try:
+                import multiprocessing
+                ctx = multiprocessing.get_context("spawn")
+                _POOL["pool"] = ctx.Pool(2, initializer=_worker_init, initargs=(ARGS.out, ARGS.api_key, ARGS.hmac_key))
+            except Exception as e:
+                print(f"worker: can't start ({e}); working in the web process", flush=True)
+                _POOL["broken"] = True
+                return None
+    try:
+        return ("ok", _POOL["pool"].apply_async(fn, args).get(timeout))
+    except Exception as e:
+        print(f"worker: {fn.__name__} failed: {e}", flush=True)
+        raise
+
+
+def _build_report(week, cams):
+    t = time.time()
+    rep = bookings_report(week, cams)
+    rep["built_at"] = local_time(iso(t), True)
+    rep["image_days"] = POP_IMAGE_DAYS
+    rep["minor_plays"] = MINOR_PLAYS
+    rep["build_s"] = round(time.time() - t, 2)
+    return rep
+
+
+REPORT_BUILDING = set()
+
+
 def cached_report(week, max_age=REPORT_MAX_AGE):
     """The Bookings report for a week, rebuilt at most once a minute (a background
-    thread keeps this week's warm) or as soon as links or set-up change."""
+    thread keeps this week's warm) or as soon as links or set-up change. A report
+    only out of date by time is served at once while a fresh one is built."""
     load_bookings()
     load_creatives()
     cams = gateway_cameras()
@@ -3204,27 +3275,44 @@ def cached_report(week, max_age=REPORT_MAX_AGE):
     hit = REPORTS["weeks"].get(key)
     if hit and hit[1] == ver and time.time() - hit[0] < max_age:
         return hit[2]
-    with REPORT_LOCK:                              # one build at a time; others wait and reuse it
-        hit = REPORTS["weeks"].get(key)
-        if hit and hit[1] == ver and time.time() - hit[0] < max_age:
-            return hit[2]
-        t = time.time()
-        rep = bookings_report(week, cams)
-        rep["built_at"] = local_time(iso(t), True)
-        rep["image_days"] = POP_IMAGE_DAYS
-        rep["minor_plays"] = MINOR_PLAYS
-        rep["build_s"] = round(time.time() - t, 2)
-        REPORTS["weeks"][key] = (t, ver, rep)
-        for k in [k for k, v in REPORTS["weeks"].items() if time.time() - v[0] > 3600]:
-            REPORTS["weeks"].pop(k, None)
-        return rep
+    if hit and hit[1] == ver and not IN_WORKER:   # just older than max_age: serve it, refresh behind
+        with REPORT_LOCK:
+            start = key not in REPORT_BUILDING
+            REPORT_BUILDING.add(key)
+        if start:
+            threading.Thread(target=_refresh_report, args=(week, cams, ver), daemon=True).start()
+        return hit[2]
+    return _refresh_report(week, cams, ver)
+
+
+def _refresh_report(week, cams, ver):
+    key = week.isoformat()
+    lock = REPORT_LOCKS.setdefault(key, threading.Lock())
+    try:
+        with lock:                                # one build per week at a time; others wait and reuse it
+            hit = REPORTS["weeks"].get(key)
+            if hit and hit[1] == ver and time.time() - hit[0] < 5:
+                return hit[2]
+            t = time.time()
+            got = in_worker(_worker_report, key, cams)
+            rep = got[1] if got else _build_report(week, cams)
+            REPORTS["weeks"][key] = (t, ver, rep)
+            for k in [k for k, v in REPORTS["weeks"].items() if time.time() - v[0] > 3600]:
+                REPORTS["weeks"].pop(k, None)
+            return rep
+    finally:
+        with REPORT_LOCK:
+            REPORT_BUILDING.discard(key)
 
 
 def report_warmer():
     """Keep this week's Bookings report fresh so the page and review cards load at once."""
     while True:
         try:
-            rep = cached_report(monday(datetime.now(LOCAL_TZ).date()), max_age=REPORT_MAX_AGE - 15)
+            wk = monday(datetime.now(LOCAL_TZ).date()).isoformat()
+            last = (REPORTS["weeks"].get(wk) or (0, 0, {}))[2].get("build_s") or 0
+            # with many sites a build takes a while: refresh less often, so it never runs non-stop
+            rep = cached_report(monday(datetime.now(LOCAL_TZ).date()), max_age=max(REPORT_MAX_AGE - 15, 4 * last))
             if plan_merges(rep):
                 cached_report(monday(datetime.now(LOCAL_TZ).date()))
             push_merges()
@@ -3675,7 +3763,7 @@ def render_page(site):
         recs = STORE.recent(200, site)
         recs = [r for r in recs if r.get("site_id") == site and r.get("type") == "creative_change"] + STORE.alerts(50, site)
     else:
-        recs = STORE.newest_per_site() + STORE.alerts(50)
+        recs = STORE.newest_per_site(photo=True) + STORE.alerts(50)
     live = gateway_cameras()                     # live from the gateway when it's reachable
     if live is not None:                         # hide records from sites that no longer exist
         known = {c.get("id") or c.get("site_id") for c in live}
@@ -3718,8 +3806,11 @@ def render_page(site):
         gone = r.get("_images_removed")
         img = (f"<div class='thumb'><span>photo removed after {POP_IMAGE_DAYS:g} days</span></div>" if gone else
                f"<div class='thumb'><img loading='lazy' src='/images/{esc(r['event_id'])}.roi.jpg' alt=''></div>"
-               if "roi_sha256" in r else "<div class='thumb'><span>no image</span></div>")
-        full = f" &middot; <a href='/images/{esc(r['event_id'])}.frame.jpg' target='_blank'>full frame</a>" if "frame_sha256" in r and not gone else ""
+               if "roi_sha256" in r else "<div class='thumb'><span>" + (
+                   "photographed every few minutes per creative, not this play" if r.get("images") == "skipped_by_policy"
+                   else "no photo") + "</span></div>")
+        full = (f" &middot; <a href='/images/{esc(r['event_id'])}.frame.jpg' target='_blank'>full frame</a>"
+                if "frame_sha256" in r and not gone and not r.get("_frame_removed") else "")
         flags = " [blank]" if r.get("is_blank") else ""
         flags += " [video]" if r.get("video_creative") else ""
         verdict = "" if q.get("usable", True) else f"<br><span class='bad'>{esc(q.get('reason'))}</span>"
@@ -3840,7 +3931,8 @@ class H(BaseHTTPRequestHandler):
                     assert ph in ("day", "night") and t1 > t0 and t1 - t0 <= 15 * 86400
                 except (KeyError, ValueError, AssertionError):
                     return self.reply(400, {"error": "since (unix time), until and phase=day|night; 15 days at most"})
-                return self.reply(200, best_pops(t0, t1, ph))
+                got = in_worker(_worker_best, t0, t1, ph, None)
+                return self.reply(200, got[1] if got else best_pops(t0, t1, ph))
             try:
                 with open(os.path.join(ARGS.out, "images", path.rsplit("/", 1)[1].replace(".jpg", ".frame.jpg")), "rb") as f:
                     body = f.read()
@@ -3913,6 +4005,8 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "max-age=86400")
         else:
             return self.reply(404)
+        if body[:15].lower() == b"<!doctype html>":
+            body = body.replace(b"</body>", IMG_RETRY + b"</body>", 1)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3939,7 +4033,14 @@ class H(BaseHTTPRequestHandler):
             # the photos up in SharePoint are kept here (record and photo) past the usual 3 days,
             # so each run scores them again alongside the new ones; one replaced is released
             STORE.set_pins(f"best-{ph}", cur.values())
-            return self.reply(200, best_pops(t0, t1, ph, cur))
+            got = in_worker(_worker_best, t0, t1, ph, cur)
+            res = got[1] if got else best_pops(t0, t1, ph, cur)
+            if not res.get("error"):
+                # the best photos offered are kept until the next run (one of them may be
+                # uploaded now); every other full frame up to t1 is no longer needed for this phase
+                STORE.set_pins(f"offered-{ph}", [it.get("event_id") for it in res.get("items", [])])
+                STORE.note_run(ph, t1)
+            return self.reply(200, res)
         if self.path.startswith("/api/"):          # review page -> gateway
             if self.authorised():
                 self.proxy("POST")
@@ -4168,7 +4269,10 @@ def main():
     threading.Thread(target=report_warmer, daemon=True).start()
     threading.Thread(target=STORE.housekeeper, daemon=True).start()
     print(f"receiver on {ARGS.bind}:{ARGS.port}, storing in {ARGS.out}", flush=True)
-    ThreadingHTTPServer((ARGS.bind, ARGS.port), H).serve_forever()
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 256          # a page asks for dozens of photos at once; the default 5 drops some
+    Server((ARGS.bind, ARGS.port), H).serve_forever()
 
 
 if __name__ == "__main__":

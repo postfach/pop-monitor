@@ -119,7 +119,7 @@ timestamps (`...Z`) so nothing is ambiguous across daylight-saving changes or re
 | `snapshot.delay_ms` | 1000 | Wait after the creative settles before capturing |
 | `snapshot.burst` / `interval_ms` | 3 / 300 | Frames per play; the best one is kept |
 | `snapshot.compression` | 15 | VAPIX JPEG compression (lower = higher quality) |
-| `snapshot.image_policy` | `every_play` | or `first_per_hour` (metadata every play, images hourly per creative) |
+| `snapshot.photo_every_min` | 10 | Photos of each creative at most this often (every play is still logged and counted). 0 = a photo of every play. The older `image_policy` `every_play` / `first_per_hour` still works (0 / 60) |
 | `ptz_check` | true | Alerts and pauses detection if a PTZ camera leaves its preset |
 | `host` | (required) | Camera IP or DNS name (no port) |
 | `http_port` / `rtsp_port` | 80 / 554 | Non-standard or port-forwarded ports for remote cameras |
@@ -331,11 +331,31 @@ clean-up keeps the disk from filling:
 
 | What | Kept | Setting |
 |---|---|---|
-| PoP photos (full frame and screen crop) | 3 days | `POP_IMAGE_DAYS` |
+| PoP photos (screen crop; the gateway photographs each creative at most every 10 minutes, `snapshot.photo_every_min`) | 3 days | `POP_IMAGE_DAYS` |
+| Their full camera frames | until a day and a night best-photo run have both been through them, plus 2 hours (`POP_FRAME_GRACE_MIN`); 3 days without the uploads | |
 | The best photos up in SharePoint (photo and record) | while they are up | |
 | Photos attached to alerts | 30 days | `POP_ALERT_IMAGE_DAYS` |
 | PoP and alert records (the details of every play) | 90 days | `POP_RECORD_DAYS` |
 | Gateway heartbeats | 7 days | `POP_HEARTBEAT_DAYS` |
+
+Full camera frames (about three quarters of the space) are only needed to upload the best
+photos. Each best-photo run tells the receiver how far it has looked; once a day run and a
+night run have both covered a time and 2 hours have passed for their uploads, the full frames
+from before it are removed, except the best photos offered by those runs and the ones up in
+SharePoint. The screen crops stay their 3 days, so every photo still shows on the review page.
+
+Every play is logged and counted, but the gateway photographs each creative at most every
+10 minutes (a creative not photographed in the last 10 minutes, so one that plays rarely,
+is photographed every time it plays; `snapshot.photo_every_min`, 0 photographs every play). A photo is three
+full-resolution snapshots from the camera, a straightened crop, an upload and about 400 KB
+on disk, so photographing all of them (about 450 plays an hour per site) came to some
+150 GB for seven sites over 3 days, and camera traffic to match. Six photos an hour of
+every creative is plenty for matching, scoring and the best photos.
+
+The receiver builds the Bookings report and runs the best-photo scoring in a separate worker
+process (`POP_WORKER=0` keeps them in the web process), so the pages and photos aren't held
+up while it works, and serves a report that is just out of date at once while a fresh one is
+built. A photo that fails to load is asked for again a few times instead of staying black.
 
 The best day and night photo of every campaign is in SharePoint already (8 pm / 8 am), so
 3 days is enough. Removing a photo keeps its play: delivery and coverage are unchanged; the

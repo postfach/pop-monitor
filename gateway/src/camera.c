@@ -224,14 +224,15 @@ static int frame_is_night(const pc_frame *f)
 
 static int image_due(camera *cm, int creative_id, int64_t now)
 {
-    if (!cm->cfg->snap.first_per_hour) return 1;
+    int every = cm->cfg->snap.photo_every_min;
+    if (every <= 0) return 1;
     int slot = -1;
     for (int i = 0; i < IMGMAP; i++) {
         if (cm->imgmap[i].id == creative_id) { slot = i; break; }
         if (slot < 0 && cm->imgmap[i].id == 0) slot = i;
     }
     if (slot < 0) slot = creative_id % IMGMAP;
-    if (cm->imgmap[slot].id == creative_id && now - cm->imgmap[slot].last < 3600000) return 0;
+    if (cm->imgmap[slot].id == creative_id && now - cm->imgmap[slot].last < (int64_t)every * 60000) return 0;
     cm->imgmap[slot].id = creative_id;
     cm->imgmap[slot].last = now;
     return 1;

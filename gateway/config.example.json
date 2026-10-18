@@ -45,7 +45,7 @@
       "resolution": "",
       "roi_width": 1024,
       "roi_quality": 92,
-      "image_policy": "every_play"
+      "photo_every_min": 10
     }
   },
 

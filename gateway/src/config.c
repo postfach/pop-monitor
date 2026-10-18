@@ -95,6 +95,8 @@ static void camera_defaults(camera_cfg *c)
     c->snap.delay_ms = 1000;
     c->snap.burst = 3;
     c->snap.interval_ms = 300;
+    c->snap.photo_every_min = 10;        /* every play is still logged; photos (camera snapshots,
+                                          * disk, upload) for each creative every 10 minutes */
     c->snap.compression = 15;
     c->snap.roi_width = 1024;
     c->snap.roi_quality = 92;
@@ -185,8 +187,10 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
         get_int(s, "roi_width", &c->snap.roi_width);
         get_int(s, "roi_quality", &c->snap.roi_quality);
         char pol[32] = "";
-        get_str(s, "image_policy", pol, sizeof pol);
-        if (*pol) c->snap.first_per_hour = strcmp(pol, "first_per_hour") == 0;
+        get_str(s, "image_policy", pol, sizeof pol);      /* the older setting */
+        if (!strcmp(pol, "first_per_hour")) c->snap.photo_every_min = 60;
+        else if (!strcmp(pol, "every_play")) c->snap.photo_every_min = 0;
+        get_int(s, "photo_every_min", &c->snap.photo_every_min);
     }
 }
 

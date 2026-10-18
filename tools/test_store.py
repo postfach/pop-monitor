@@ -89,6 +89,26 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "images"))), ["best2.frame.jpg", "best2.roi.jpg"])
         self.assertEqual(self.s.pinned(), {"best2"})
 
+    def test_full_frames_go_once_both_runs_are_done(self):
+        h = 3600
+        for eid, age in (("a", 30 * h), ("best", 30 * h), ("offered", 20 * h), ("new", 2 * h)):
+            self.s.add(pop(eid, "S1", self.now - age))
+            self.photo(eid)
+        self.s.set_pins("best-day", ["best"])
+        self.s.set_pins("offered-night", ["offered"])
+        have = lambda: sorted(os.listdir(os.path.join(self.dir, "images")))
+        self.s.note_run("day", self.now - 10 * h, now=self.now - 9 * h)
+        self.assertEqual(self.s.remove_spent_frames(self.now), 0)            # no night run yet
+        self.s.note_run("night", self.now - 5 * h, now=self.now - 1 * h)
+        self.assertEqual(self.s.remove_spent_frames(self.now), 0)            # night run still uploading
+        self.s.note_run("night", self.now - 5 * h, now=self.now - 3 * h)
+        self.assertEqual(self.s.remove_spent_frames(self.now), 1)            # only "a": before both runs, not kept
+        self.assertEqual(have(), ["a.roi.jpg", "best.frame.jpg", "best.roi.jpg", "new.frame.jpg", "new.roi.jpg",
+                                  "offered.frame.jpg", "offered.roi.jpg"])
+        r = {x["event_id"]: x for x in self.s.recent(10, "S1")}
+        self.assertTrue(r["a"].get("_frame_removed"))
+        self.assertFalse(r["a"].get("_images_removed"))                      # the photo itself is still there
+
     def test_rename_and_delete_site(self):
         self.s.add(pop("a", "OLD", self.now - 10))
         self.photo("a")

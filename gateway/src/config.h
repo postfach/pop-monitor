@@ -19,7 +19,7 @@ typedef struct {
     char resolution[24];    /* VAPIX resolution, "" = camera default (max) */
     int  roi_width;         /* straightened ROI image width        */
     int  roi_quality;       /* JPEG quality for the ROI image      */
-    int  first_per_hour;    /* image policy: 0 = every play        */
+    int  photo_every_min;   /* photos of a creative at most this often (0 = every play) */
 } snapshot_cfg;
 
 typedef struct {

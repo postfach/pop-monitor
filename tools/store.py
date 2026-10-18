@@ -24,6 +24,10 @@ import zlib
 from datetime import datetime
 
 IMAGE_DAYS = float(os.environ.get("POP_IMAGE_DAYS", "3"))
+# Full camera frames are only needed to upload the best photos: once both the day and
+# the night best-photo runs have covered a time (and this long has passed for the
+# upload to finish), the frames from before it are removed except the best ones.
+FRAME_GRACE_S = float(os.environ.get("POP_FRAME_GRACE_MIN", "120")) * 60
 ALERT_IMAGE_DAYS = float(os.environ.get("POP_ALERT_IMAGE_DAYS", "30"))
 RECORD_DAYS = float(os.environ.get("POP_RECORD_DAYS", "90"))
 HEARTBEAT_DAYS = float(os.environ.get("POP_HEARTBEAT_DAYS", "7"))
@@ -72,12 +76,21 @@ def _dec(v):
     return json.loads(v)
 
 
+def _flags(r, roi, frame):
+    """Mark a record whose photo (screen crop) or full camera frame is no longer on disk."""
+    if not roi and "roi_sha256" in r:
+        r["_images_removed"] = True
+    if not frame and "frame_sha256" in r:
+        r["_frame_removed"] = True
+    return r
+
+
 def _name(r):
     return r.get("site_name") or r.get("camera") or ""
 
 
 class Store:
-    def __init__(self, out_dir, log=print):
+    def __init__(self, out_dir, log=print, migrate=True):
         self.out = out_dir
         self.images = os.path.join(out_dir, "images")
         self.path = os.path.join(out_dir, "pop.db")
@@ -88,7 +101,8 @@ class Store:
         os.makedirs(self.images, exist_ok=True)
         db = self.db()
         db.executescript(SCHEMA)
-        self.migrate()
+        if migrate:
+            self.migrate()
 
     def db(self):
         c = getattr(self.local, "c", None)
@@ -163,22 +177,25 @@ class Store:
                                      (n,)).fetchall()
         out = []
         for j, roi, frame in reversed(rows):
-            r = _dec(j)
-            if not roi and "roi_sha256" in r or not frame and "frame_sha256" in r:
-                r["_images_removed"] = True
-            out.append(r)
+            out.append(_flags(_dec(j), roi, frame))
         return out
 
-    def newest_per_site(self, kind="creative_change"):
-        rows = self.db().execute(
+    def newest_per_site(self, kind="creative_change", photo=False):
+        """Each site's newest record; with photo=True its newest one that has a photo
+        on disk (the gateway may photograph only some plays), else its newest."""
+        rows = []
+        if photo:
+            rows = self.db().execute(
+                "SELECT r.json, r.has_roi, r.has_frame FROM records r JOIN (SELECT site_id, MAX(t) mt FROM records "
+                "WHERE type=? AND has_roi=1 GROUP BY site_id) m ON r.site_id=m.site_id AND r.t=m.mt "
+                "WHERE r.type=? AND r.has_roi=1", (kind, kind)).fetchall()
+        rows = rows + self.db().execute(
             "SELECT r.json, r.has_roi, r.has_frame FROM records r JOIN (SELECT site_id, MAX(t) mt FROM records "
             "WHERE type=? GROUP BY site_id) m ON r.site_id=m.site_id AND r.t=m.mt WHERE r.type=?", (kind, kind)).fetchall()
         out = {}
         for j, roi, frame in rows:
-            r = _dec(j)
-            if not roi and "roi_sha256" in r:
-                r["_images_removed"] = True
-            out[r.get("site_id")] = r
+            r = _flags(_dec(j), roi, frame)
+            out.setdefault(r.get("site_id"), r)             # the one with a photo first
         return list(out.values())
 
     def alerts(self, n, site_id=None):
@@ -265,6 +282,53 @@ class Store:
     def pinned(self):
         return {e for (e,) in self.db().execute("SELECT DISTINCT event_id FROM pins")}
 
+    # ---------------------------------------------------------------- best-photo runs
+    def note_run(self, phase, until, now=None):
+        """A best-photo run for this phase has looked at the photos up to `until`."""
+        with self.wlock:
+            self.db().execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
+                              (f"run_{phase}", json.dumps({"until": until, "at": now or time.time()})))
+
+    def frames_done_before(self, now=None):
+        """Photos taken before this time have been through a day and a night best-photo
+        run long enough ago that their full frames are no longer needed (None if not yet)."""
+        now = now or time.time()
+        done = []
+        for ph in ("day", "night"):
+            row = self.db().execute("SELECT v FROM meta WHERE k=?", (f"run_{ph}",)).fetchone()
+            if not row:
+                return None
+            v = json.loads(row[0])
+            if now - v["at"] < FRAME_GRACE_S:
+                return None
+            done.append(v["until"])
+        return min(done)
+
+    def remove_spent_frames(self, now=None):
+        """Remove the full frames that no best-photo run can still pick (kept: pinned)."""
+        cut = self.frames_done_before(now)
+        if cut is None:
+            return 0
+        n = 0
+        while True:
+            eids = [e for (e,) in self.db().execute(
+                "SELECT event_id FROM records WHERE type='creative_change' AND t<? AND has_frame=1 "
+                "AND event_id NOT IN (SELECT event_id FROM pins) LIMIT 2000", (cut,))]
+            if not eids:
+                return n
+            for e in eids:
+                try:
+                    os.remove(os.path.join(self.images, f"{e}.frame.jpg"))
+                    n += 1
+                except FileNotFoundError:
+                    pass
+            with self.wlock:
+                db = self.db()
+                db.execute("BEGIN")
+                db.executemany("UPDATE records SET has_frame=0 WHERE event_id=?", [(e,) for e in eids])
+                db.execute("COMMIT")
+                self.version += 1
+
     # ---------------------------------------------------------------- housekeeping
     def housekeep(self, now=None):
         """Remove photos and rows past their retention. Returns what was removed."""
@@ -295,6 +359,7 @@ class Store:
             done["heartbeats"] = db.execute("DELETE FROM heartbeats WHERE t<?", (now - HEARTBEAT_DAYS * 86400,)).rowcount
             if done["records"]:
                 self.version += 1
+        done["frames"] = self.remove_spent_frames(now)
         done["orphans"] = self.sweep_orphans(now)
         return done
 
@@ -330,6 +395,7 @@ class Store:
                 d = self.housekeep()
                 if any(d.values()):
                     self.log(f"housekeeping: removed {d['photos']} photo(s) older than {IMAGE_DAYS:g} day(s), "
+                             f"{d.get('frames', 0)} full frame(s) the best-photo runs are done with, "
                              f"{d['records']} record(s) older than {RECORD_DAYS:g}, {d['orphans']} stray file(s)")
             except Exception as e:                       # never stop the thread
                 self.log(f"housekeeping failed: {e}")
