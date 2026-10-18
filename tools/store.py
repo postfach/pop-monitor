@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 -- records kept with their photos whatever their age: the best photos uploaded to
 -- SharePoint, so each can be scored again against new ones (tag: who pinned it)
 CREATE TABLE IF NOT EXISTS pins (event_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (event_id, tag));
+-- a site being set up (its region still being placed): its plays in [start, end) aren't
+-- counted; end NULL = still in setup; region_at = the region's last change in the period
+CREATE TABLE IF NOT EXISTS setup (site_id TEXT NOT NULL, start REAL NOT NULL, end REAL, region_at REAL);
 """
 
 
@@ -262,9 +265,46 @@ class Store:
                     r["site_name"] = r["camera"] = name
                 db.execute("UPDATE records SET site_id=?, name=COALESCE(?, name), json=? WHERE event_id=?",
                            (new, name, _enc(r), e))
+            db.execute("UPDATE setup SET site_id=? WHERE site_id=?", (new, old))
             db.execute("COMMIT")
+            self._setup_ver = (getattr(self, "_setup_ver", 0) or 0) + 1
             self.version += 1
         return len(rows)
+
+    # ---------------------------------------------------------------- setup periods
+    def setup_periods(self):
+        """{site_id: [(start, end or None, region_at or None)]}, oldest first."""
+        # cached briefly: the report worker process writes nothing but must see changes soon
+        key, now = getattr(self, "_setup_ver", 0), time.time()
+        c = getattr(self, "_setup_cache", None)
+        if not c or c[0] != key or now - c[1] > 2:
+            out = {}
+            for sid, a, b, r in self.db().execute("SELECT site_id, start, end, region_at FROM setup ORDER BY start"):
+                out.setdefault(sid, []).append((a, b, r))
+            self._setup_cache = c = (key, now, out)
+        return c[2]
+
+    def _setup_write(self, sql, args):
+        with self.wlock:
+            n = self.db().execute(sql, args).rowcount
+            self._setup_ver = (getattr(self, "_setup_ver", 0) or 0) + 1
+            self.version += 1
+        return n
+
+    def setup_start(self, site_id, t):
+        """Into setup from t (nothing if it already is). True if it started now."""
+        if any(b is None for _, b, _ in self.setup_periods().get(site_id, [])):
+            return False
+        self._setup_write("INSERT INTO setup (site_id, start) VALUES (?, ?)", (site_id, t))
+        return True
+
+    def setup_end(self, site_id, t):
+        """Live from t. True if the site was in setup."""
+        return self._setup_write("UPDATE setup SET end=? WHERE site_id=? AND end IS NULL", (t, site_id)) > 0
+
+    def setup_region(self, site_id, t):
+        """The region changed at t (only noted while the site is in setup)."""
+        return self._setup_write("UPDATE setup SET region_at=? WHERE site_id=? AND end IS NULL", (t, site_id)) > 0
 
     # ---------------------------------------------------------------- pins
     def set_pins(self, tag, event_ids):

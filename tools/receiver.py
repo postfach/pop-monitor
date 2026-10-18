@@ -131,7 +131,7 @@ SITES_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 *{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
 main{max-width:1200px;margin:0 auto;padding:20px 16px 40px} h1{font-size:20px;margin:0} a{color:inherit}
 nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-decoration:none} nav a.on{color:var(--fg);font-weight:600}
-.muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)}
+.pill{font-size:11px;border:1px solid var(--accent,#d4237a);border-radius:999px;padding:1px 7px;color:var(--accent,#d4237a);text-decoration:none;white-space:nowrap} .muted{color:var(--muted)} .bad{color:var(--bad)} .ok{color:var(--ok)}
 .head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 12px}
 .btn{display:inline-block;border:1px solid var(--line);background:transparent;color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -175,7 +175,7 @@ async function load() {
     document.getElementById('rows').innerHTML = cams.map(c => {
       const q = encodeURIComponent(c.id);
       const exp = c.expected_per_hour ? ` <span class="muted">of ${c.expected_per_hour}</span>` : '';
-      return `<tr><td><b>${esc(c.name)}</b>${c.name !== c.id ? `<br><span class="muted">${esc(c.id)}</span>` : ''}</td>
+      return `<tr><td><b>${esc(c.name)}</b>${c.setup ? ` <a class="pill" href="/roi?site=${q}" title="Being set up: its plays aren't counted until it goes live (Region page)">Setup</a>` : ''}${c.name !== c.id ? `<br><span class="muted">${esc(c.id)}</span>` : ''}</td>
         <td>${esc(c.model)}</td><td>${hostText(c)}</td>
         <td class="${c.connected ? 'ok' : 'bad'}">${c.connected ? 'connected' : 'not connected'}</td>
         <td>${rotation(c)}${rots[c.id] && rots[c.id].auto ? ' <span class="muted" title="kept in step with the Doohly player\'s loop">· Doohly</span>' : ''}</td><td>${c.plays_last_hour}${exp}</td>
@@ -580,6 +580,8 @@ input[type=number]{width:60px;font:inherit;padding:5px;border:1px solid var(--li
 .panel h2{font-size:13px;margin:0 0 8px;font-weight:600} #preview{width:100%;display:block;border-radius:4px;background:#000}
 #msg{min-height:20px} .ok{color:var(--ok)} .bad{color:var(--bad)}
 ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
+#setup.insetup{border:2px solid var(--accent)} #setup ul{list-style:none;margin:6px 0;padding:0} #setup li{display:flex;gap:6px;margin:4px 0}
+#setup .tick{width:16px;flex:none;text-align:center;font-weight:700} #setup .d{font-size:12px} .linkbtn{border:0;padding:0;background:none;text-decoration:underline;color:var(--muted)}
 </style></head><body><main>
 <nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="color:var(--muted);text-decoration:none">Review</a><a href="/sites" style="font-weight:600;text-decoration:none">Sites</a><a href="/bookings" style="color:var(--muted);text-decoration:none">Bookings</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
 <h1>Edit region: <span id="cam"></span></h1>
@@ -597,6 +599,7 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 <div class="layout">
   <div class="stage"><canvas id="c"></canvas></div>
   <div class="side">
+    <div class="panel" id="setup" hidden></div>
     <div class="panel"><h2>What the gateway will analyse</h2><canvas id="preview"></canvas>
       <p class="muted" style="margin:6px 0 0">Straightened, with the inset trimmed. It should show only the screen.</p></div>
     <div class="panel"><h2>How to</h2><ol id="howto"></ol></div>
@@ -606,6 +609,7 @@ ol{margin:0;padding-left:18px} li{margin:2px 0} code{font-size:12px}
 <script>
 const qs = new URLSearchParams(location.search), name = qs.get('site') || qs.get('camera') || '';   /* site ID */
 const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
 const c = $('c'), ctx = c.getContext('2d'), pv = $('preview'), pctx = pv.getContext('2d');
 const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently: true});
 let img = null, pixels = null, saved = null, pts = null, drag = -1, last = 0, cursor = null, dirty = false, board = 0;
@@ -861,10 +865,48 @@ $('save').onclick = async () => {
   saved = {roi: copyPts(body.roi), inset: body.inset_pct, shape, curve: copyPts(curve), fold: copyPts(fold), fold_pct: body.fold_pct || +$('foldpct').value || 50};
   setDirty(false);
   msg('Saved and applied. The next play will use this region.', 'ok');
+  loadSetup();
 };
+
+// ---- setting the site up: its plays count only once it goes live
+async function loadSetup() {
+  const r = await fetch('/sites/setup?site=' + encodeURIComponent(name)).catch(() => null);
+  const st = r && r.ok ? await r.json() : null, el = $('setup');
+  if (!st) { el.hidden = true; return; }
+  el.hidden = false;
+  el.className = 'panel' + (st.in_setup ? ' insetup' : '');
+  if (!st.in_setup) {
+    el.innerHTML = `<h2>Live</h2><p class="muted" style="margin:0 0 8px">Its plays are counted${st.live_since ? ' since ' + esc(st.live_since) : ''}.
+      If the camera was moved or re-aimed, put it back into setup while you fix the region: its plays stop counting and the creatives are learned again once it goes live.</p>
+      <button id="tosetup">Back to setup</button>`;
+    $('tosetup').onclick = () => goLive(false);
+    return;
+  }
+  el.innerHTML = `<h2>In setup: plays not counted yet</h2>
+    <p class="muted d" style="margin:0">Since ${esc(st.since || '?')}. Place the region, then leave it while plays come in. Its plays aren't counted on the Bookings page or used for PoP photos, and detection alerts aren't sent to Teams, until it goes live.</p>
+    <ul>${st.checks.map(c => `<li><span class="tick ${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'}</span><span><b>${esc(c.label)}</b><br><span class="muted d">${esc(c.detail)}</span></span></li>`).join('')}</ul>
+    <button class="primary" id="golive" ${st.ready ? '' : 'disabled'}>Go live</button>
+    ${st.ready ? '' : ' <button class="linkbtn" id="force">Go live anyway</button>'}
+    <p class="muted d" style="margin:8px 0 0">Going live makes the gateway learn the creatives again from that moment, so each artwork gets one ID with the final region.</p>`;
+  $('golive').onclick = () => goLive(true, false);
+  if ($('force')) $('force').onclick = () => {
+    if (confirm('Some checks haven\'t passed. Go live anyway? Its plays will count from now.')) goLive(true, true);
+  };
+}
+async function goLive(live, force) {
+  if (!live && !confirm('Put this site back into setup? Its plays stop counting until it goes live again.')) return;
+  if (live && dirty && !confirm('The region has unsaved changes. Go live with the saved region?')) return;
+  const r = await fetch('/sites/setup', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify({site_id: name, live, force: !!force})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { msg(j.error || r.statusText, 'bad'); }
+  else msg(live ? 'Live: its plays count from now, and the creatives are being learned again.' : 'Back in setup.', 'ok');
+  loadSetup();
+}
+setInterval(() => { if (!document.hidden) loadSetup(); }, 60000);
 window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 window.addEventListener('resize', draw);
-load();
+load(); loadSetup();
 </script></body></html>
 '''
 
@@ -1310,9 +1352,12 @@ function site(s, rep) {
      <span class="sname"><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></span>
      <span class="muted">${esc(s.vault_screen)} · ${s.slot_count} × ${s.slot_s} s</span>
      ${s.doohly ? `<span class="pill ${s.doohly.online ? 'ok' : 'bad'}" title="Doohly player ${esc(s.doohly.player)}, last seen ${esc(s.doohly.alive_at || '?')}; bookings read ${esc(s.doohly.bookings_at || '?')}">player ${s.doohly.online ? 'online' : 'offline'}</span>` : ''}
+     ${s.setup ? (s.setup.now ? `<a class="pill warn" href="/roi?site=${encodeURIComponent(s.site_id)}" title="Being set up since ${esc(s.setup.from)}: its plays aren't counted until it goes live on the Region page">in setup</a>`
+       : `<span class="pill" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">live from ${esc(s.setup.to)}</span>`) : ''}
      <span class="chips">${chip('True coverage', pct(tc), tcls)}${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}
        ${s.unassigned_per_loop > 0.05 ? chip('Unassigned', one(s.unassigned_per_loop) + ' / loop', 'warn') : ''}${notSeen ? chip('Not seen', notSeen + ' campaign(s)', 'bad') : ''}
        ${s.warnings.length ? chip('', s.warnings.length + ' warning(s)', 'warn') : ''}</span></summary>
+     ${s.setup && s.setup.now ? `<p class="muted">Being set up since ${esc(s.setup.from)}: its plays aren't counted here (or used for PoP photos) until it goes live. <a href="/roi?site=${encodeURIComponent(s.site_id)}">Region page</a></p>` : ''}
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
        ${tile('True coverage', pct(tc), tsub, tcls)}
@@ -2100,9 +2145,23 @@ def canon(site_id, cid):
     return cid
 
 
-def site_plays(site_id, t0, t1):
-    """A site's plays in [t0, t1), with merged IDs read as the ID they were merged into."""
+def setup_spans(site_id):
+    """The times a site was being set up: [(start, end)], end = inf while it still is."""
+    return [(a, b if b is not None else float("inf")) for a, b, _ in STORE.setup_periods().get(site_id, [])]
+
+
+def in_setup(site_id):
+    return any(b is None for _, b, _ in STORE.setup_periods().get(site_id, []))
+
+
+def site_plays(site_id, t0, t1, setup=False):
+    """A site's plays in [t0, t1), with merged IDs read as the ID they were merged into.
+    Plays while the site was being set up are left out (setup=True keeps them: the
+    region page's fitting and go-live checks)."""
     ps = STORE.plays(site_id, t0, t1)
+    spans = [] if setup else [(a, b) for a, b in setup_spans(site_id) if b > t0 and a < t1]
+    if spans:
+        ps = [p for p in ps if not any(a <= p[0] < b for a, b in spans)]
     if not merges().get(site_id):
         return ps
     return [(p[0], canon(site_id, p[1])) + tuple(p[2:]) for p in ps]
@@ -2609,7 +2668,7 @@ def _spread(ps, n):
     return [ps[round(i * (len(ps) - 1) / (n - 1))] for i in range(n)]
 
 
-def artwork_matches(cam, t0, t1):
+def artwork_matches(cam, t0, t1, setup=False):
     """For each creative the site showed in [t0, t1): the booked artwork it
     matches. A creative's match is worked out once and kept (on disk too); it
     is re-checked only when the artwork library changes or after a while, so
@@ -2645,7 +2704,7 @@ def artwork_matches(cam, t0, t1):
     lib = f"{CRE['mtime']}|{len(refs)}|{round(inset, 3)}|{grid}"
     sid = cam.get("id")
     state = art_state().setdefault(sid, {})
-    plays = site_plays(sid, t0, t1)
+    plays = site_plays(sid, t0, t1, setup=setup)
     by_cid = {}
     for p in plays:                                  # usable images in this period, oldest first
         if not p[2] and p[5] and (len(p) < 7 or p[6]):
@@ -2781,9 +2840,9 @@ def fit_photos(cam, n=3):
     """Up to n recent full-frame photos of different creatives matched to booked
     artwork: [(event id, artwork file, creative id, campaign)]."""
     now = time.time()
-    res = artwork_matches(cam, now - POP_IMAGE_DAYS * 86400, now)
+    res = artwork_matches(cam, now - POP_IMAGE_DAYS * 86400, now, setup=True)
     out = []
-    plays = site_plays(cam.get("id"), now - POP_IMAGE_DAYS * 86400, now)
+    plays = site_plays(cam.get("id"), now - POP_IMAGE_DAYS * 86400, now, setup=True)
     for cid, r in sorted(res.items(), key=lambda kv: -kv[1].get("score", 0)):
         if r.get("status") != "matched":
             continue
@@ -3142,6 +3201,11 @@ def site_bookings(cam, week, links_all):
            "slot_count": N, "slot_s": S, "campaigns": [], "creatives": [], "groups": [], "warnings": []}
     if not res["vault_screen"]:
         res["warnings"].append("No Vault screen set for this site (Settings).")
+    wk0 = datetime.combine(week, datetime.min.time(), LOCAL_TZ).timestamp()
+    spans = [(a, b) for a, b in setup_spans(sid) if b > wk0 and a < wk0 + 7 * 86400]
+    if spans:            # being set up for some or all of the week: those plays aren't counted
+        res["setup"] = {"now": in_setup(sid), "from": local_time(iso(max(spans[0][0], wk0)), True),
+                        "to": None if spans[-1][1] == float("inf") else local_time(iso(spans[-1][1]), True)}
     ds = doohly_site(sid, res["vault_screen"])
     if ds:
         dev, lp = ds.get("device") or {}, ds.get("loop") or {}
@@ -3423,11 +3487,133 @@ def bookings_report(week, cams=None):
     if lib:
         out["creatives"] = {"pulled_at": local_time(lib.get("generated_at"), True), "source": lib.get("source", ""),
                             "count": len([c for c in lib["creatives"] if c.get("file")])}
+    if not IN_WORKER:            # the worker process only reads the database
+        setup_reconcile(cams)
     for cam in cams or []:
         out["sites"].append(site_bookings(cam, week, links))
     # the Vault pull only matters for screens Doohly doesn't know
     out["vault_used"] = any(s.get("vault_screen") and not s.get("doohly") for s in out["sites"])
     return out
+
+
+# ---------------------------------------------------------------- setting a site up
+# A new site starts in setup: while its region is being placed every move gives the
+# same artwork a new creative ID, so its plays would count twice. Its plays aren't
+# counted (Bookings, coverage, PoP photos), the gateway holds back its detection
+# alerts, and it goes live from the region page once the region fits: the creatives
+# are learned again from then, once.
+SETUP_SETTLE_S = float(os.environ.get("SETUP_SETTLE_MIN", "30")) * 60    # region left alone this long
+SETUP_MIN_PLAYS = int(os.environ.get("SETUP_MIN_PLAYS", "20"))           # plays since then
+SETUP_MATCH_SHARE = float(os.environ.get("SETUP_MATCH_SHARE", "0.6"))   # of them matching booked artwork
+FULL_FRAME = [[0, 0], [1, 0], [1, 1], [0, 1]]
+
+
+def setup_reconcile(cams):
+    """The gateway says a site is in setup (it was added while the receiver was down,
+    or in the config file): start its setup period now."""
+    for c in cams or []:
+        if c.get("setup") and c.get("id") and not in_setup(c["id"]):
+            STORE.setup_start(c["id"], time.time())
+
+
+def setup_status(cam, now=None):
+    """Where a site is in setting up, and whether it can go live: the checks the
+    region page shows."""
+    sid, now = cam.get("id"), now or time.time()
+    per = [p for p in STORE.setup_periods().get(sid, []) if p[1] is None]
+    if not per:
+        last = (STORE.setup_periods().get(sid) or [None])[-1]
+        return {"site_id": sid, "in_setup": False, "live_since": local_time(iso(last[1]), True) if last else None}
+    start, _, region_at = per[-1]
+    since = max(start, region_at or 0)
+    t0 = max(since, now - 86400)
+    checks = []
+    roi = [[round(float(x), 3) for x in p] for p in (cam.get("roi") or FULL_FRAME)]
+    placed = roi != FULL_FRAME
+    checks.append({"key": "region", "ok": placed, "label": "Region placed",
+                   "detail": "the outline is on the screen" if placed else "the outline is still the whole picture: place it on the screen"})
+    quiet = now - since
+    checks.append({"key": "settled", "ok": quiet >= SETUP_SETTLE_S, "label": "Region left alone",
+                   "detail": f"{int(quiet // 60)} min since it last changed (needs {int(SETUP_SETTLE_S // 60)})"})
+    plays = [p for p in site_plays(sid, t0, now, setup=True) if not p[2]]
+    checks.append({"key": "plays", "ok": len(plays) >= SETUP_MIN_PLAYS, "label": "Plays seen since",
+                   "detail": f"{len(plays)} (needs {SETUP_MIN_PLAYS})"})
+    art = artwork_matches(cam, t0, now, setup=True) if plays else {}
+    booked = {c.get("campaign_id") for c in screen_creatives(cam.get("vault_screen") or "") if c.get("file")} \
+        if cam.get("vault_screen") else set()
+    if not booked:
+        checks.append({"key": "artwork", "ok": False, "label": "Plays match booked artwork",
+                       "detail": "no booked artwork for this screen to compare with" +
+                       ("" if cam.get("vault_screen") else " (set its Vault screen in Settings)") +
+                       ": check the region by eye and go live anyway"})
+    else:
+        matched = {cid for cid, a in art.items() if a.get("status") == "matched"}
+        share = sum(1 for p in plays if p[1] in matched) / len(plays) if plays else 0.0
+        camps = {art[c]["campaign_id"] for c in matched}
+        need_c = min(2, len(booked))
+        ok = bool(plays) and share >= SETUP_MATCH_SHARE and len(camps) >= need_c
+        checks.append({"key": "artwork", "ok": ok, "label": "Plays match booked artwork",
+                       "detail": f"{round(share * 100)}% of plays (needs {round(SETUP_MATCH_SHARE * 100)}%), "
+                                 f"{len(camps)} campaign(s) recognised (needs {need_c})",
+                       "share": round(share, 2), "campaigns": sorted(camps)})
+    return {"site_id": sid, "in_setup": True, "since": local_time(iso(start), True),
+            "region_at": local_time(iso(region_at), True) if region_at else None,
+            "ready": all(c["ok"] for c in checks), "checks": checks}
+
+
+def gateway_call(path, payload, timeout=10):
+    """POST to the gateway's API; returns (status, reply)."""
+    url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + path
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {ARGS.api_key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read())
+        except ValueError:
+            return e.code, {"error": e.reason}
+    except Exception as e:
+        return 502, {"error": f"cannot reach the gateway: {e}"}
+
+
+def set_live(sid, live, force=False):
+    """Go live (the creatives are learned again from now, and its plays count) or back
+    into setup. Returns (http code, reply)."""
+    cams = gateway_cameras()
+    cam = next((c for c in cams or [] if c.get("id") == sid), None)
+    if cam is None:
+        return (502, {"error": "cannot reach the gateway"}) if cams is None else (404, {"error": f"no site {sid}"})
+    q = urllib.parse.quote(sid, safe="")
+    if not live:
+        code, r = gateway_call(f"/api/cameras/{q}/setup", {"setup": True})
+        if code != 200:
+            return code, {"error": f"gateway refused: {r.get('error')}"}
+        STORE.setup_start(sid, time.time())
+        REPORTS["gen"] += 1
+        print(f"site {sid} back in setup", flush=True)
+        return 200, setup_status(cam)
+    if not in_setup(sid):
+        return 409, {"error": "this site is already live"}
+    st = setup_status(cam)
+    if not st["ready"] and not force:
+        return 409, {"error": "not ready yet: " + "; ".join(c["label"].lower() + " (" + c["detail"] + ")"
+                                                          for c in st["checks"] if not c["ok"]), "status": st}
+    # what it learned while the region moved is thrown away: learned again, once, from now.
+    # Reset first, while still in setup, so the faults it clears aren't sent to Teams.
+    code, r = gateway_call(f"/api/cameras/{q}/reset-creatives", {"restart_numbering": False})
+    if code != 200:
+        return code, {"error": f"gateway refused the creative reset: {r.get('error')}"}
+    code, r = gateway_call(f"/api/cameras/{q}/setup", {"setup": False})
+    if code != 200:
+        return code, {"error": f"creatives reset, but the gateway refused to leave setup: {r.get('error')}"}
+    STORE.setup_end(sid, time.time())
+    forget_art(sid)
+    forget_merges(sid)
+    REPORTS["gen"] += 1
+    print(f"site {sid} live" + (" (checks overridden)" if not st["ready"] else ""), flush=True)
+    return 200, setup_status(cam)
 
 
 def missing_artwork():
@@ -3995,6 +4181,16 @@ class H(BaseHTTPRequestHandler):
                 pass
         if method in ("PUT", "POST", "DELETE") and re.match(r"/api/cameras", self.path) and 200 <= code < 300:
             nudge_sync("sites changed")           # only re-syncs if a Vault screen changed
+        if method == "POST" and self.path == "/api/cameras" and code == 201:
+            try:                                  # a new site: in setup until its region fits
+                cam = json.loads(body)
+                if cam.get("setup") and cam.get("id"):
+                    STORE.setup_start(cam["id"], time.time())
+            except (ValueError, AttributeError):
+                pass
+        mr = re.fullmatch(r"/api/cameras/([^/?]+)/roi", self.path)
+        if method in ("PUT", "POST") and mr and 200 <= code < 300:
+            STORE.setup_region(urllib.parse.unquote(mr.group(1)), time.time())   # the setup checks start over
         m = re.fullmatch(r"/api/cameras/([^/?]+)", self.path)
         if method == "PUT" and m and 200 <= code < 300:
             old_id = urllib.parse.unquote(m.group(1))
@@ -4062,6 +4258,16 @@ class H(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             return self.proxy("GET")
+        if path == "/sites/setup":                # region page: setting the site up, and the go-live checks
+            sid = (urllib.parse.parse_qs(query).get("site") or [""])[0]
+            cams = gateway_cameras()
+            if cams is None:
+                return self.reply(502, {"error": "cannot reach the gateway"})
+            setup_reconcile(cams)
+            cam = next((c for c in cams if c.get("id") == sid), None)
+            if not cam:
+                return self.reply(404, {"error": f"no site {sid}"})
+            return self.reply(200, setup_status(cam))
         if path == "/records/sites":
             return self.reply(200, sorted(recorded_sites().values(), key=lambda e: name_order(e.get("name") or e["site_id"])))
         if path == "/health.json":
@@ -4259,6 +4465,16 @@ class H(BaseHTTPRequestHandler):
                         os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
             print(f"creatives reset for site {sid}" + (f"; deleted {deleted} record(s) and its links" if history else ""), flush=True)
             return self.reply(200, {"reset": True, "history": history, "deleted": deleted})
+        if self.path == "/sites/setup":            # region page: go live, or back into setup
+            if not self.authorised():
+                return
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))
+                sid, live, force = body["site_id"], bool(body["live"]), bool(body.get("force"))
+            except (ValueError, KeyError, TypeError):
+                return self.reply(400, {"error": "site_id and live (true or false) required"})
+            code, reply = set_live(sid, live, force)
+            return self.reply(code, reply)
         if self.path == "/roi/fit":                # region page: fit the handles to matched artwork
             if not self.authorised():
                 return

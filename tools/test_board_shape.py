@@ -57,7 +57,7 @@ class BoardShape(unittest.TestCase):
                 eid = f"t{k}{n}"
                 p.save(os.path.join(out, "images", f"{eid}.roi.jpg"))
                 plays.append((1000 + k * 100 + n, cid, False, False, eid, True, True))
-        rx.site_plays = lambda sid, t0, t1: plays
+        rx.site_plays = lambda sid, t0, t1, setup=False: plays
         res = rx.artwork_matches({"id": "TALL", "vault_screen": "Tall"}, 0, 2000)
         self.assertEqual((res["c-0001"]["status"], res["c-0001"]["campaign_id"]), ("matched", "LUMO_1"))
         self.assertEqual((res["c-0002"]["status"], res["c-0002"]["campaign_id"]), ("matched", "LUMO_2"))

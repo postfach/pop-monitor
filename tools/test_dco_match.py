@@ -65,7 +65,7 @@ class DcoMatch(unittest.TestCase):
                 eid = f"d{k}{n}"
                 photo(src, 70 + k * 10 + n).save(os.path.join(out, "images", f"{eid}.roi.jpg"))
                 plays.append((1000 + k * 100 + n, cid, False, False, eid, True, True))
-        rx.site_plays = lambda sid, t0, t1: plays
+        rx.site_plays = lambda sid, t0, t1, setup=False: plays
 
     def test_variant_matches_its_campaign(self):
         res = rx.artwork_matches({"id": "GREEN", "vault_screen": "Greenlane"}, 0, 2000)

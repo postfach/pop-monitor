@@ -145,7 +145,8 @@ The **Sites** page lists every camera with its status, rotation and plays per ho
 **Add site** opens a form for the site ID, display name, model, host, web and RTSP ports,
 video transport (RTSP, or tunnelled over the web port), HTTPS, camera login, rotation (slot
 count and length, or takeover), operating hours and the PTZ check. Saving starts the camera
-straight away and takes you to the region editor. **Settings** edits an existing site; saving
+straight away and takes you to the region editor; a new site is in setup until it goes live
+there (see "New sites start in setup"). **Settings** edits an existing site; saving
 restarts only that camera. **Test camera** fetches a snapshot with the saved settings.
 
 **Site ID and display name.** The site ID is the permanent key: it appears in URLs
@@ -421,6 +422,34 @@ arrow keys nudge the last corner), set the inset, check the straightened preview
 camera so the edit itself isn't logged as a play.
 
 Region edits are saved by the gateway in `cameras.json` (see above), so they survive restarts.
+
+### New sites start in setup
+
+While a region is being placed, every move makes the same artwork look different to the
+gateway, so it gets a new creative ID and its plays count twice. So a site added from the
+Sites page (or the CSV import) starts **in setup**:
+
+* its plays are still recorded and the region page uses them (Fit to artwork, the checks),
+  but they aren't counted on the Bookings page, in coverage or for the PoP photos;
+* the gateway doesn't send its detection alerts (black, frozen, board blown out, low
+  coverage...) to Teams or Slack; a lost video stream is still sent;
+* the Sites page shows a **Setup** badge, and the Bookings page *in setup*.
+
+The region page shows the go-live checks, rechecked every minute:
+
+| Check | Passes when | Setting (receiver) |
+|---|---|---|
+| Region placed | the outline isn't the whole picture | |
+| Region left alone | it hasn't been saved for 30 min | `SETUP_SETTLE_MIN` |
+| Plays seen since | at least 20 plays since the last save | `SETUP_MIN_PLAYS` |
+| Plays match booked artwork | 60% of those plays match booked artwork, from at least 2 campaigns (or every campaign, if fewer are booked) | `SETUP_MATCH_SHARE` |
+
+**Go live** is enabled when they pass (**Go live anyway** overrides, for a screen with nothing
+booked to compare with, for example). Going live makes the gateway forget the creatives it
+learned while the region moved, and learn them again from then on, once each. The site's
+plays count from that moment. A live site can be put **Back to setup** from the region page
+(the camera was bumped or re-aimed): its plays stop counting until it goes live again.
+Existing sites are live; the setup periods are kept in the receiver's database.
 
 **Curved and folded screens.** The **Screen** list on the region page picks the shape:
 

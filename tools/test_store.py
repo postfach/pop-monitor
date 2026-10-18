@@ -118,6 +118,22 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.delete_site("NEW"), 1)
         self.assertEqual(os.listdir(os.path.join(self.dir, "images")), [])
 
+    def test_setup_periods(self):
+        s, t = self.s, self.now
+        self.assertTrue(s.setup_start("S", t - 100))
+        self.assertFalse(s.setup_start("S", t - 50))                        # already in setup
+        self.assertTrue(s.setup_region("S", t - 40))
+        self.assertEqual(s.setup_periods(), {"S": [(t - 100, None, t - 40)]})
+        self.assertTrue(s.setup_end("S", t - 10))
+        self.assertFalse(s.setup_end("S", t - 5))                          # already live
+        self.assertFalse(s.setup_region("S", t - 5))                       # live: not noted
+        s.setup_start("S", t)                                                # back into setup
+        self.assertEqual(s.setup_periods()["S"], [(t - 100, t - 10, t - 40), (t, None, None)])
+        s.rename_site("S", "S2")
+        self.assertEqual(list(s.setup_periods()), ["S2"])
+        other = store.Store(self.dir, log=lambda m: None, migrate=False)   # another process sees it
+        self.assertEqual(len(other.setup_periods()["S2"]), 2)
+
     def test_migrates_jsonl(self):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, "images"))

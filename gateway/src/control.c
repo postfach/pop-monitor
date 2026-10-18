@@ -225,6 +225,7 @@ static cJSON *camera_json(int i)
     cJSON_AddBoolToObject(j, "ptz_check", c->ptz_check);
     cJSON_AddStringToObject(j, "vault_screen", c->vault_screen);
     cJSON_AddNumberToObject(j, "expected_creatives", c->expected_creatives);
+    cJSON_AddBoolToObject(j, "setup", c->setup);
     cJSON_AddNumberToObject(j, "coverage_min_pct", c->coverage_min_pct);
     cJSON_AddNumberToObject(j, "coverage_window_min", c->coverage_window_min);
     cJSON_AddBoolToObject(j, "coverage_custom", cJSON_GetObjectItemCaseSensitive(o, "coverage_min_pct") ||
@@ -365,6 +366,8 @@ static void handle_create(int fd, const char *body, int dry_run)
     if (!cJSON_IsObject(in)) { cJSON_Delete(in); respond_error(fd, 400, "expected a JSON object"); return; }
     cJSON *obj = cJSON_CreateObject();
     merge_form(obj, in);
+    /* a new site starts in setup (unless asked otherwise) until its region fits */
+    cJSON_AddBoolToObject(obj, "setup", !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(in, "setup")));
     pc_region r;
     char rwhy[160];
     if (config_parse_region(in, &r) != 0 || !config_region_valid(&r, rwhy, sizeof rwhy)) {
@@ -593,6 +596,25 @@ static void handle_expectations(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+/* Setup mode on or off: {"setup": true|false}. No restart: only alerts and the
+ * receiver's counting depend on it. */
+static void handle_set_setup(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body && *body ? body : "{}");
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, "setup");
+    if (!cJSON_IsBool(v)) { cJSON_Delete(in); respond_error(fd, 400, "expected {\"setup\": true|false}"); return; }
+    int on = cJSON_IsTrue(v);
+    cJSON_Delete(in);
+    pthread_mutex_lock(&A->cams_mu);
+    A->cfg->cameras[idx].setup = on;
+    set_item(A->cfg->cam_json[idx], "setup", cJSON_CreateBool(on));
+    save_all();
+    cJSON *j = camera_json(idx);
+    pthread_mutex_unlock(&A->cams_mu);
+    LOGI(A->cfg->cameras[idx].name, "%s", on ? "in setup: detection alerts held back" : "live");
+    respond_json(fd, 200, j);
+}
+
 /* Forget every creative a site has seen (testing, or a complete change of
  * campaigns). Body: {"restart_numbering": true} also starts IDs again at
  * c-0001; otherwise new creatives continue after the highest ID used, so
@@ -748,6 +770,7 @@ static void handle(int fd)
             handle_set_roi(fd, idx, body);
         else if (!strcmp(method, "PUT") && !strcmp(action, "expectations")) handle_expectations(fd, idx, body);
         else if (!strcmp(method, "POST") && !strcmp(action, "reset-creatives")) handle_reset_creatives(fd, idx, body);
+        else if (!strcmp(method, "POST") && !strcmp(action, "setup")) handle_set_setup(fd, idx, body);
         else if (!strcmp(method, "POST") && !strcmp(action, "merge-creatives")) handle_merge_creatives(fd, idx, body);
         else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
         else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);

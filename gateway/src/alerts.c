@@ -236,6 +236,7 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
     cJSON_AddStringToObject(j, "at", at);
     cJSON_AddStringToObject(j, "detail", detail ? detail : "");
     cJSON_AddStringToObject(j, "app_version", PC_VERSION);
+    if (cam->setup) cJSON_AddTrueToObject(j, "setup");
     if (roi_jpg && roi_len) {
         char sha[65];
         sha256_hex(roi_jpg, roi_len, sha);
@@ -250,6 +251,9 @@ void alerts_send(app_ctx *app, const camera_cfg *cam, const char *fault, const c
 
     /* 2. direct notifications, rate limited */
     if (!*g->teams_webhook && !*g->slack_webhook) return;
+    /* a site being set up: its region is still moving, so detection alerts are
+     * noise; a lost video stream is still worth knowing about */
+    if (cam->setup && strcmp(fault, "stream_lost") != 0) return;
     char key[160];
     snprintf(key, sizeof key, "%s/%s", cam->site_id, fault);
     pthread_mutex_lock(&mu);

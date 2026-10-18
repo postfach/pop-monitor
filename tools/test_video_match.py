@@ -96,7 +96,7 @@ class VideoMatch(unittest.TestCase):
                 eid = f"e{k}{n}"
                 photo(src, k * 10 + n, night=n % 2).save(os.path.join(out, "images", f"{eid}.roi.jpg"))
                 plays.append((1000 + k * 100 + n, cid, False, cid in ("c-0001", "c-0002"), eid, True, True))
-        rx.site_plays = lambda sid, t0, t1: plays
+        rx.site_plays = lambda sid, t0, t1, setup=False: plays
 
     def test_frames_taken(self):
         self.assertGreaterEqual(self.nframes, 10)            # 5 s at one every 0.5 s

@@ -48,6 +48,8 @@ typedef struct {
     int   coverage_window_min;  /* ...measured over this many minutes  */
     char  vault_screen[96];     /* screen name in Vault (bookings)      */
     int   expected_creatives;   /* distinct creatives booked (0 = auto) */
+    int   setup;                /* being set up (region not final): detection alerts
+                                   aren't sent to Teams/Slack; the receiver doesn't count it */
     float ptz_tolerance;        /* degrees / zoom units                */
     pc_detector_cfg det;
     pc_faults_cfg   faults;

@@ -44,9 +44,9 @@ class Fit(unittest.TestCase):
         rx.ARGS = types.SimpleNamespace(out=self.out)
         rx.CRE.update(root=self.lib, mtime=1.0)
         rx.board_px = lambda cam: None
-        rx.artwork_matches = lambda cam, t0, t1: {"c-0001": {"status": "matched", "file": "a.png", "score": 0.7,
+        rx.artwork_matches = lambda cam, t0, t1, setup=False: {"c-0001": {"status": "matched", "file": "a.png", "score": 0.7,
                                                              "campaign_id": "LUMO_1"}}
-        rx.site_plays = lambda sid, t0, t1: [(time.time() - 60, "c-0001", False, False, "e1", True, True)]
+        rx.site_plays = lambda sid, t0, t1, setup=False: [(time.time() - 60, "c-0001", False, False, "e1", True, True)]
 
     def fit(self, truth, start):
         draw(self.art, truth).save(os.path.join(self.out, "images", "e1.frame.jpg"), quality=92)
@@ -74,7 +74,7 @@ class Fit(unittest.TestCase):
         self.assertLess(abs(r["region"]["fold_pct"] - 40), 4)
 
     def test_nothing_matched(self):
-        rx.artwork_matches = lambda cam, t0, t1: {}
+        rx.artwork_matches = lambda cam, t0, t1, setup=False: {}
         r = rx.fit_region({"id": "S"}, {"roi": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]}, 0)
         self.assertIn("no photo", r["error"])
 
