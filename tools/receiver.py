@@ -1230,13 +1230,21 @@ function artCell(c, s) {
     return `<span class="muted" title="${esc(miss ? miss.reason : '')}">${vids ? vids + ' video(s), not matched' : s.artwork.library ? 'none in SharePoint' : '—'}</span>` +
       (miss && miss.folder_url ? ` <a class="muted" href="${esc(miss.folder_url)}" target="_blank" title="Open the campaign folder in SharePoint">folder</a>` : '');
   }
+  const dco = files.filter(a => a.dco);
+  if (dco.length) {      // a dynamic creative: one picture and the count, not 30 near-identical thumbnails
+    const rest = files.filter(a => !a.dco);
+    return `<span class="pill" title="Dynamic creative (HTML in Doohly). PoP photos are matched against its ${dco.length} rendered variants from LUMO Labs (weather and time of day); the best variant wins.">DCO</span> ` +
+      `<a href="${artUrl(dco[0].file)}" target="_blank" title="${esc(dco[0].variant || dco[0].name)}"><img class="thumb sm" loading="lazy" src="${artUrl(dco[0].file)}" alt=""></a>` +
+      ` <span class="muted">${dco.length} variant${dco.length === 1 ? '' : 's'}</span>` +
+      rest.slice(0, 2).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('');
+  }
   return files.slice(0, 4).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}${a.from || a.to ? ' · ' + fmtd(a.from) + '–' + fmtd(a.to) : ''}${a.rotation ? ' · ' + a.rotation + '%' : ''}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('') +
      (files.length > 4 ? ` <span class="muted">+${files.length - 4}</span>` : '');
 }
 function refThumb(cr) {
   const a = cr.art; if (!a || !a.file || a.status === 'none') return '';
   const f = a.frame || a.file;          // a video: the frame it looked like
-  return `<a href="${artUrl(f)}" target="_blank" title="${esc(a.name)}${a.kind === 'video' ? ' (video frame)' : ''}"><img class="thumb" loading="lazy" src="${artUrl(f)}" alt="booked artwork" style="${a.status === 'possible' ? 'opacity:.55' : ''}"></a>`;
+  return `<a href="${artUrl(f)}" target="_blank" title="${esc(a.variant ? 'DCO variant: ' + a.variant : a.name)}${a.kind === 'video' ? ' (video frame)' : ''}"><img class="thumb" loading="lazy" src="${artUrl(f)}" alt="booked artwork" style="${a.status === 'possible' ? 'opacity:.55' : ''}"></a>`;
 }
 function artPill(cr, s, cname) {
   const a = cr.art;
@@ -1407,6 +1415,7 @@ async function openMissing() {
           <span class="pill ${m.partial ? '' : 'warn'}">${m.partial ? 'some missing' : 'no artwork'}</span>
           <span class="muted">${esc([dates(m), 'screen ' + sz(m)].filter(Boolean).join(' · '))}</span>
           <div class="muted" style="font-size:12px">${esc(m.reason || '')}</div>
+          ${m.dco && m.dco.length ? `<div style="font-size:13px;margin-top:4px"><span class="pill">DCO</span> Doohly plays ${m.dco.map(n => `<code class="f">${esc(n)}</code>`).join(', ')} (HTML). Its renders are looked for in LUMO Labs (a folder with the campaign's LUMO_ number or MI in it, or named for the advertiser, with a subfolder named for the screen). Or upload a render of each variant here.</div>` : ''}
           ${want.length ? `<div style="font-size:13px;margin-top:4px">Doohly plays (not in SharePoint):</div><ul>${want.map(n => `<li><code class="f">${esc(n)}</code></li>`).join('')}</ul>` :
             `<div style="font-size:13px;margin-top:4px">Should be: the campaign's artwork for this screen, ${esc(sz(m))}. Name the file with the screen's name (e.g. <i>${esc(m.screen)}</i>), or make it exactly that size, or name it in the Material Instructions.</div>`}
           <div style="font-size:13px">Goes ${where}</div>
@@ -2310,9 +2319,11 @@ def infer_programmatic(ds, week, crs, assigned, art, library):
         cid, kinds = b.get("campaign_id"), {c.get("type") for c in b.get("creatives") or []}
         if "image" in kinds and cid not in have:
             return set(), f"the artwork for {b.get('campaign_name') or cid} isn't in the library, so its plays could be mistaken for programmatic"
-        if "html" in kinds and cid not in taken:      # live web content can't be compared: needs a creative linked first
-            return set(), (f"{b.get('campaign_name') or cid} is booked with live web content, which can't be matched: "
-                           "link its creative to the campaign below and the rest can be worked out")
+        if "html" in kinds and cid not in taken and not any(
+                x.get("campaign_id") == cid and x.get("dco") and x.get("file") for x in library):
+            # live web content with no renders of its variants: needs a creative linked first
+            return set(), (f"{b.get('campaign_name') or cid} is booked with live web content (DCO) and no renders of it "
+                           "were found in LUMO Labs: link its creative to the campaign below and the rest can be worked out")
         if "video" in kinds and cid not in taken and not any(
                 x.get("campaign_id") == cid and x.get("kind") == "video" and x.get("frames") for x in library):
             video_block = True                       # a booked video with no frames to compare with
@@ -2670,7 +2681,7 @@ def artwork_matches(cam, t0, t1):
             st = {"lib": lib, "at": now, "eid": sample[-1][4],
                   "res": {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"),
                           "file": bc.get("file"), "score": round(best, 2), "next": round(other, 2),
-                          "kind": bc.get("kind", "image"), "frame": frame,
+                          "kind": bc.get("kind", "image"), "frame": frame, "variant": bc.get("variant"),
                           "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(used)}}
             state[cid] = st
             ART_STATE["dirty"] = True
@@ -3170,7 +3181,8 @@ def site_bookings(cam, week, links_all):
         c.update(creatives=[], delivered=0.0,
                  linked=[k for k, v in site_links.items() if v == c["campaign_id"]],
                  artwork=[{"name": x.get("name"), "file": x.get("file"), "kind": x.get("kind", "image"),
-                           "from": x.get("from"), "to": x.get("to"), "rotation": x.get("rotation")} for x in mine])
+                           "from": x.get("from"), "to": x.get("to"), "rotation": x.get("rotation"),
+                           "dco": bool(x.get("dco")), "variant": x.get("variant")} for x in mine])
     ds = doohly_site(sid, res["vault_screen"])
     inferred, why_not = (infer_programmatic(ds, week, crs, m, art, library) if ds else (set(), ""))
     res["programmatic_inference"] = {"on": bool(ds) and not why_not, "why_not": why_not, "creatives": sorted(inferred)}

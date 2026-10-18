@@ -252,6 +252,11 @@ leaving out house and unbooked fill.
    needs a fine-detail score of 0.36 rather than 0.40 (`ART_MATCH_VIDEO` on the receiver;
    `VIDEO_FRAME_EVERY_S`, `VIDEO_FRAME_WIDTH`, `VIDEO_MAX_FRAMES` on creatives-sync).
 
+   **Dynamic creatives (DCO)**, booked in Doohly as an HTML zip (e.g. Bentley's weather ad),
+   are matched against the renders of all their variants, from the campaign's folder in
+   IT / 6. LUMO Labs (the screen's subfolder): shown as *DCO · N variants*, and a match names
+   the variant. Details: "Dynamic creatives" in `docs/sharepoint-setup.md`.
+
 Each site is a collapsed line on load (true coverage, booked vs available slots, unassigned
 slots, campaigns not seen, warnings); click it to open the full card (the page remembers which
 are open). The gateway often gives one artwork several creative IDs (day and night exposure,

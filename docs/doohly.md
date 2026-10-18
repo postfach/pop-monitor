@@ -72,9 +72,11 @@ so on a screen with a Doohly player a creative is marked **Programmatic (inferre
 * it isn't a video while a booked video has no frames in the library (its download or frame
   extraction failed), as its plays could then be mistaken for programmatic.
 
-If a campaign is booked with live web content (e.g. a weather ad), nothing is inferred on
-that screen until one of its creatives is linked to the campaign on the Bookings page; the
-Programmatic tile says *not inferred* and why. Inferred creatives count as programmatic,
+A campaign booked with live web content (a DCO, e.g. Bentley's weather ad) counts as having
+artwork when its rendered variants were found in LUMO Labs (see *Dynamic creatives* in
+`docs/sharepoint-setup.md`). Without them nothing is inferred on that screen until one of its
+creatives is linked to the campaign on the Bookings page; the Programmatic tile says *not
+inferred* and why. Inferred creatives count as programmatic,
 show *Auto: Programmatic (inferred)* (pick anything else to override, as usual) and
 *Programmatic (inferred)* on the review page.
 
@@ -107,8 +109,10 @@ It writes `doohly.json` into the artwork volume, which the receiver reads.
 
 * **Creative files can't be downloaded** (Doohly's file links need signed URLs), so the
   images still come from SharePoint, matched by name. In the first run, all 63 files booked
-  on the three trial screens were found by their exact name. HTML creatives (live
-  content, e.g. a weather ad) can't be matched.
+  on the three trial screens were found by their exact name. HTML creatives (DCO,
+  e.g. a weather ad) are a small zip that loads the ad live, with nothing in it to match: their
+  creative type is `html` (file extension `zip`, no size), and their renders come from LUMO Labs
+  instead.
 * **No play counts.** The Reporting tab's plays per day aren't in the public API.
 * **The token can change bookings.** The API also creates and deletes campaigns and
   bookings, so keep the token private. PoP Monitor never calls those endpoints.

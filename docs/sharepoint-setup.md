@@ -112,6 +112,36 @@ A first run for three screens takes about 120 Graph calls and a few seconds; lat
 about 70 calls and download nothing unless artwork changed. Graph's limits are far above
 this.
 
+## Dynamic creatives (DCO)
+
+Doohly books a dynamic creative (one that changes with the weather or time of day) as an
+**HTML zip**: a few hundred bytes that load the ad live, with no picture in it. When a
+campaign's Doohly booking has one, creatives-sync looks for the renders of its variants in
+**IT / 6. LUMO Labs** instead of Creative+MIs:
+
+1. **The campaign's folder**: one whose name has the campaign's `LUMO_` number, or that holds
+   a file that does (usually a copy of its MI), e.g.
+   `3.2026/Q3/Bentley - Weather Triggers` (it has `Copy of Bentley - LUMO_19409 - … Material
+   Instructions.xlsx`). Failing that, the newest folder named for the advertiser.
+2. **The screen's subfolder**: named for the screen, with or without `LUMO-`
+   (`Supplied Files/LUMO-Greenlane`, `LUMO_Bentley_export_video/Anzac`). Failing that, files of
+   the screen's size that aren't in another screen's subfolder.
+3. **Every variant** in it becomes the campaign's artwork for that screen (images, or frames
+   of videos: 6 per video, 2 s apart, as the renders barely move). Where a variant is there as
+   both, the image is used. A name like `GRE_SUN-HL_1214-1510_Sunny.png` is shown as *Sunny
+   12:14-15:10 (SUN-HL)*.
+
+The Bookings page shows the campaign as **DCO · 30 variants** with one picture, and a matched
+creative names the variant it looked like. The variants of one campaign never count against
+each other in the match margin, only other campaigns do. If nothing is found, the campaign is
+in the *without artwork* list with the reason; a render uploaded there also works.
+
+LUMO Labs is walked (this year's folders, plus last year's in January and February, down to
+the campaign folders' files: about 150 Graph calls) at most every 12 hours, and again as soon
+as a DCO campaign isn't in it. The app's access to the LUMO site covers the IT library, so no
+setup is needed. (Graph's search doesn't work with this app's site-only access, which is why
+the folders are walked.)
+
 ## Settings (environment)
 
 | Variable | Default | |
@@ -124,6 +154,9 @@ this.
 | `SYNC_INTERVAL_MIN` | 240 | Full refresh interval |
 | `SYNC_SCREENS` | (monitored sites) | Comma-separated Vault screens, or `all` for every booked screen |
 | `MONTHS_BACK` | 8 | Month folders indexed |
+| `DCO_LIBRARY`, `DCO_ROOT` | `IT`, `6. LUMO Labs` | Where the renders of dynamic (HTML) creatives are |
+| `DCO_INDEX_HOURS` | 12 | How long the walk of `DCO_ROOT` is reused |
+| `DCO_VIDEO_FRAME_EVERY_S`, `DCO_VIDEO_MAX_FRAMES` | 2, 6 | Frames taken from a video render |
 
 ## Checking and troubleshooting
 

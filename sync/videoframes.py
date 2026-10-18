@@ -28,17 +28,18 @@ def ffmpeg_exe():
         return None
 
 
-def extract(video_path, out_dir):
-    """Write out_dir/f0000.jpg ... (one every FRAME_EVERY_S s). Returns the frame
-    file names in order, or raises RuntimeError with ffmpeg's complaint."""
+def extract(video_path, out_dir, every_s=None, max_frames=None):
+    """Write out_dir/f0000.jpg ... (one every FRAME_EVERY_S s, or every_s). Returns the
+    frame file names in order, or raises RuntimeError with ffmpeg's complaint."""
+    every_s, max_frames = every_s or FRAME_EVERY_S, max_frames or MAX_FRAMES
     exe = ffmpeg_exe()
     if not exe:
         raise RuntimeError("ffmpeg is not available (pip install imageio-ffmpeg)")
     tmp = out_dir + ".part"
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
-    vf = f"fps=1/{FRAME_EVERY_S:g},scale='min({FRAME_WIDTH},iw)':-2"
-    cmd = [exe, "-v", "error", "-nostdin", "-i", video_path, "-vf", vf, "-frames:v", str(MAX_FRAMES),
+    vf = f"fps=1/{every_s:g},scale='min({FRAME_WIDTH},iw)':-2"
+    cmd = [exe, "-v", "error", "-nostdin", "-i", video_path, "-vf", vf, "-frames:v", str(max_frames),
            "-q:v", "3", os.path.join(tmp, "f%04d.jpg")]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     frames = sorted(os.path.basename(p) for p in glob.glob(os.path.join(tmp, "f*.jpg")))

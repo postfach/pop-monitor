@@ -66,6 +66,15 @@ INTERVAL = float(ENV("SYNC_INTERVAL_MIN", "240")) * 60
 CHECK = float(ENV("CHECK_MIN", "5")) * 60
 SCREENS_OVERRIDE = [s.strip() for s in ENV("SYNC_SCREENS", "").split(",") if s.strip()]
 MONTHS_BACK = int(ENV("MONTHS_BACK", "8"))    # how far back campaign folders are indexed
+# Renders of dynamic (DCO) creatives, booked in Doohly as an HTML zip: LUMO Labs keeps a
+# folder per campaign (found by the LUMO_ number in it, else the advertiser's name) with a
+# subfolder per screen holding every weather / time-of-day variant.
+DCO_LIBRARY = ENV("DCO_LIBRARY", "IT")
+DCO_ROOT = ENV("DCO_ROOT", "6. LUMO Labs").strip("/")
+DCO_DEPTH = int(ENV("DCO_DEPTH", "4"))      # folder levels walked under DCO_ROOT
+DCO_INDEX_HOURS = float(ENV("DCO_INDEX_HOURS", "12"))   # the walk is reused this long (unless a campaign is missing)
+DCO_VIDEO_EVERY_S = float(ENV("DCO_VIDEO_FRAME_EVERY_S", "2"))
+DCO_VIDEO_MAX_FRAMES = int(ENV("DCO_VIDEO_MAX_FRAMES", "6"))
 SKIP = re.compile(ENV("SKIP_FOLDERS", r"(?i)^(pops?|proof of play|contracts?|archive|not booked|wrong spec|old|superseded)\b"))
 TZ_NAME = ENV("TZ", "Pacific/Auckland")
 
@@ -150,10 +159,10 @@ class Graph:
         self.token, self.expires = r["access_token"], time.time() + int(r.get("expires_in", 3600))
         return self.token
 
-    def request(self, method, url, stream=False, **kw):
+    def request(self, method, url, stream=False, tries=6, **kw):
         if not url.startswith("http"):
             url = GRAPH + url
-        for attempt in range(6):
+        for attempt in range(tries):
             self.calls += 1
             try:
                 r = self.s.request(method, url, headers={"Authorization": f"Bearer {self._token()}"},
@@ -163,7 +172,7 @@ class Graph:
                     raise GraphError(f"cannot reach Microsoft Graph: {e}")
                 time.sleep(2 ** attempt)
                 continue
-            if r.status_code in (429, 500, 502, 503, 504):
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < tries - 1:
                 wait = float(r.headers.get("Retry-After") or 2 ** attempt)
                 time.sleep(min(wait, 60))
                 continue
@@ -185,11 +194,11 @@ class Graph:
             return r
         raise GraphError(f"Graph kept throttling {url}")
 
-    def get(self, url, **params):
-        return self.request("GET", url, params=params or None).json()
+    def get(self, url, _tries=6, **params):
+        return self.request("GET", url, tries=_tries, params=params or None).json()
 
-    def pages(self, url, **params):
-        d = self.get(url, **params)
+    def pages(self, url, _tries=6, **params):
+        d = self.get(url, _tries=_tries, **params)
         while True:
             for v in d.get("value", []):
                 yield v
@@ -210,24 +219,26 @@ class Library:
 
     ITEM_FIELDS = "id,name,eTag,cTag,size,lastModifiedDateTime,webUrl,folder,file,image,video,parentReference"
 
-    def __init__(self, g):
+    def __init__(self, g, library=None, root=None, drive=None):
         self.g = g
-        self.drive = ENV("SP_DRIVE_ID")
+        self.library = library or LIBRARY
+        self.root_path = root if root is not None else ROOT
+        self.drive = drive if library else (drive or ENV("SP_DRIVE_ID"))
         self.root = None
         self.children_cache = {}
 
     def connect(self):
         if not self.drive:
             site = self.g.get(f"/sites/{SITE}", **{"$select": "id,webUrl,displayName"})
-            want = LIBRARY.lower()
+            want = self.library.lower()
             for d in self.g.pages(f"/sites/{site['id']}/drives", **{"$select": "id,name,webUrl"}):
                 tail = urllib.parse.unquote(d.get("webUrl", "")).rstrip("/").rsplit("/", 1)[-1].lower()
                 if d.get("name", "").lower() == want or tail == want:
                     self.drive = d["id"]
                     break
             if not self.drive:
-                raise GraphError(f"no document library called {LIBRARY!r} on {site.get('webUrl')}")
-        self.root = self.g.get(f"/drives/{self.drive}/root:/{q(ROOT)}", **{"$select": self.ITEM_FIELDS})
+                raise GraphError(f"no document library called {self.library!r} on {site.get('webUrl')}")
+        self.root = self.g.get(f"/drives/{self.drive}/root:/{q(self.root_path)}", **{"$select": self.ITEM_FIELDS})
         return self
 
     def children(self, item_id):
@@ -294,7 +305,8 @@ class Library:
         """Fallback for a campaign not in the indexed months: Graph search."""
         hits = []
         try:
-            for it in self.g.pages(f"/drives/{self.drive}/root/search(q='LUMO_{cid}')",
+            # app-only (Sites.Selected) search answers 500 "generalException": don't retry it
+            for it in self.g.pages(f"/drives/{self.drive}/root/search(q='LUMO_{cid}')", _tries=1,
                                    **{"$select": self.ITEM_FIELDS, "$top": "50"}):
                 path = urllib.parse.unquote((it.get("parentReference") or {}).get("path", ""))
                 if "/Creative+MIs/" not in path + "/" or "folder" not in it:
@@ -320,7 +332,7 @@ class Library:
                 if depth < 4 and not SKIP.search(c["name"]):
                     out += self.tree(c, depth + 1, f"{prefix}{c['name']}/")
             elif "file" in c:
-                img = c.get("image") or {}
+                img = c.get("image") or c.get("video") or {}
                 out.append({"id": c["id"], "name": c["name"], "etag": c.get("eTag") or c.get("cTag") or "",
                             "modified": c.get("lastModifiedDateTime", ""), "size_b": c.get("size"),
                             "width": img.get("width"), "height": img.get("height"),
@@ -330,6 +342,103 @@ class Library:
 
     def download(self, item_id):
         return self.g.request("GET", f"/drives/{self.drive}/items/{item_id}/content").content
+
+
+class DcoLibrary(Library):
+    """Renders of dynamic creatives (HTML in Doohly) in LUMO Labs, e.g.
+    6. LUMO Labs/3.2026/Q3/Bentley - Weather Triggers/Supplied Files/LUMO-Greenlane/GRE_SUN-HL_1214-1510_Sunny.png"""
+
+    def __init__(self, g):
+        super().__init__(g, DCO_LIBRARY, DCO_ROOT, ENV("DCO_DRIVE_ID"))
+        self._index, self._index_from_disk = None, False
+
+    KEEP = ("id", "name", "webUrl", "lastModifiedDateTime", "_path")
+
+    def index(self, today=None, fresh=False):
+        """Walk LUMO Labs (year / quarter / campaign, e.g. 3.2026/Q3/Bentley - Weather Triggers)
+        down to the campaign folders' own files: ({5-digit id: folder} from folder and file
+        names, a campaign folder usually holding its MI; every folder, for the advertiser
+        fallback). Only this year's folders (and last year's in January and February) by the
+        years in their names. Kept in STATE for DCO_INDEX_HOURS."""
+        today = today or date.today()
+        path = os.path.join(STATE, "dco-index.json")
+        if self._index is None and not fresh:
+            c = read_json(path, {}) or {}
+            if c.get("root") == self.root_path and time.time() - (c.get("at") or 0) < DCO_INDEX_HOURS * 3600:
+                self._index = (c.get("ids") or {}, c.get("folders") or [])
+                self._index_from_disk = True
+        if self._index is not None and not fresh:
+            return self._index
+        oldest = today.year - (1 if today.month <= 2 else 0)
+        ids, folders = {}, []
+        slim = (lambda it, rel: dict({k: it.get(k) for k in self.KEEP if k in it}, _path=rel))
+
+        def walk(fo, rel, depth):
+            for c in self.children(fo["id"]):
+                crel = f"{rel}/{c['name']}" if rel else c["name"]
+                for cid in set(re.findall(r"(?i)LUMO[\s_-]*(\d{5})", c["name"])):
+                    ids.setdefault(cid, slim(c, crel) if "folder" in c else slim(fo, rel))
+                if "folder" not in c or SKIP.search(c["name"]):
+                    continue
+                years = [int(y) for y in re.findall(r"(?<!\d)(20\d\d)(?!\d)", c["name"])]
+                if years and max(years) < oldest:
+                    continue
+                folders.append(slim(c, crel))
+                if depth < DCO_DEPTH:
+                    walk(c, crel, depth + 1)
+        walk(self.root, self.root_path, 1)
+        self._index, self._index_from_disk = (ids, folders), False
+        atomic_json(path, {"root": self.root_path, "at": time.time(), "ids": ids, "folders": folders})
+        return self._index
+
+    def campaign_folder(self, cid5, advertiser="", today=None):
+        """The campaign's folder: named with its LUMO_ number or holding a file that is
+        (its MI); else the newest folder named for the advertiser. None if neither."""
+        ids, folders = self.index(today)
+        if cid5 not in ids and self._index_from_disk:       # new since the last walk: walk again (once)
+            ids, folders = self.index(today, fresh=True)
+        if cid5 in ids:
+            return ids[cid5]
+        adv = re.sub(r"[^\w &'-]+", " ", advertiser or "").strip().lower()
+        if len(adv) < 3:
+            return None
+        hits = [f for f in folders if re.search(rf"(?<!\w){re.escape(adv)}(?!\w)", f["name"].lower())]
+        # the newest, then the one nearest the top (a campaign, not one of its screens)
+        hits.sort(key=lambda f: f.get("lastModifiedDateTime", ""), reverse=True)
+        hits.sort(key=lambda f: f["_path"].count("/"))
+        return hits[0] if hits else None
+
+    def variants(self, folder, screen, size, all_screens):
+        """The renders for one screen: files in a subfolder named for it (LUMO-Greenlane,
+        Anzac), else ones of the screen's size in no other screen's subfolder. An image
+        and a video of the same variant: the image."""
+        files = [f for f in self.tree(folder) if mi.kind_of(f["name"])]
+        key = mi.screen_norm(screen)
+        others = {mi.screen_norm(o) for o in all_screens} - {key}
+
+        def segs(f):
+            return [mi.screen_norm(re.sub(r"(?i)^lumo[\s_-]*", "", s)) for s in f["folder_rel"].split("/") if s]
+        mine = [f for f in files if key in segs(f)]
+        if not mine and size:
+            mine = [f for f in files if fits(f, size) and not (set(segs(f)) & others)]
+        if size:
+            mine = [f for f in mine if fits(f, size) is not False]
+        stems = {os.path.splitext(f["name"])[0].lower() for f in mine if mi.kind_of(f["name"]) == "image"}
+        mine = [f for f in mine if mi.kind_of(f["name"]) == "image" or os.path.splitext(f["name"])[0].lower() not in stems]
+        return sorted(mine, key=lambda f: f["name"].lower())
+
+
+VARIANT = re.compile(r"^(?:[A-Za-z]{2,4}_)?(?P<tag>.+?)_(?P<a>\d{4})-(?P<b>\d{4})_(?P<wx>[A-Za-z]+)$")
+
+
+def variant_label(name):
+    """GRE_SUN-HL_1214-1510_Sunny.png -> 'Sunny 12:14-15:10 (SUN-HL)'; else the file name."""
+    stem = os.path.splitext(os.path.basename(name))[0]
+    m = VARIANT.match(stem)
+    if not m:
+        return stem
+    wx = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m["wx"])
+    return f"{wx} {m['a'][:2]}:{m['a'][2:]}-{m['b'][:2]}:{m['b'][2:]} ({m['tag']})"
 
 
 # ---------------------------------------------------------------- inputs
@@ -399,7 +508,8 @@ def doohly_by_screen(doc, screens, weeks):
             a, z = date.fromisoformat(b["start"]), date.fromisoformat(b["end"])
             if z < w0 or a > w1:
                 continue
-            e = camps.setdefault(cid, {"name": b.get("campaign_name") or b.get("name") or "", "weeks": set(), "files": []})
+            e = camps.setdefault(cid, {"name": b.get("campaign_name") or b.get("name") or "", "weeks": set(), "files": [],
+                                       "advertiser": b.get("advertiser") or ""})
             e["weeks"] |= {w for w in weeks if a <= w + timedelta(days=6) and z >= w}
             for c in b.get("creatives") or []:
                 e["files"].append({"name": c.get("name") or "", "type": c.get("type"), "from": max(a, w0).isoformat(),
@@ -710,7 +820,43 @@ class Syncer:
         spec_names = [v[2] for v in specs.values()]
 
         creatives, missing, screen_info, pairs, pairs_ok = [], [], [], 0, 0
-        month = None
+        month, dco = None, None
+
+        def dco_variants(cid, cid5, screen, size, info, html):
+            """A dynamic creative (HTML zip in Doohly): its renders in LUMO Labs, one entry
+            per variant, all for this campaign. Returns (entries, why none)."""
+            nonlocal dco
+            zipname = html[0].get("name") or "HTML"
+            if dco is None:
+                try:
+                    dco = DcoLibrary(g).connect()
+                except GraphError as e:
+                    dco = e
+            if isinstance(dco, Exception):
+                return [], f"DCO ({zipname} in Doohly): can't read {DCO_LIBRARY}/{DCO_ROOT}: {dco}"
+            adv = (dbooked.get(screen) or {}).get(cid, {}).get("advertiser") or \
+                (re.sub(r"(?i)^\s*LUMO[\s_-]*\d{5}\s*[-–:]?\s*", "", info.get("name") or "").split() or [""])[0]
+            try:
+                fo = dco.campaign_folder(cid5, adv, today)
+                fs = dco.variants(fo, screen, size, [screen] + spec_names) if fo else []
+            except GraphError as e:
+                return [], f"DCO ({zipname} in Doohly): {DCO_LIBRARY}/{DCO_ROOT} failed: {e}"
+            if not fo:
+                return [], (f"DCO ({zipname} in Doohly): no folder for {cid}" + (f" or {adv}" if adv else "") +
+                            f" with its renders in {DCO_LIBRARY}/{DCO_ROOT}")
+            if not fs:
+                return [], (f"DCO ({zipname} in Doohly): {fo['_path']} has no renders for {screen}" +
+                            (f" ({size[0]}x{size[1]})" if size else ""))
+            f0 = min((date.fromisoformat(h["from"]) for h in html if h.get("from")), default=None)
+            f1 = max((date.fromisoformat(h["to"]) for h in html if h.get("to")), default=None)
+            out = []
+            for f in fs:
+                lab = variant_label(f["name"])
+                e = entry(cid, screen, f, "dco", f0, f1, None,
+                          f"DCO: {zipname} in Doohly; variant {lab} from {DCO_LIBRARY}/{fo['_path']}")
+                e.update(dco=True, variant=lab)
+                out.append(e)
+            return out, None
 
         def where(cid, cid5, name):
             """Where a campaign's artwork goes: its newest folder, else a new one in this month's."""
@@ -722,6 +868,7 @@ class Syncer:
                 month = lib.month_folder(today) or {}
             if not month:
                 return {}
+            name = re.sub(rf"(?i)^\s*{re.escape(cid)}\s*[-–:]?\s*", "", name or "")    # names often start with the id
             nm = re.sub(r'[\\/:*?"<>|#%]+', " ", f"{cid} - {name}" if name else cid).strip()[:120]
             return {"new_folder": {"parent_id": month["id"], "name": nm, "path": f"{ROOT}/{month['_path']}/{nm}",
                                    "parent_url": month.get("webUrl", "")}}
@@ -729,10 +876,13 @@ class Syncer:
         def details(cid, screen, size, dfiles, info):
             """What should be there: the files Doohly plays, the screen's size, the dates."""
             files = [f for f in dfiles or [] if f.get("type") != "html"]
+            html = sorted({f["name"] for f in dfiles or [] if f.get("type") == "html" and f.get("name")})
             d = {"expected": sorted({f["name"] for f in files if f.get("name")}),
                  "size": list(size) if size else None,
                  "from": min((f["from"] for f in files if f.get("from")), default=None),
                  "to": max((f["to"] for f in files if f.get("to")), default=None)}
+            if html:
+                d["dco"] = html
             if not d["from"] and info.get("weeks"):
                 d["from"] = min(info["weeks"]).isoformat()
                 d["to"] = (max(info["weeks"]) + timedelta(days=6)).isoformat()
@@ -753,14 +903,21 @@ class Syncer:
                     pairs_ok += bool(kept)
                     continue
                 dfiles = (dbooked.get(screen) or {}).get(cid, {}).get("files")
+                html = [f for f in dfiles or [] if f.get("type") == "html"]
+                variants, dco_why = dco_variants(cid, cid5, screen, size, info, html) if html else ([], None)
                 if not camp_folders[cid5]:
+                    if variants:
+                        pairs_ok += 1
+                        creatives += variants
+                        continue
                     missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
-                                         "reason": f"no folder for {cid} in Creative+MIs"},
+                                         "reason": dco_why or f"no folder for {cid} in Creative+MIs"},
                                         **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
                     continue
                 rep_ = {}
                 got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
                                   [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_)
+                got = (got or []) + variants
                 if got:
                     pairs_ok += 1
                     creatives += got
@@ -771,7 +928,8 @@ class Syncer:
                                              "not_found": rep_["not_found"]},
                                             **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
                 else:
-                    missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"], "reason": why,
+                    missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
+                                         "reason": (dco_why + "; " + why) if dco_why and why else (dco_why or why),
                                          "folder_url": camp_folders[cid5][0].get("webUrl", ""),
                                          "not_found": rep_.get("not_found")},
                                         **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
@@ -787,6 +945,7 @@ class Syncer:
         self.last_fp = fp
         return {"inputs": fp, "screens": screens, "pairs": pairs, "pairs_ok": pairs_ok, "files": files_n,
                 "videos": sum(1 for c in creatives if c.get("kind") == "video"),
+                "dco": len({(c["campaign_id"], c["screen"]) for c in creatives if c.get("dco")}),
                 "missing": sum(1 for m in missing if not m.get("partial")), "partial": sum(1 for m in missing if m.get("partial")),
                 "downloaded": downloaded, "graph_calls": g.calls, "weeks": manifest["weeks"],
                 "campaigns": len(all_cids)}
@@ -840,7 +999,9 @@ class Syncer:
         """Download a booked video (kept in the cache) and take its frames. The
         creative's "file" is its first frame (thumbnail), "frames" all of them."""
         rel = f"{mi.slug(c['screen'])}/frames/{safe(c['campaign_id'])}/{safe(f['name'])}"
-        tag = hashlib.sha1(f"{f['id']}|{f['etag']}|{videoframes.FRAME_EVERY_S}|{videoframes.FRAME_WIDTH}".encode()).hexdigest()[:20]
+        every, most = ((DCO_VIDEO_EVERY_S, DCO_VIDEO_MAX_FRAMES) if c.get("dco") else
+                       (videoframes.FRAME_EVERY_S, videoframes.MAX_FRAMES))
+        tag = hashlib.sha1(f"{f['id']}|{f['etag']}|{every}|{most}|{videoframes.FRAME_WIDTH}".encode()).hexdigest()[:20]
         dest = os.path.join(OUT, rel)
         downloaded = 0
         if have.get(rel) != tag or not os.path.isdir(dest):
@@ -853,7 +1014,7 @@ class Syncer:
                 downloaded = 1
             try:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                videoframes.extract(cached, dest)
+                videoframes.extract(cached, dest, every, most)
             except Exception as e:
                 log(f"sync: {c['campaign_id']} {f['name']}: {e}")
                 c["file"], c["note"] = None, (c.get("note") or "") + f"; video frames failed: {e}"
@@ -862,7 +1023,7 @@ class Syncer:
         frames = sorted(x for x in os.listdir(dest) if x.endswith(".jpg"))
         c["frames"] = [f"{rel}/{x}" for x in frames]
         c["file"] = c["frames"][0] if frames else None
-        c["frame_every_s"] = videoframes.FRAME_EVERY_S
+        c["frame_every_s"] = every
         return downloaded, 1 if frames else 0
 
     def prune(self, manifest):
