@@ -260,6 +260,16 @@ artwork or linked to the same campaign are bundled, and unassigned IDs whose PoP
 alike are bundled too. The row's campaign list sets all its IDs at once; "N IDs" opens the
 individual IDs, each of which can still be set on its own.
 
+**Bookings without artwork.** The artwork sync line says how many bookings on the monitored
+screens have no artwork in SharePoint, and how many have only some of what Doohly plays. Click
+either for the list: each booking's campaign, screen, dates and pixel size, the files Doohly
+plays that aren't there, why the sync couldn't find artwork, and the SharePoint folder it goes
+in (with a link). An upload button puts a file straight into that folder, under the name
+Doohly plays when there is one (a new campaign folder in this month's folder when the campaign
+has none; an existing file is never replaced), then the artwork sync runs again and the list
+and page update. The app's write access to the LUMO site (set up for the PoP photos) covers it.
+The Vault pull is only mentioned in the page header when a screen without a Doohly player uses it.
+
 Creatives seen at most twice that week (`BOOKINGS_MINOR_PLAYS`, 2) with nothing linked or
 matched are folded into one line at the bottom ("N creative(s) seen only once or twice this
 week"), click it to show them. They are mostly moments the gateway caught mid-change, or a

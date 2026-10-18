@@ -276,6 +276,20 @@ class Library:
             v.sort(key=lambda c: c["_month"], reverse=True)
         return index
 
+    def month_folder(self, today):
+        """This month's folder in Creative+MIs (e.g. 2026/10. October), or None."""
+        for y in self.children(self.root["id"]):
+            if "folder" not in y or y["name"].strip() != str(today.year):
+                continue
+            for m in self.children(y["id"]):
+                if "folder" not in m or re.search(r"(?i)subtle|motion|animated", m["name"]):
+                    continue
+                mm = re.match(r"\s*(\d{1,2})\s*\.", m["name"])
+                mo = int(mm.group(1)) if mm else next((v for k, v in mi.MONTHS.items() if k in m["name"].lower()), None)
+                if mo == today.month:
+                    return dict(m, _path=f"{y['name']}/{m['name']}")
+        return None
+
     def search_campaign(self, cid):
         """Fallback for a campaign not in the indexed months: Graph search."""
         hits = []
@@ -399,10 +413,11 @@ def doohly_by_screen(doc, screens, weeks):
 
 # ---------------------------------------------------------------- choosing files
 
-def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", booked_files=None):
+def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", booked_files=None, report=None):
     """Files for one campaign on one screen. Returns (creatives, missing_reason).
     booked_files: the creatives Doohly has booked on this screen for this campaign
-    (name, type, from, to, share, hours); when given they decide the files."""
+    (name, type, from, to, share, hours); when given they decide the files.
+    report: a dict that gets "not_found", the booked files with no file in SharePoint."""
     key = mi.screen_norm(screen)
     images = [f for f in files if mi.kind_of(f["name"])]
     if not images:
@@ -445,6 +460,8 @@ def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", 
                 note += f"; plays {' '.join(x for x in (b.get('hours'), ','.join(b.get('days') or [])) if x)}"
             out.append(entry(campaign_id, screen, f, "doohly", date.fromisoformat(b["from"]) if b.get("from") else None,
                              date.fromisoformat(b["to"]) if b.get("to") else None, b.get("share"), note, b.get("hours")))
+        if report is not None:
+            report["not_found"] = list(not_found)
         if out:
             if not_found:
                 out[0]["note"] += f"; not in SharePoint: {', '.join(not_found[:3])}"
@@ -693,6 +710,33 @@ class Syncer:
         spec_names = [v[2] for v in specs.values()]
 
         creatives, missing, screen_info, pairs, pairs_ok = [], [], [], 0, 0
+        month = None
+
+        def where(cid, cid5, name):
+            """Where a campaign's artwork goes: its newest folder, else a new one in this month's."""
+            nonlocal month
+            if camp_folders.get(cid5):
+                fo = camp_folders[cid5][0]
+                return {"folder": {"id": fo["id"], "url": fo.get("webUrl", ""), "path": f"{ROOT}/{fo['_path']}"}}
+            if month is None:
+                month = lib.month_folder(today) or {}
+            if not month:
+                return {}
+            nm = re.sub(r'[\\/:*?"<>|#%]+', " ", f"{cid} - {name}" if name else cid).strip()[:120]
+            return {"new_folder": {"parent_id": month["id"], "name": nm, "path": f"{ROOT}/{month['_path']}/{nm}",
+                                   "parent_url": month.get("webUrl", "")}}
+
+        def details(cid, screen, size, dfiles, info):
+            """What should be there: the files Doohly plays, the screen's size, the dates."""
+            files = [f for f in dfiles or [] if f.get("type") != "html"]
+            d = {"expected": sorted({f["name"] for f in files if f.get("name")}),
+                 "size": list(size) if size else None,
+                 "from": min((f["from"] for f in files if f.get("from")), default=None),
+                 "to": max((f["to"] for f in files if f.get("to")), default=None)}
+            if not d["from"] and info.get("weeks"):
+                d["from"] = min(info["weeks"]).isoformat()
+                d["to"] = (max(info["weeks"]) + timedelta(days=6)).isoformat()
+            return d
         for screen in screens:
             sp = specs.get(mi.screen_norm(screen))
             size = (sp[0], sp[1]) if sp else None
@@ -708,19 +752,29 @@ class Syncer:
                                     "reason": f"SharePoint error, kept {len(kept)} file(s) from the last sync: {camp_err[cid5]}"})
                     pairs_ok += bool(kept)
                     continue
+                dfiles = (dbooked.get(screen) or {}).get(cid, {}).get("files")
                 if not camp_folders[cid5]:
-                    missing.append({"campaign_id": cid, "screen": screen, "name": info["name"],
-                                    "reason": f"no folder for {cid} in Creative+MIs"})
+                    missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
+                                         "reason": f"no folder for {cid} in Creative+MIs"},
+                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
                     continue
+                rep_ = {}
                 got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
-                                  [screen] + spec_names, info["name"],
-                                  booked_files=(dbooked.get(screen) or {}).get(cid, {}).get("files"))
+                                  [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_)
                 if got:
                     pairs_ok += 1
                     creatives += got
+                    if rep_.get("not_found"):            # some of what Doohly plays isn't in SharePoint
+                        missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"], "partial": True,
+                                             "reason": f"{len(rep_['not_found'])} of the files Doohly plays aren't in the folder",
+                                             "folder_url": camp_folders[cid5][0].get("webUrl", ""),
+                                             "not_found": rep_["not_found"]},
+                                            **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
                 else:
-                    missing.append({"campaign_id": cid, "screen": screen, "name": info["name"], "reason": why,
-                                    "folder_url": camp_folders[cid5][0].get("webUrl", "")})
+                    missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"], "reason": why,
+                                         "folder_url": camp_folders[cid5][0].get("webUrl", ""),
+                                         "not_found": rep_.get("not_found")},
+                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
 
         downloaded, files_n = self.materialise(lib, creatives)
         manifest = {"format": "pop-monitor/vault-creatives", "version": 1, "generated_at": now_iso(),
@@ -732,7 +786,8 @@ class Syncer:
         self.prune(manifest)
         self.last_fp = fp
         return {"inputs": fp, "screens": screens, "pairs": pairs, "pairs_ok": pairs_ok, "files": files_n,
-                "videos": sum(1 for c in creatives if c.get("kind") == "video"), "missing": len(missing),
+                "videos": sum(1 for c in creatives if c.get("kind") == "video"),
+                "missing": sum(1 for m in missing if not m.get("partial")), "partial": sum(1 for m in missing if m.get("partial")),
                 "downloaded": downloaded, "graph_calls": g.calls, "weeks": manifest["weeks"],
                 "campaigns": len(all_cids)}
 
@@ -903,6 +958,74 @@ def configured():
     return bool(ENV("AZ_CLIENT_ID") or ENV("GRAPH_TEST_TOKEN"))
 
 
+# ---------------------------------------------------------------- artwork upload
+UPLOAD_MAX = int(ENV("ARTWORK_UPLOAD_MAX_MB", "300")) * 1024 * 1024
+UPLOAD_LOCK = threading.Lock()
+
+
+def upload_artwork(campaign_id, screen, name, data):
+    """Put a missing booking's artwork in its campaign folder in SharePoint (a new
+    folder in this month's when it has none), then sync. Only for a booking the last
+    sync listed as missing artwork; never replaces a file. Returns (code, reply)."""
+    manifest = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
+    want = mi.screen_norm(screen)
+    m = next((x for x in manifest.get("missing") or [] if x.get("campaign_id") == campaign_id
+              and mi.screen_norm(x.get("screen")) == want), None)
+    if not m:
+        return 404, {"error": f"{campaign_id} on {screen} isn't listed as missing artwork (sync again first?)"}
+    name = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    if not name or re.search(r'[\\/:*?"<>|#%]', name) or name.startswith("."):
+        return 400, {"error": "that file name can't be used in SharePoint"}
+    if not mi.kind_of(name):
+        return 400, {"error": "only images (" + ", ".join(mi.IMAGE_EXT) + ") and videos (" + ", ".join(mi.VIDEO_EXT) + ")"}
+    if not data:
+        return 400, {"error": "the file is empty"}
+    if len(data) > UPLOAD_MAX:
+        return 413, {"error": f"files up to {UPLOAD_MAX // 1048576} MB"}
+    with UPLOAD_LOCK:
+        g = Graph()
+        lib = Library(g).connect()
+        folder = (m.get("folder") or {}).get("id")
+        path = (m.get("folder") or {}).get("path")
+        if not folder:
+            nf = m.get("new_folder")
+            if not nf:
+                return 409, {"error": "this campaign has no folder and this month's folder wasn't found in Creative+MIs"}
+            try:
+                it = g.request("POST", f"/drives/{lib.drive}/items/{nf['parent_id']}/children",
+                               json={"name": nf["name"], "folder": {}, "@microsoft.graph.conflictBehavior": "fail"}).json()
+            except GraphError as e:
+                if "nameAlreadyExists" not in str(e):
+                    raise
+                it = g.get(f"/drives/{lib.drive}/items/{nf['parent_id']}:/{q(nf['name'])}")
+            folder, path = it["id"], nf["path"]
+            log(f"artwork: made folder {path}")
+        url = f"/drives/{lib.drive}/items/{folder}:/{q(name)}"
+        try:
+            if len(data) <= 4 * 1024 * 1024 - 1:
+                item = g.request("PUT", f"{url}:/content", params={"@microsoft.graph.conflictBehavior": "fail"},
+                                 data=data).json()
+            else:
+                sess = g.request("POST", f"{url}:/createUploadSession",
+                                 json={"item": {"@microsoft.graph.conflictBehavior": "fail"}}).json()
+                step, last = 5 * 320 * 1024, None
+                for i in range(0, len(data), step):
+                    chunk = data[i:i + step]
+                    last = requests.put(sess["uploadUrl"], data=chunk, timeout=120, headers={
+                        "Content-Range": f"bytes {i}-{i + len(chunk) - 1}/{len(data)}", "Content-Length": str(len(chunk))})
+                    if last.status_code == 409:
+                        raise GraphError("nameAlreadyExists")
+                    last.raise_for_status()
+                item = last.json()
+        except GraphError as e:
+            if "nameAlreadyExists" in str(e) or " 409 " in str(e):
+                return 409, {"error": f"{name} is already in {path}: pick another name, or check why it isn't used"}
+            raise
+    log(f"artwork: uploaded {path}/{name} for {campaign_id} on {screen} ({len(data)} bytes)")
+    SYNC.request(f"artwork uploaded for {campaign_id}")
+    return 201, {"status": "uploaded", "path": f"{path}/{name}", "url": item.get("webUrl"), "syncing": True}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -948,6 +1071,19 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(202, {"status": "running"})
             SYNC.request("Sync now")
             return self.reply(202, {"status": "started"})
+        if self.path.startswith("/artwork/upload?"):   # Bookings page: artwork for a booking that has none
+            if not configured():
+                return self.reply(409, {"error": "SharePoint access is not set up"})
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > UPLOAD_MAX:
+                return self.reply(413, {"error": f"files up to {UPLOAD_MAX // 1048576} MB"})
+            data = self.rfile.read(n)
+            try:
+                code, body = upload_artwork(qs.get("campaign", [""])[0], qs.get("screen", [""])[0], qs.get("name", [""])[0], data)
+            except Exception as e:
+                code, body = 502, {"error": str(e)}
+            return self.reply(code, body)
         m = re.fullmatch(r"/pop/run\?phase=(day|night)", self.path)
         if m and POP:                             # upload now (testing, or after a fix)
             if not configured():

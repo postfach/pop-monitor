@@ -1176,6 +1176,13 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 .pill{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted);white-space:nowrap}
 .pill.warn{border-color:var(--warn);color:var(--warn)}
 .note{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0}
+button.warnlink{color:var(--warn);font-size:inherit;padding:0;text-decoration:underline dotted}
+dialog#missdlg{max-width:min(1100px,95vw);width:100%;max-height:88vh;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+dialog#missdlg::backdrop{background:rgba(0,0,0,.5)}
+.mcamp{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.mcamp h3{margin:0 0 2px;font-size:15px} .msite{border-top:1px solid var(--line);margin-top:8px;padding-top:8px}
+.msite ul{margin:4px 0;padding-left:18px} .msite li{margin:2px 0} .mup{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.mstat{font-size:12px} code.f{font-size:12px;word-break:break-all}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
 <h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
@@ -1188,11 +1195,13 @@ select{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6
 <button class="btn" id="all">Expand / collapse all</button><span class="muted" id="built" style="font-size:12px"></span>
 <span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
 <div id="out"></div>
+<dialog id="missdlg"><div class="top"><h2 style="margin:0">Bookings without artwork</h2><button class="btn" id="missclose">Close</button></div>
+<p class="muted" id="misssub" style="margin:4px 0 10px"></p><div id="misslist"></div></dialog>
 <details class="note muted"><summary>How this is worked out</summary>
 <p>Vault lists, for each booked campaign, the screens it books with its weeks and plays per loop. For each site linked to a Vault screen, this page adds up that week's bookings and compares them with what the gateway saw.</p>
 <p><b>Per loop</b> figures are slots held per loop of the site's rotation. A creative on screen for two slots back to back counts as two; a longer run than that creative usually holds (a missed change, hold-over or freeze) only counts its usual length.</p>
 <p>Vault gives each booking's first and last week and how many weeks it books, but not which ones. A booking with gaps is only <b>certain</b> in its first and last week; in between it shows as <i>may be booked this week</i> and isn't counted in true coverage (it can still be matched to a creative). Week-by-week data from a Vault API would remove this.</p>
-<p><b>Artwork matching.</b> The booked creatives for each screen are pulled from SharePoint (Booked Campaigns / Creative+MIs, using each campaign's Material Instructions where they name the file for the screen). Each creative the gateway sees is compared with that artwork using its PoP images: fine detail (text, edges, layout) with the camera's glare and exposure removed. A clear match (at least 40% and well ahead of every other campaign) assigns it to that campaign as <span class="pill ok">artwork match</span>; a weaker one shows <span class="pill">looks like …?</span> and stays unassigned; <span class="pill">matches no booked artwork</span> usually means programmatic, house, or a creative that isn't in SharePoint. Artwork that played outside the dates in its Material Instructions is flagged <span class="pill warn">off schedule</span>. Video creatives aren't matched yet.</p>
+<p><b>Artwork matching.</b> The booked creatives for each screen are pulled from SharePoint (Booked Campaigns / Creative+MIs, using each campaign's Material Instructions where they name the file for the screen). Each creative the gateway sees is compared with that artwork using its PoP images: fine detail (text, edges, layout) with the camera's glare and exposure removed. A clear match (at least 40% and well ahead of every other campaign) assigns it to that campaign as <span class="pill ok">artwork match</span>; a weaker one shows <span class="pill">looks like …?</span> and stays unassigned; <span class="pill">matches no booked artwork</span> usually means programmatic, house, or a creative that isn't in SharePoint. Artwork that played outside the dates it is booked for is flagged <span class="pill warn">off schedule</span>. Video creatives are matched by frames taken from the video.</p>
 <p>Anything can be set by hand (a campaign, <b>Programmatic</b> or <b>House</b>), which always wins and is kept for later weeks. A campaign with no artwork in SharePoint and no creative linked shows as <i>not linked</i> and isn't judged.</p>
 <p><b>Delivery</b> is slots delivered per loop ÷ slots booked per loop, over the time the gateway was watching. <b>True coverage</b> is booked slots delivered ÷ booked slots, over the certain bookings that have creatives linked. <b>Monitored</b> is the share of the week so far with verified plays.</p></details>
 </main><script>
@@ -1320,15 +1329,16 @@ async function load() {
   const rep = await r.json();
   week = rep.week;
   document.getElementById('wk').textContent = 'Week of ' + new Date(rep.week + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'});
-  const dh = rep.doohly ? (rep.doohly.ok === false ? `<span class="bad">Doohly: ${esc(rep.doohly.error || 'failed')}</span> · `
+  const dh = rep.doohly ? (rep.doohly.ok === false ? `<span class="bad">Doohly: ${esc(rep.doohly.error || 'failed')}</span>`
       : `Bookings from Doohly (${esc(rep.doohly.at)}, ${rep.doohly.bookings} booking(s) on ${rep.doohly.sites} screen(s))` +
-        (rep.doohly.unmatched.length ? ` · <span class="warn" title="${esc(rep.doohly.unmatched.map(u => u.site_id + ': ' + u.looked_for + ' (' + u.why + ')').join('; '))}">${rep.doohly.unmatched.length} site(s) not found in Doohly</span>` : '') + ' · ') : '';
-  document.getElementById('sub').innerHTML = dh + (rep.pulled_at
-    ? `${rep.doohly ? 'other screens from the ' : ''}Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '') +
-      (rep.creatives ? ` · artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : ' · <span class="warn">no artwork library yet</span>') +
-      (rep.artwork_enabled === false ? ' · <span class="warn">artwork matching unavailable (needs numpy and Pillow)</span>' : '')
-    : (rep.doohly ? (rep.creatives ? `artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : '<span class="warn">no artwork library yet</span>')
-       : '<span class="warn">No Vault pull yet. The weekly scheduled task writes one, or upload a file.</span>'));
+        (rep.doohly.unmatched.length ? ` · <span class="warn" title="${esc(rep.doohly.unmatched.map(u => u.site_id + ': ' + u.looked_for + ' (' + u.why + ')').join('; '))}">${rep.doohly.unmatched.length} site(s) not found in Doohly</span>` : '')) : '';
+  // the Vault pull is only mentioned when a screen without a Doohly player uses it
+  const vault = !rep.vault_used ? '' : rep.pulled_at
+    ? `${rep.doohly ? 'screens without a Doohly player from the ' : ''}Vault pull of ${esc(rep.pulled_at)} · ${rep.campaigns} booked campaign(s)` + (rep.source ? ` · ${esc(rep.source)}` : '')
+    : '<span class="warn">No Vault pull yet for the screens without a Doohly player. The weekly scheduled task writes one, or upload a file.</span>';
+  const lib = rep.creatives ? `artwork library of ${esc(rep.creatives.pulled_at)}, ${rep.creatives.count} file(s)` : '<span class="warn">no artwork library yet</span>';
+  document.getElementById('sub').innerHTML = [dh, vault, lib,
+    rep.artwork_enabled === false ? '<span class="warn">artwork matching unavailable (needs numpy and Pillow)</span>' : ''].filter(Boolean).join(' · ');
   last = rep;
   render();
 }
@@ -1367,6 +1377,68 @@ document.getElementById('all').onclick = () => {
   const ds = [...document.querySelectorAll('details.site')], open = !ds.every(d => d.open);
   ds.forEach(d => { d.open = open; });
 };
+// ---- bookings without artwork: what should be there, where, and uploading it
+let missing = [], missWatch = false;
+async function openMissing() {
+  const d = document.getElementById('missdlg');
+  document.getElementById('misslist').innerHTML = '<p class="muted">Loading&hellip;</p>';
+  if (!d.open) d.showModal();
+  const r = await fetch('/bookings/missing').then(r => r.json()).catch(e => ({error: String(e)}));
+  missing = r.items || [];
+  const full = missing.filter(m => !m.partial).length, part = missing.length - full;
+  document.getElementById('misssub').textContent = r.error ? r.error :
+    `${full} booking(s) with no artwork and ${part} with some missing, on the monitored screens, from the artwork sync of ${r.pulled_at || '?'}. ` +
+    'A file uploaded here goes into the campaign\'s folder in SharePoint (a new one if it has none), then the artwork sync runs again.';
+  const by = {};
+  missing.forEach((m, i) => (by[m.campaign_id] = by[m.campaign_id] || []).push([m, i]));
+  const sz = m => m.size ? `${m.size[0]} × ${m.size[1]} px` : 'size not known';
+  const dates = m => m.from ? `${fmtd(m.from)}–${fmtd(m.to)}` : '';
+  document.getElementById('misslist').innerHTML = Object.values(by).map(list => {
+    const m0 = list[0][0];
+    return `<div class="mcamp"><h3>${esc(m0.campaign_name || m0.campaign_id)}</h3>
+      <div class="muted">${esc([m0.advertiser, m0.campaign_id].filter(Boolean).join(' · '))}</div>` +
+      list.map(([m, i]) => {
+        const want = (m.not_found && m.not_found.length ? m.not_found : m.partial ? [] : m.expected) || [];
+        const where = m.folder ? `in <a href="${esc(m.folder.url)}" target="_blank" rel="noopener"><code class="f">${esc(m.folder.path)}</code></a>`
+          : m.new_folder ? `in a new campaign folder, made when you upload: <code class="f">${esc(m.new_folder.path)}</code>`
+          : '<span class="bad">nowhere yet: the campaign has no folder and this month\'s folder wasn\'t found to make one in</span>';
+        const up = (m.folder || m.new_folder) && r.can_upload;
+        return `<div class="msite"><b>${esc(m.site_name || m.screen)}</b>
+          <span class="pill ${m.partial ? '' : 'warn'}">${m.partial ? 'some missing' : 'no artwork'}</span>
+          <span class="muted">${esc([dates(m), 'screen ' + sz(m)].filter(Boolean).join(' · '))}</span>
+          <div class="muted" style="font-size:12px">${esc(m.reason || '')}</div>
+          ${want.length ? `<div style="font-size:13px;margin-top:4px">Doohly plays (not in SharePoint):</div><ul>${want.map(n => `<li><code class="f">${esc(n)}</code></li>`).join('')}</ul>` :
+            `<div style="font-size:13px;margin-top:4px">Should be: the campaign's artwork for this screen, ${esc(sz(m))}. Name the file with the screen's name (e.g. <i>${esc(m.screen)}</i>), or make it exactly that size, or name it in the Material Instructions.</div>`}
+          <div style="font-size:13px">Goes ${where}</div>
+          ${up ? `<div class="mup">` +
+            want.map(n => `<label class="btn" style="cursor:pointer">Upload as ${esc(n)}<input type="file" hidden data-i="${i}" data-name="${esc(n)}" accept="image/*,video/*"></label>`).join('') +
+            `<label class="btn" style="cursor:pointer">${want.length ? 'Upload another file' : 'Upload artwork'}<input type="file" hidden data-i="${i}" accept="image/*,video/*"></label>
+             <span class="mstat muted"></span></div>` : ''}
+        </div>`;
+      }).join('') + '</div>';
+  }).join('') || '<p class="muted">Nothing missing on the monitored screens.</p>';
+}
+document.getElementById('missclose').onclick = () => document.getElementById('missdlg').close();
+document.addEventListener('click', e => { if (e.target.closest('[data-missing]')) { e.preventDefault(); openMissing(); } });
+document.getElementById('misslist').addEventListener('change', async e => {
+  const inp = e.target.closest('input[type=file]'); if (!inp || !inp.files.length) return;
+  const m = missing[+inp.dataset.i], f = inp.files[0], stat = inp.closest('.msite').querySelector('.mstat');
+  const name = inp.dataset.name || f.name;
+  const ext = s => (s.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  if (inp.dataset.name && ext(f.name) !== ext(name)) {
+    stat.className = 'mstat bad'; stat.textContent = `Doohly plays a ${ext(name)} file; that one is ${ext(f.name) || 'of an unknown type'}.`; inp.value = ''; return;
+  }
+  stat.className = 'mstat muted'; stat.textContent = `Uploading ${name} (${(f.size / 1048576).toFixed(1)} MB)…`;
+  const q = new URLSearchParams({campaign: m.campaign_id, screen: m.screen, name});
+  let r, j = {};
+  try { r = await fetch('/bookings/artwork?' + q, {method: 'POST', body: f}); j = await r.json().catch(() => ({})); }
+  catch (err) { r = {ok: false}; j = {error: String(err)}; }
+  inp.value = '';
+  if (!r.ok) { stat.className = 'mstat bad'; stat.textContent = 'Not uploaded: ' + (j.error || r.status); return; }
+  stat.className = 'mstat ok';
+  stat.innerHTML = `Uploaded to <a href="${esc(j.url || '#')}" target="_blank" rel="noopener">${esc(j.path)}</a>. The artwork sync is running; this list and the page update when it finishes.`;
+  missWatch = true; loadSync();
+});
 const fmtT = iso => iso ? new Date(iso).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : '';
 let syncTimer = null, wasRunning = false;
 async function loadSync() {
@@ -1386,7 +1458,8 @@ async function loadSync() {
   else if (st.running) h = `Syncing artwork from SharePoint&hellip; (started ${esc(fmtT(st.started))})`;
   else if (st.last_success) h = `Artwork synced from SharePoint ${esc(fmtT(st.last_success))}: ${st.files ?? 0} file(s) for ` +
     `${st.pairs_ok ?? 0} of ${st.pairs ?? 0} bookings on ${(st.screens || []).length} screen(s)` +
-    (st.missing ? ` · <span class="warn">${st.missing} without artwork</span>` : '') +
+    (st.missing ? ` · <button class="link warnlink" data-missing>${st.missing} without artwork</button>` : '') +
+    (st.partial ? ` · <button class="link warnlink" data-missing>${st.partial} with some artwork missing</button>` : '') +
     (st.next_refresh ? ` · next check ${esc(fmtT(st.next_refresh))}` : '');
   else h = st.configured === false ? '' : 'Artwork sync has not run yet.';
   if (st.secret_days_left != null && st.secret_days_left <= 30)
@@ -1416,7 +1489,7 @@ async function loadSync() {
   txt.innerHTML = h;
   clearTimeout(syncTimer);
   if (st.running || (pu && pu.running)) syncTimer = setTimeout(loadSync, 4000);
-  else if (wasRunning) load();
+  else if (wasRunning) { load(); if (missWatch && document.getElementById('missdlg').open) { missWatch = false; openMissing(); } }
   wasRunning = !!st.running;
 }
 for (const b of document.querySelectorAll('#popup button')) b.onclick = async () => {
@@ -3340,7 +3413,35 @@ def bookings_report(week, cams=None):
                             "count": len([c for c in lib["creatives"] if c.get("file")])}
     for cam in cams or []:
         out["sites"].append(site_bookings(cam, week, links))
+    # the Vault pull only matters for screens Doohly doesn't know
+    out["vault_used"] = any(s.get("vault_screen") and not s.get("doohly") for s in out["sites"])
     return out
+
+
+def missing_artwork():
+    """The bookings on monitored screens with no artwork (or only some) from the last
+    artwork sync: what should be there and where, for the Bookings page."""
+    lib = load_creatives() or {}
+    cams = gateway_cameras() or []
+    sites = {screen_key(c.get("vault_screen")): c for c in cams if c.get("vault_screen")}
+    names = {}
+    for ds in ((load_doohly() or {}).get("sites") or {}).values():
+        for b in ds.get("bookings") or []:
+            if b.get("campaign_id"):
+                names.setdefault(b["campaign_id"], {"name": b.get("campaign_name") or b.get("name"),
+                                                    "advertiser": b.get("advertiser")})
+    out = []
+    for m in lib.get("missing") or []:
+        cam = sites.get(screen_key(m.get("screen")))
+        if not cam:
+            continue
+        n = names.get(m.get("campaign_id")) or {}
+        out.append(dict(m, site_id=cam.get("id"), site_name=cam.get("name"),
+                        campaign_name=n.get("name") or m.get("name"), advertiser=n.get("advertiser")))
+    out.sort(key=lambda m: (bool(m.get("partial")), name_order(m.get("campaign_name") or m["campaign_id"]),
+                            name_order(m.get("site_name"))))
+    return {"pulled_at": local_time(lib.get("generated_at"), True), "items": out,
+            "can_upload": bool(sync_url())}
 
 
 def campaign_for_record(r, cache):
@@ -3396,12 +3497,13 @@ def sync_url():
     return os.environ.get("SYNC_URL", "").rstrip("/")
 
 
-def sync_call(method, path, timeout=5):
+def sync_call(method, path, timeout=5, data=None):
     """Talk to the creatives-sync service. Returns (status code, JSON)."""
     if not sync_url():
         return 404, {"configured": False, "error": "no artwork sync service (SYNC_URL is not set)"}
-    req = urllib.request.Request(sync_url() + path, method=method, data=b"" if method == "POST" else None,
-                                 headers={"Authorization": f"Bearer {ARGS.api_key}"})
+    req = urllib.request.Request(sync_url() + path, method=method,
+                                 data=(data if data is not None else b"") if method == "POST" else None,
+                                 headers={"Authorization": f"Bearer {ARGS.api_key}", "Content-Type": "application/octet-stream"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read() or b"{}")
@@ -3964,6 +4066,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, doohly_players())
         if path == "/sites/rotation":
             return self.reply(200, rotation_info())
+        if path == "/bookings/missing":           # Bookings page: bookings without artwork
+            return self.reply(200, missing_artwork())
         if path == "/bookings/sync":              # artwork sync status for the Bookings page
             code, st = sync_call("GET", "/status")
             st.setdefault("configured", code != 404 and bool(sync_url()))
@@ -4056,6 +4160,15 @@ class H(BaseHTTPRequestHandler):
                 return
             code, body = sync_call("POST", f"/pop/run?phase={m.group(1)}", timeout=10)
             return self.reply(code if code >= 400 else 202, body)
+        if self.path.startswith("/bookings/artwork?"):   # artwork for a booking with none: to SharePoint
+            if not self.authorised():
+                return
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 300 << 20:
+                return self.reply(413, {"error": "files up to 300 MB"})
+            data = self.rfile.read(n)
+            code, body = sync_call("POST", "/artwork/upload?" + self.path.split("?", 1)[1], timeout=600, data=data)
+            return self.reply(code, body)
         if self.path == "/bookings/creatives":     # upload a creatives library (zip)
             if not self.authorised():
                 return
