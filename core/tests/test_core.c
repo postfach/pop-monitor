@@ -342,6 +342,50 @@ static void test_library_merge(void)
     CHECK(lib.items[0].plays == 4, "plays carried over: %d", lib.items[0].plays);
 }
 
+static void test_library_split(void)
+{
+    /* A wrong merge (two different artworks) undone: the merged look gets its
+     * old ID back, the surviving ID keeps its own looks. */
+    static pc_library lib;
+    pc_library_init(&lib);
+    pc_features day, night, other;
+    features_of(1, 1.0, 0, &day);
+    features_of(1, 0.35, 60, &night);
+    features_of(2, 1.0, 0, &other);
+    int a = pc_library_match_or_add(&lib, &day, 1000);
+    int b = pc_library_match_or_add(&lib, &night, 2000);
+    int c = pc_library_match_or_add(&lib, &other, 3000);
+    CHECK(pc_library_merge(&lib, b, a) == 0, "merge b failed");
+    CHECK(pc_library_merge(&lib, c, a) == 0, "merge c failed");        /* the wrong one */
+    CHECK(pc_library_match_or_add(&lib, &other, 4000) == a, "other now reports %d", a);
+    CHECK(pc_library_split(&lib, a, c, NULL, 0, 5000) == 1, "split should return 1 look");
+    CHECK(pc_library_match_or_add(&lib, &other, 6000) == c, "other should report %d again", c);
+    CHECK(pc_library_match_or_add(&lib, &night, 7000) == a, "night look still %d", a);
+    CHECK(pc_library_split(&lib, 99, c, NULL, 0, 8000) == -1, "unknown id");
+    /* a chain: d merged into c, then c into a; splitting c (naming d, which the
+     * receiver knows went into c) takes d's look too */
+    pc_library_init(&lib);
+    pc_features x;
+    features_of(3, 1.0, 0, &x);
+    a = pc_library_match_or_add(&lib, &day, 1000);
+    c = pc_library_match_or_add(&lib, &other, 2000);
+    int d = pc_library_match_or_add(&lib, &x, 3000);
+    pc_library_merge(&lib, d, c);
+    pc_library_merge(&lib, c, a);
+    int also[1] = {d};
+    CHECK(pc_library_split(&lib, a, c, also, 1, 4000) == 2, "both looks back");
+    CHECK(pc_library_match_or_add(&lib, &x, 5000) == c, "d's look reports %d", c);
+    /* untagged looks (a library saved before tagging): dropped */
+    pc_library_init(&lib);
+    a = pc_library_match_or_add(&lib, &day, 1000);
+    c = pc_library_match_or_add(&lib, &other, 2000);
+    pc_library_merge(&lib, c, a);
+    lib.items[0].var_from[0] = 0;
+    CHECK(pc_library_split(&lib, a, c, NULL, 0, 3000) == 0, "untagged: nothing to give back");
+    int e = pc_library_match_or_add(&lib, &other, 4000);
+    CHECK(e != a && e != c, "other artwork gets a new id (got %d)", e);
+}
+
 static void test_faults(void)
 {
     pc_faults fm;
@@ -638,6 +682,7 @@ int main(void)
     test_creative_ids_under_exposure_drift();
     test_similar_creatives_under_glare();
     test_library_merge();
+    test_library_split();
     test_faults();
     test_share_of_time();
     test_snapshot_score();

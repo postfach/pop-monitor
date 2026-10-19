@@ -725,6 +725,7 @@ static void library_save(camera *cm, const pc_library *lib)
             for (int v = 0; v < c->nvar; v++) {
                 cJSON *vo = cJSON_CreateObject();
                 fp_to_json(vo, &c->var[v]);
+                if (c->var_from[v]) cJSON_AddNumberToObject(vo, "from", c->var_from[v]);
                 cJSON_AddItemToArray(vs, vo);
             }
         }
@@ -765,7 +766,12 @@ static void library_load(camera *cm, pc_library *lib, int64_t now)
         cJSON_ArrayForEach(vo, vs) {
             if (c->nvar >= PC_VARIANTS) break;
             memset(&c->var[c->nvar], 0, sizeof c->var[0]);
-            if (fp_from_json(vo, &c->var[c->nvar]) == 0) { c->nvar++; nvar++; }
+            if (fp_from_json(vo, &c->var[c->nvar]) == 0) {
+                const cJSON *fr = cJSON_GetObjectItemCaseSensitive(vo, "from");
+                c->var_from[c->nvar] = cJSON_IsNumber(fr) ? fr->valueint : 0;
+                c->nvar++;
+                nvar++;
+            }
         }
         c->first_seen_ms = c->last_seen_ms = now;
         if (c->id >= lib->next_id) lib->next_id = c->id + 1;
@@ -861,7 +867,21 @@ static void *stream_thread(void *arg)
             if (pc_library_merge(&det.library, mf[k_], mi[k_]) == 0)             \
                 LOGI(c->name, "creative c-%04d merged into c-%04d (same artwork)", mf[k_], mi[k_]); \
         }                                                                        \
-        if (nm) {                                                                \
+        pthread_mutex_lock(&st->mu);                                             \
+        int ns_ = st->nsplit;                                                    \
+        split_req sp_[SPLITQ];                                                   \
+        memcpy(sp_, st->split, sizeof sp_[0] * ns_);                             \
+        st->nsplit = 0;                                                          \
+        pthread_mutex_unlock(&st->mu);                                           \
+        for (int k_ = 0; k_ < ns_; k_++) {                                       \
+            int r_ = pc_library_split(&det.library, sp_[k_].into, sp_[k_].from,  \
+                                      sp_[k_].also, sp_[k_].nalso, util_mono_ms()); \
+            if (r_ > 0)                                                          \
+                LOGI(c->name, "creative c-%04d separated from c-%04d (%d look(s) back)", sp_[k_].from, sp_[k_].into, r_); \
+            else if (r_ == 0)                                                    \
+                LOGI(c->name, "c-%04d: looks of unknown origin dropped (to separate c-%04d)", sp_[k_].into, sp_[k_].from); \
+        }                                                                        \
+        if (nm || ns_) {                                                         \
             library_save(cm, &det.library);                                      \
             lib_saved = det.library.changes;                                     \
             lib_saved_at = util_mono_ms();                                       \

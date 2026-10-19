@@ -280,6 +280,34 @@ class Store:
             self.version += 1
         return len(rows)
 
+    def creative_summary(self, site_id, creative):
+        """(plays, last play time, event ID of its newest play with a photo) of one creative ID."""
+        n, last = self.db().execute("SELECT COUNT(*), MAX(t) FROM records WHERE site_id=? AND type='creative_change' "
+                                    "AND creative=?", (site_id, creative)).fetchone()
+        ph = self.db().execute("SELECT event_id FROM records WHERE site_id=? AND type='creative_change' AND creative=? "
+                               "AND has_roi=1 AND blank=0 ORDER BY t DESC LIMIT 1", (site_id, creative)).fetchone()
+        return n or 0, last, ph[0] if ph else None
+
+    def relabel(self, event_ids, creative):
+        """Give plays another creative ID (a wrong merge undone); the ID they were
+        reported as is kept in the record as merged_as."""
+        if not event_ids:
+            return 0
+        q = ",".join("?" * len(event_ids))
+        rows = self.db().execute(f"SELECT event_id, creative, json FROM records WHERE event_id IN ({q})",
+                                 tuple(event_ids)).fetchall()
+        with self.wlock:
+            db = self.db()
+            db.execute("BEGIN")
+            for e, was, j in rows:
+                r = _dec(j)
+                r.setdefault("merged_as", was)
+                r["local_creative_id"] = creative
+                db.execute("UPDATE records SET creative=?, json=? WHERE event_id=?", (creative, _enc(r), e))
+            db.execute("COMMIT")
+            self.version += 1
+        return len(rows)
+
     def check_photos(self):
         """Clear the photo flags of records whose photos aren't on disk (after a restore on
         another machine: the backup has the records, not the photos). Returns how many."""

@@ -11,6 +11,12 @@
 
 #define PLAY_RING 2048
 
+#define SPLIT_ALSO 16
+typedef struct {                     /* undo a wrong merge: from goes back out of into */
+    int into, from;
+    int also[SPLIT_ALSO], nalso;     /* IDs merged into from before (their looks go too) */
+} split_req;
+
 typedef struct {
     pthread_mutex_t mu;
     int      connected;
@@ -44,6 +50,9 @@ typedef struct {
 #define MERGEQ 64
     int      merge_from[MERGEQ], merge_into[MERGEQ];   /* creative merges waiting for the camera thread */
     int      nmerge;
+#define SPLITQ 16
+    split_req split[SPLITQ];         /* wrong merges to undo, waiting for the camera thread */
+    int      nsplit;
     int64_t  coverage_since_wall;    /* coverage data valid from (0 = not counting) */
     float    coverage_window_pct;    /* last check over the alert window, -1 = not yet */
 } cam_status;

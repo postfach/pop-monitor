@@ -195,12 +195,14 @@ int pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t n
     return c->id;
 }
 
-static void add_variant(pc_creative *c, const pc_features *f)
+static void add_variant(pc_creative *c, const pc_features *f, int from)
 {
     if (c->nvar == PC_VARIANTS) {        /* full: keep the newest looks */
         memmove(&c->var[0], &c->var[1], sizeof c->var[0] * (PC_VARIANTS - 1));
+        memmove(&c->var_from[0], &c->var_from[1], sizeof c->var_from[0] * (PC_VARIANTS - 1));
         c->nvar--;
     }
+    c->var_from[c->nvar] = from;
     c->var[c->nvar++] = *f;
 }
 
@@ -213,14 +215,67 @@ int pc_library_merge(pc_library *lib, int from_id, int into_id)
     }
     if (fi < 0 || ti < 0 || fi == ti) return -1;
     pc_creative *f = &lib->items[fi], *t = &lib->items[ti];
-    for (int v = 0; v < f->nvar; v++) add_variant(t, &f->var[v]);
-    add_variant(t, &f->fp);              /* newest last: the look it had most recently */
+    /* each look keeps the ID it came from, so a wrong merge can be undone */
+    for (int v = 0; v < f->nvar; v++) add_variant(t, &f->var[v], f->var_from[v] ? f->var_from[v] : from_id);
+    add_variant(t, &f->fp, from_id);     /* newest last: the look it had most recently */
     t->plays += f->plays;
     if (f->first_seen_ms < t->first_seen_ms) t->first_seen_ms = f->first_seen_ms;
     if (f->last_seen_ms > t->last_seen_ms) t->last_seen_ms = f->last_seen_ms;
     lib->items[fi] = lib->items[--lib->count];   /* drop from_id */
     lib->changes++;
     return 0;
+}
+
+static int in_ids(int id, int from_id, const int *also, int n)
+{
+    if (id == from_id) return 1;
+    for (int i = 0; i < n; i++)
+        if (also && also[i] == id) return 1;
+    return 0;
+}
+
+int pc_library_split(pc_library *lib, int into_id, int from_id, const int *also, int n, int64_t now)
+{
+    int ti = -1;
+    for (int i = 0; i < lib->count; i++)
+        if (lib->items[i].id == into_id) ti = i;
+    if (ti < 0 || from_id <= 0 || from_id == into_id) return -1;
+    pc_creative *t = &lib->items[ti];
+    pc_features got[PC_VARIANTS];
+    int got_from[PC_VARIANTS], ng = 0, keep = 0, tagged = 0;
+    for (int v = 0; v < t->nvar; v++)
+        if (in_ids(t->var_from[v], from_id, also, n)) tagged++;
+    for (int v = 0; v < t->nvar; v++) {
+        int mine = tagged ? in_ids(t->var_from[v], from_id, also, n) : t->var_from[v] == 0;
+        if (mine) {
+            if (tagged) { got[ng] = t->var[v]; got_from[ng++] = t->var_from[v]; }
+            continue;                          /* untagged with nothing tagged: dropped */
+        }
+        t->var[keep] = t->var[v];
+        t->var_from[keep++] = t->var_from[v];
+    }
+    t->nvar = keep;
+    lib->changes++;
+    if (!ng) return 0;
+    int slot = -1;
+    for (int i = 0; i < lib->count; i++)
+        if (lib->items[i].id == from_id) slot = i;      /* still there somehow: add the looks to it */
+    if (slot < 0) {
+        if (lib->count < PC_LIBRARY_MAX) slot = lib->count++;
+        else {                                          /* evict least recently seen (not into_id) */
+            slot = ti ? 0 : 1;
+            for (int i = 0; i < lib->count; i++)
+                if (i != ti && lib->items[i].last_seen_ms < lib->items[slot].last_seen_ms) slot = i;
+        }
+        pc_creative *c = &lib->items[slot];
+        memset(c, 0, sizeof *c);
+        c->id = from_id;
+        c->fp = got[--ng];                              /* its newest look */
+        c->first_seen_ms = c->last_seen_ms = now;
+        if (from_id >= lib->next_id) lib->next_id = from_id + 1;
+    }
+    for (int k = 0; k < ng; k++) add_variant(&lib->items[slot], &got[k], got_from[k] == from_id ? 0 : got_from[k]);
+    return tagged;
 }
 
 /* ---------------- detector ---------------- */

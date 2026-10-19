@@ -307,6 +307,23 @@ report one ID. Merges are listed in `creative-merges.json` in the receiver's dat
 shown as "+N merged" on the Bookings page. Set `AUTO_MERGE=0` on the receiver to turn this off;
 **Reset creatives** on a site clears its merges.
 
+**Undoing a wrong merge.** Click "+N merged" next to a creative on the Bookings page to see the
+IDs merged into it, each with its last photo, why it was merged and its plays before the merge.
+**Separate** (click twice) gives one its own ID again:
+
+- the gateway takes back the looks it got from that ID (and from IDs merged into it before), so
+  its later plays come in under its own ID (`POST /api/cameras/<site_id>/split-creative` with
+  `{"from": "c-0042", "into": "c-0005", "with": []}`);
+- plays reported as the other ID since the merge whose photos look clearly more like the
+  separated one go back to it (the record keeps the ID it came in as, as `merged_as`). Plays
+  whose photos have been removed (after 3 days) stay where they are;
+- a link set by hand goes back with it, both IDs are matched to the artwork again, and the pair
+  is never merged automatically again.
+
+It then has its own row (once it has plays in the week shown), where you pick its campaign.
+Merges made by gateways older than this change don't record which look came from which ID; for
+those the gateway drops the merged looks instead, and the other artwork's next play gets a new ID.
+
 The report behind the page is worked out in the background about once a minute and when links
 or set-up change, so the page and the review cards open straight away. Each creative's artwork
 match is worked out once and kept (in `art-matches.json` in the data folder), re-checked every

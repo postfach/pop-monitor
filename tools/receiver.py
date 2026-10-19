@@ -1413,13 +1413,19 @@ function site(s, rep) {
      !(g.art && g.art.status === 'matched') && g.share < 0.05;
   const row = g => {
     const ids = g.members.map(m => m.creative_id), many = ids.length > 1, open = OPEN_GROUPS.has(s.site_id + '|' + g.key);
+    const nm = (g.merged || []).length, mkeyG = s.site_id + '|merged|' + g.key, mopenG = nm && OPEN_GROUPS.has(mkeyG);
+    const mergedBtn = nm ? ` <button type="button" class="link" style="font-size:12px" data-group="${esc(mkeyG)}" title="IDs the gateway has merged into ${esc(ids.join(', '))} as the same artwork: ${esc(g.merged.join(', '))}. Open to check them, and separate one that was merged by mistake.">${mopenG ? '&#9662;' : '&#9656;'} +${nm} merged</button>` : '';
+    const mergedRows = g => (g.merged_info || []).map(m => `<tr class="sub merged"><td>${m.image ? `<a href="/images/${m.image}.roi.jpg" target="_blank"><img class="thumb" loading="lazy" src="/images/${m.image}.roi.jpg" alt="PoP image"></a>` : '<span class="nophoto">no photo kept</span>'}</td><td></td>
+     <td><span class="muted">${esc(m.creative_id)}</span> <span class="pill">merged into ${esc(m.canon)}</span><br><span class="muted" style="font-size:12px">${esc(m.why || '')}${m.at ? ' · ' + new Date(m.at * 1000).toLocaleString() : ''}</span></td>
+     <td class="n" title="plays reported as ${esc(m.creative_id)} (before the merge; since then they count as ${esc(m.canon)})">${m.plays}</td><td></td>
+     <td><button type="button" class="btn" data-separate="${esc(m.creative_id)}" data-site="${esc(s.site_id)}" title="Not the same artwork: give ${esc(m.creative_id)} its own ID again, here and on the gateway. Plays since the merge whose photos look like it go back to it, and it is never merged with ${esc(m.canon)} again. Then pick its campaign in its own row.">Separate</button> <span class="sepmsg muted" style="font-size:12px"></span></td></tr>`).join('');
     const label = many ? `<b>${esc(g.creative_id)}</b> <button type="button" class="link" data-group="${esc(s.site_id + '|' + g.key)}" title="${esc(ids.join(', '))}">${open ? '&#9662;' : '&#9656;'} ${ids.length} IDs</button>` : `<b>${esc(g.creative_id)}</b>`;
     const head = `<tr class="grp${open ? ' open' : ''}"><td>${pop(g)}</td><td>${refThumb(g)}</td>
-     <td>${label}${(g.merged || []).length ? ` <span class="muted" style="font-size:12px" title="Merged into ${esc(ids.join(', '))} as the same artwork (the gateway now reports them as one ID): ${esc(g.merged.join(', '))}">+${g.merged.length} merged</span>` : ''}${g.video ? ' <span class="pill">video</span>' : ''}${g.blank ? ' <span class="pill">blank</span>' : ''}</td>
+     <td>${label}${mergedBtn}${g.video ? ' <span class="pill">video</span>' : ''}${g.blank ? ' <span class="pill">blank</span>' : ''}</td>
      <td class="n">${g.plays}</td><td class="n">${one(g.share)}</td><td>${pick(g, ids)}</td></tr>`;
-    if (!many || !open) return head;
-    return head + g.members.map(m => `<tr class="sub"><td>${pop(m)}</td><td></td><td class="muted">${esc(m.creative_id)}</td>
-     <td class="n">${m.plays}</td><td class="n">${one(m.share)}</td><td>${pick(m, [m.creative_id])}</td></tr>`).join('');
+    const subs = (many && open ? g.members.map(m => `<tr class="sub"><td>${pop(m)}</td><td></td><td class="muted">${esc(m.creative_id)}</td>
+     <td class="n">${m.plays}</td><td class="n">${one(m.share)}</td><td>${pick(m, [m.creative_id])}</td></tr>`).join('') : '');
+    return head + subs + (mopenG ? mergedRows(g) : '');
   };
   const few = groups.filter(minor), mkey = s.site_id + '|minor', mopen = OPEN_GROUPS.has(mkey);
   const crs = groups.filter(g => !minor(g)).map(row).join('') + (few.length ? `<tr class="grp minor${mopen ? ' open' : ''}"><td colspan="6">
@@ -1504,6 +1510,22 @@ document.getElementById('out').addEventListener('toggle', e => {      // remembe
   if (d.open) OPEN_SITES.add(d.dataset.site); else OPEN_SITES.delete(d.dataset.site);
   remember('pop-bookings-open', OPEN_SITES);
 }, true);
+document.getElementById('out').addEventListener('click', async e => {   // separate a merged ID (asks once)
+  const b = e.target.closest('button[data-separate]'); if (!b) return;
+  const msg = b.parentElement.querySelector('.sepmsg');
+  if (!b.dataset.sure) {
+    b.dataset.sure = '1'; b.textContent = 'Separate ' + b.dataset.separate + '?'; b.classList.add('danger');
+    msg.textContent = 'click again to confirm';
+    setTimeout(() => { if (b.isConnected && !b.disabled) { delete b.dataset.sure; b.textContent = 'Separate'; b.classList.remove('danger'); msg.textContent = ''; } }, 5000);
+    return;
+  }
+  b.disabled = true; msg.textContent = 'separating…';
+  const r = await fetch('/bookings/link', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({site_id: b.dataset.site, separate: b.dataset.separate})}).then(r => r.json()).catch(e => ({error: String(e)}));
+  if (r.error) { b.disabled = false; msg.textContent = r.error; return; }
+  msg.textContent = `separated; ${r.plays_moved} play(s) given back`;
+  load();
+});
 document.getElementById('out').addEventListener('click', e => {       // show / hide a row's gateway IDs
   const b = e.target.closest('button[data-group]'); if (!b) return;
   const k = b.dataset.group;
@@ -2225,7 +2247,7 @@ def runs_typical(plays, S, cap):
 # the receiver reads the older ID wherever the newer one appears, and the
 # gateway is told, so the newer ID's look becomes part of the older one and
 # later plays report one ID.
-MERGES = {"loaded": False, "sites": {}, "mtime": None}
+MERGES = {"loaded": False, "sites": {}, "apart": {}, "mtime": None}   # apart: site -> pairs never to merge
 MERGE_MIN_PLAYS = 3                # each ID needs this many plays this week before it is merged
 MERGE_LOOKALIKE = 0.75             # unassigned IDs: PoP images this alike (median of several) to merge
 
@@ -2238,10 +2260,11 @@ def merges():
     if not MERGES["loaded"]:
         try:
             with open(_merges_path(), encoding="utf-8") as f:
-                MERGES["sites"] = json.load(f).get("sites", {})
+                d = json.load(f)
+            MERGES["sites"], MERGES["apart"] = d.get("sites", {}), d.get("apart", {})
             MERGES["mtime"] = os.path.getmtime(_merges_path())
         except (OSError, ValueError):
-            MERGES["sites"] = {}
+            MERGES["sites"], MERGES["apart"] = {}, {}
         MERGES["loaded"] = True
     return MERGES["sites"]
 
@@ -2250,9 +2273,19 @@ def save_merges():
     tmp = _merges_path() + ".tmp"
     with LOCK:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"sites": merges()}, f, indent=1)
+            json.dump({"sites": merges(), "apart": apart_all()}, f, indent=1)
         os.replace(tmp, _merges_path())
     MERGES["mtime"] = time.time()
+
+
+def apart_all():
+    merges()
+    return MERGES.setdefault("apart", {})
+
+
+def kept_apart(site_id, a, b):
+    """Two IDs separated by hand (a wrong merge undone): never merged again."""
+    return sorted((a, b)) in apart_all().get(site_id, [])
 
 
 def canon(site_id, cid):
@@ -2329,6 +2362,7 @@ def plan_merges(report):
             if len(hand) > 1:            # set by hand to different things: not ours to merge
                 continue
             into = min(ms, key=lambda m: _cnum(m["creative_id"]))["creative_id"]
+            ms = [m for m in ms if m["creative_id"] == into or not kept_apart(sid, canon(sid, m["creative_id"]), into)]
             if kind == "u":                  # lookalikes: check properly before merging
                 ms = [m for m in ms if m["creative_id"] == into or
                       _surely_alike(sid, into, m["creative_id"], site.get("from_ts", 0), site.get("to_ts", time.time()))]
@@ -2341,8 +2375,11 @@ def plan_merges(report):
                     continue
                 site_m[cid] = {"into": into, "at": time.time(), "pushed": None, "why": why}
                 link = links.get(sid, {}).get(cid)
+                if link:
+                    site_m[cid]["link"] = link            # put back if the merge is undone
                 if link and not links.get(sid, {}).get(into):
                     save_link(sid, into, link)            # keep a hand-set link on the surviving ID
+                    site_m[cid]["link_moved"] = True
                 if link:
                     save_link(sid, cid, "")
                 st = art_state().get(sid, {})
@@ -2388,8 +2425,80 @@ def push_merges():
 
 
 def forget_merges(site_id):
-    if merges().pop(site_id, None) is not None:
+    if merges().pop(site_id, None) is not None or apart_all().pop(site_id, None) is not None:
         save_merges()
+
+
+SEPARATE_MARGIN = 0.05             # a play goes back to the separated ID when its photo is this much closer to it
+
+
+def _raw_refs(site_id, cid, before=None, n=5):
+    """Fingerprints of a few good photos of plays reported as exactly this ID."""
+    ps = [p for p in STORE.plays(site_id, 0, before or time.time() + 60)
+          if p[1] == cid and not p[2] and p[5] and (p[6] or p[7])]
+    return [f for f in (_pop_fp(p[4]) for p in _spread(ps, n)) if f is not None]
+
+
+def separate(site_id, cid):
+    """Undo a merge that was wrong: cid gets its own ID again, here and on the gateway,
+    the plays the gateway has reported as the other ID since then whose photos look
+    like cid go back to cid, and the two are never merged again. Returns (code, reply)."""
+    site_m = merges().get(site_id, {})
+    m = site_m.get(cid)
+    if not m:
+        return 404, {"error": f"{cid} isn't merged into anything at this site"}
+    into = canon(site_id, cid)
+    # IDs merged into cid before (their looks went with it): they come back with it
+    also = []
+    for a in site_m:
+        x, seen = a, 0
+        while x in site_m and seen < 20:
+            x = site_m[x]["into"]
+            seen += 1
+            if x == cid:
+                also.append(a)
+                break
+    if m.get("pushed"):                       # the gateway has it: its looks go back out
+        code, body = gateway_call(f"/api/cameras/{urllib.parse.quote(site_id, safe='')}/split-creative",
+                                  {"from": cid, "into": into, "with": also})
+        if code >= 400:
+            return code, {"error": f"gateway refused: {body.get('error') or code}"}
+    moved = 0
+    since = m.get("pushed") or m.get("at") or 0
+    if ART_OK and since:
+        mine, theirs = _raw_refs(site_id, cid), _raw_refs(site_id, into, before=m.get("at"))
+        if mine and theirs:
+            A, B = _np.stack(mine), _np.stack(theirs)
+            back = []
+            for p in STORE.plays(site_id, since - 600, time.time() + 60):
+                if p[1] != into or p[2] or not p[5]:
+                    continue
+                f = _pop_fp(p[4])
+                if f is None:
+                    continue
+                sa, sb = float(_np.median(_scores(f, A))), float(_np.median(_scores(f, B)))
+                if sa >= ART_LOOKALIKE and sa > sb + SEPARATE_MARGIN:
+                    back.append(p[4])
+            moved = STORE.relabel(back, cid)
+    del site_m[cid]
+    pair = sorted((cid, into))
+    ap = apart_all().setdefault(site_id, [])
+    if pair not in ap:
+        ap.append(pair)
+    links = load_links().get(site_id, {})
+    if m.get("link_moved") and links.get(into) == m.get("link"):
+        save_link(site_id, into, "")
+    if m.get("link"):
+        save_link(site_id, cid, m["link"])
+    st = art_state().get(site_id, {})
+    for c in (cid, into):
+        if st.pop(c, None) is not None:
+            ART_STATE["dirty"] = True
+    save_merges()
+    save_art_state()
+    REPORTS["gen"] += 1
+    print(f"creatives: {site_id} {cid} separated from {into} by hand ({moved} play(s) given back)", flush=True)
+    return 200, {"separated": cid, "from": into, "with": also, "plays_moved": moved}
 
 
 
@@ -3258,6 +3367,15 @@ def off_schedule(days, periods):
     return ""
 
 
+def merged_info(site_id, cid):
+    """A merged ID, for showing it: what it was merged into and why, and its own plays
+    (before the merge; after it the gateway reported them as the other ID)."""
+    m = merges().get(site_id, {}).get(cid, {})
+    n, last, photo = STORE.creative_summary(site_id, cid)
+    return {"creative_id": cid, "into": m.get("into"), "canon": canon(site_id, cid), "why": m.get("why"),
+            "at": m.get("at"), "plays": n, "last_play": last, "image": photo}
+
+
 def lookalikes(site_id, cids, eids):
     """Group creatives whose PoP images look like the same artwork (the gateway
     can give one artwork several IDs, e.g. by day and by night). Returns a list
@@ -3325,6 +3443,7 @@ def group_creatives(site_id, crs):
                     "off_schedule": any((c.get("art") or {}).get("off_schedule") for c in ms),
                     "merged": sorted(a for a, m in merges().get(site_id, {}).items()
                                      if canon(site_id, a) in {c["creative_id"] for c in ms})})
+        out[-1]["merged_info"] = [merged_info(site_id, a) for a in out[-1]["merged"]]
     out.sort(key=lambda g: -g["share"])
     return out
 
@@ -4667,6 +4786,12 @@ class H(BaseHTTPRequestHandler):
                 body = json.loads(raw)
             except ValueError:
                 return self.reply(400, {"error": "not a JSON file"})
+            if self.path == "/bookings/link" and body.get("separate"):   # undo a wrong merge
+                sid, cid = body.get("site_id"), body.get("separate")
+                if not isinstance(sid, str) or not isinstance(cid, str):
+                    return self.reply(400, {"error": "site_id and separate (a creative ID) required"})
+                code, res = separate(sid, cid)
+                return self.reply(code, res)
             if self.path == "/bookings/link":
                 sid = body.get("site_id")
                 ids = body.get("creative_ids") or ([body["creative_id"]] if body.get("creative_id") else [])

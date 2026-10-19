@@ -810,6 +810,38 @@ static void handle_merge_creatives(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+/* Undo a merge that was wrong (two different artworks). Body:
+ * {"from": "c-0042", "into": "c-0005", "with": ["c-0040"]}: the looks c-0005
+ * took from c-0042 (and from the IDs in "with", merged into c-0042 before)
+ * become c-0042 again. Applied by the camera thread. */
+static void handle_split_creative(int fd, int idx, const char *body)
+{
+    cJSON *in = cJSON_Parse(body && *body ? body : "{}");
+    split_req r = {0};
+    r.from = creative_num(cJSON_GetObjectItemCaseSensitive(in, "from"));
+    r.into = creative_num(cJSON_GetObjectItemCaseSensitive(in, "into"));
+    const cJSON *w = cJSON_GetObjectItemCaseSensitive(in, "with"), *x;
+    cJSON_ArrayForEach(x, w) {
+        int n = creative_num(x);
+        if (n > 0 && r.nalso < SPLIT_ALSO) r.also[r.nalso++] = n;
+    }
+    cJSON_Delete(in);
+    if (r.from <= 0 || r.into <= 0 || r.from == r.into) {
+        respond_error(fd, 400, "expected {\"from\": \"c-0042\", \"into\": \"c-0005\"}");
+        return;
+    }
+    cam_status *s = &A->status[idx];
+    pthread_mutex_lock(&s->mu);
+    int ok = s->nsplit < SPLITQ;
+    if (ok) s->split[s->nsplit++] = r;
+    pthread_mutex_unlock(&s->mu);
+    if (!ok) { respond_error(fd, 503, "too many waiting; try again in a moment"); return; }
+    LOGI(A->cfg->cameras[idx].name, "separating c-%04d from c-%04d (queued)", r.from, r.into);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "queued", 1);
+    respond_json(fd, 200, j);
+}
+
 static void handle(int fd)
 {
     struct timeval tv = {10, 0};
@@ -912,6 +944,7 @@ static void handle(int fd)
         else if (!strcmp(method, "POST") && !strcmp(action, "reset-creatives")) handle_reset_creatives(fd, idx, body);
         else if (!strcmp(method, "POST") && !strcmp(action, "setup")) handle_set_setup(fd, idx, body);
         else if (!strcmp(method, "POST") && !strcmp(action, "merge-creatives")) handle_merge_creatives(fd, idx, body);
+        else if (!strcmp(method, "POST") && !strcmp(action, "split-creative")) handle_split_creative(fd, idx, body);
         else if (!*action && !strcmp(method, "PUT")) handle_update(fd, idx, body);
         else if (!*action && !strcmp(method, "DELETE")) handle_delete(fd, idx);
         else if (!*action && !strcmp(method, "GET")) {

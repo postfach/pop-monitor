@@ -177,6 +177,7 @@ typedef struct {
      * camera can see one creative differently by day and by night). A
      * sighting matching any of them gets this ID. */
     pc_features var[PC_VARIANTS];
+    int         var_from[PC_VARIANTS];   /* the ID each look came from (0 = not known) */
     int         nvar;
 } pc_creative;
 
@@ -216,6 +217,14 @@ int  pc_library_match_or_add_ex(pc_library *lib, const pc_features *fp, int64_t 
  * from_id is removed, so later sightings of either look get into_id.
  * Returns 0, or -1 if either id is unknown or they are the same. */
 int  pc_library_merge(pc_library *lib, int from_id, int into_id);
+/* Undo a merge that was wrong: the looks into_id took from from_id (or from any
+ * of the n IDs in also[], merged into from_id before) become creative from_id
+ * again, so its sightings get from_id. If none of into_id's looks is known to
+ * have come from those IDs (a library saved before looks were tagged), the
+ * looks of unknown origin are dropped instead: a later sighting of the other
+ * artwork then gets a new ID. Returns how many looks went back to from_id
+ * (0 if the untagged ones were dropped), or -1 if into_id is unknown. */
+int  pc_library_split(pc_library *lib, int into_id, int from_id, const int *also, int n, int64_t now_ms);
 
 /* ------------------------------------------------------------------ */
 /* Change detector                                                     */
