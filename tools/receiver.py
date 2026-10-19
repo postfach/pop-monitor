@@ -92,7 +92,7 @@ def recorded_sites():
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PoP Monitor review</title><style>
+<title>Review</title><style>
 :root{{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f}}}}
 body{{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}}
@@ -111,15 +111,15 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 .refresh{{display:flex;gap:8px;align-items:center}} .refresh select,.refresh button{{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}}
 .refresh button{{cursor:pointer}} #next{{min-width:110px;font-size:12px}}</style></head><body><main>
 <nav style="display:flex;gap:16px;margin-bottom:14px"><a href="/" style="font-weight:600;text-decoration:none">Review</a><a href="/sites" style="color:var(--muted);text-decoration:none">Sites</a><a href="/bookings" style="color:var(--muted);text-decoration:none">Bookings</a><a href="/health" style="color:var(--muted);text-decoration:none">Health</a></nav>
-<div class="toolbar"><div><h1>PoP Monitor review</h1><p class="muted" style="margin:2px 0 0">{subtitle}</p></div>
+<div class="toolbar"><div><h1>Review</h1><p class="muted" style="margin:2px 0 0">{subtitle}</p></div>
 <div class="refresh"><label for="every" class="muted">Refresh</label>
 <select id="every"><option value="0">Off</option><option value="5">Every 5 s</option><option value="10">Every 10 s</option>
 <option value="15">Every 15 s</option><option value="30">Every 30 s</option><option value="60">Every minute</option>
 <option value="120">Every 2 min</option><option value="300">Every 5 min</option><option value="600">Every 10 min</option>
 <option value="900">Every 15 min</option><option value="1800">Every 30 min</option><option value="3600">Every hour</option></select>
 <button id="now" type="button">Refresh now</button><span id="next" class="muted"></span></div></div>
-{banner}<h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play ({zone})</th><th>Active faults</th><th></th></tr>{cams}</table></div>
-<h2>{pops_title}</h2><div class="grid">{pops}</div>
+{banner}<h2>{pops_title}</h2><div class="grid">{pops}</div>
+<h2>Sites</h2><div class="wrap"><table><tr><th>Site</th><th>Connected</th><th>State</th><th>Plays / hour</th><th>Coverage</th><th>Last play ({zone})</th><th>Active faults</th><th></th></tr>{cams}</table></div>
 <h2>Alerts <span class="muted" style="font-size:13px;font-weight:400">{alerts_note}</span></h2><div class="wrap alerts"><table><tr><th>Time ({zone})</th><th>Site</th><th>Fault</th><th>State</th><th>Detail</th></tr>{alerts}</table></div>
 </main>{refresh_js}</body></html>"""
 
@@ -1119,7 +1119,7 @@ $('go').onclick = async () => {
 
 HEALTH_PAGE = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gateway health</title><style>
+<title>Gateway Health</title><style>
 :root{--bg:#f6f6f4;--fg:#1d1d1b;--muted:#6b6b66;--line:#d8d8d2;--bad:#c62828;--ok:#2e7d32;--warn:#a15c00;--panel:#ececea}
 @media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--muted:#9a9a94;--line:#33332f;--panel:#22221f;--warn:#e0a040}}
 *{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
@@ -1138,8 +1138,8 @@ td.wr{white-space:normal}
 .btn.danger{border-color:var(--bad);color:var(--bad)} input.cf{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);width:120px}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings">Bookings</a><a href="/health" class="on">Health</a></nav>
-<h1>Gateway health</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
-<div id="gws"></div>
+<h1>Gateway Health</h1>
+<div id="gws"><p class="muted">Loading&hellip;</p></div>
 <div class="gw" id="bk"><div class="top"><h2>Backup and restore</h2></div>
   <p class="muted" style="margin:6px 0 10px">A backup is one file with everything but the photos: the sites and their regions,
     camera logins, learned creatives, links and settings, every play and alert record, and which PoP photos are in SharePoint.
@@ -1155,6 +1155,7 @@ td.wr{white-space:normal}
   <div class="wrap"><table id="bklist" style="margin-top:6px"></table></div>
   <div id="rprev" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px"></div>
 </div>
+<p class="muted" id="sub" style="margin:24px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px">Loading&hellip;</p>
 </main><script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const age = s => s == null ? '—' : s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days';
@@ -1291,7 +1292,7 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 .site[open] > summary{border-bottom:1px solid var(--line)} details.site > :not(summary){margin-left:16px;margin-right:16px}
 .site[open]{padding-bottom:12px} .site.plain{padding:11px 16px;display:flex;gap:14px;flex-wrap:wrap}
 .sname{font-weight:600;font-size:15px} .sname a{text-decoration:none}
-.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto} .site > summary .live{margin-left:auto} .site > summary .live + .chips{margin-left:0}
 .chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
 .chip.warn{border-color:var(--warn);color:var(--warn)} .chip.bad{border-color:var(--bad);color:var(--bad)} .chip.ok{border-color:var(--ok);color:var(--ok)}
 .chip.warn .muted,.chip.bad .muted,.chip.ok .muted{color:inherit;opacity:.8}
@@ -1324,16 +1325,18 @@ dialog#missdlg::backdrop{background:rgba(0,0,0,.5)}
 .mstat{font-size:12px} code.f{font-size:12px;word-break:break-all}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
-<h1>Bookings vs delivery</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
-<p class="muted" id="sync" style="margin:4px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap" hidden><span id="synctxt"></span><button class="btn" id="syncnow" style="padding:2px 9px">Sync now</button></p>
-<div class="muted" id="popup" style="margin:4px 0 0" hidden><span id="poptxt"></span>
- <button class="btn" data-phase="day" style="padding:2px 9px" title="Upload the best daytime photo of each campaign since the last run, now">Upload day photos now</button>
- <button class="btn" data-phase="night" style="padding:2px 9px" title="Upload the best night photo of each campaign since the last run, now">Upload night photos now</button>
- <details id="poprecent" style="margin-top:4px" hidden></details></div>
+<h1>Bookings vs Delivery</h1>
 <div class="bar"><button class="btn" id="prev">&larr; Previous week</button><b id="wk"></b><button class="btn" id="next">Next week &rarr;</button>
 <button class="btn" id="all">Expand / collapse all</button><span class="muted" id="built" style="font-size:12px"></span>
 <span style="flex:1"></span><label class="btn" style="cursor:pointer">Upload Vault pull or creatives<input type="file" id="up" accept=".json,.zip,application/json,application/zip" hidden></label></div>
 <div id="out"></div>
+<div class="foot" style="margin-top:24px;padding-top:12px;border-top:1px solid var(--line);font-size:13px">
+<p class="muted" id="sub" style="margin:0">Loading&hellip;</p>
+<p class="muted" id="sync" style="margin:6px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap" hidden><span id="synctxt"></span><button class="btn" id="syncnow" style="padding:2px 9px">Sync now</button></p>
+<div class="muted" id="popup" style="margin:6px 0 0" hidden><span id="poptxt"></span>
+ <button class="btn" data-phase="day" style="padding:2px 9px" title="Upload the best daytime photo of each campaign since the last run, now">Upload day photos now</button>
+ <button class="btn" data-phase="night" style="padding:2px 9px" title="Upload the best night photo of each campaign since the last run, now">Upload night photos now</button>
+ <details id="poprecent" style="margin-top:4px" hidden></details></div></div>
 <dialog id="missdlg"><div class="top"><h2 style="margin:0">Bookings without artwork</h2><button class="btn" id="missclose">Close</button></div>
 <p class="muted" id="misssub" style="margin:4px 0 10px"></p><div id="misslist"></div></dialog>
 <details class="note muted"><summary>How this is worked out</summary>
@@ -1458,7 +1461,7 @@ function site(s, rep) {
      <span class="muted">${esc(s.vault_screen)} · ${s.slot_count} × ${s.slot_s} s</span>
      ${s.doohly ? `<span class="pill ${s.doohly.online ? 'ok' : 'bad'}" title="Doohly player ${esc(s.doohly.player)}, last seen ${esc(s.doohly.alive_at || '?')}; bookings read ${esc(s.doohly.bookings_at || '?')}">player ${s.doohly.online ? 'online' : 'offline'}</span>` : ''}
      ${s.setup ? (s.setup.now ? `<a class="pill warn" href="/roi?site=${encodeURIComponent(s.site_id)}" title="Being set up since ${esc(s.setup.from)}: its plays aren't counted until it goes live on the Region page">in setup</a>`
-       : `<span class="pill" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">live from ${esc(s.setup.to)}</span>`) : ''}
+       : `<span class="pill live" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">Live from ${esc(s.setup.to)}</span>`) : ''}
      <span class="chips">${chip('True coverage', pct(tc), tcls)}${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}
        ${s.unassigned_per_loop > 0.05 ? chip('Unassigned', one(s.unassigned_per_loop) + ' / loop', 'warn') : ''}${notSeen ? chip('Not seen', notSeen + ' campaign(s)', 'bad') : ''}
        ${s.warnings.length ? chip('', s.warnings.length + ' warning(s)', 'warn') : ''}</span></summary>
