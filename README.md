@@ -189,6 +189,28 @@ exists (a removed site, or one renamed before this version) are listed at the bo
 Sites page under **Records from sites that no longer exist**, where **Delete** removes them
 and their images from the receiver.
 
+### Cameras on a weak link
+
+A camera on poor wireless or a low-bandwidth link that keeps dropping out (low uptime, many
+reconnects on the Sites page) can be given a lighter load: **Video quality** in the site's
+settings. The gateway watches each camera's video all the time, so the stream matters most; the
+PoP photos are only taken now and then but are full size by default (4 MP on an M5526-E).
+
+| Video quality | Video the gateway watches | PoP photos |
+|---|---|---|
+| Standard (default) | 1280×720, 10 fps | the camera's full size, 3 per photo |
+| Reduced | 1280×720, 5 fps, compression 40 | 1920×1080, 3 per photo |
+| Low | 800×450, 5 fps, compression 50 | 1280×720, 2 per photo |
+| Minimal | 640×360, 5 fps, compression 60 | 1280×720, 1 per photo |
+
+Detection looks at 5 frames a second, so 5 fps loses nothing, and the board is a small part of
+the view, so it works at the lower resolutions; the photos are less sharp. Try one step down at a
+time. Saving restarts the camera; its creatives may get new IDs for a while at a new setting
+(they are merged back automatically). Under **Advanced: custom URLs**, **Video stream settings**
+replaces the stream part with your own Axis parameters (e.g. `resolution=1920x1080&fps=5`), and
+`"snapshot": {"resolution": "…"}` in the config file still sets the photo size. In the config
+file the setting is `"video_quality": "reduced"` (or `low`, `minimal`).
+
 ## Coverage alert
 
 Coverage is slot time accounted for ÷ slot time the rotation should produce. Bookings are

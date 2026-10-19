@@ -211,6 +211,10 @@ static cJSON *camera_json(int i)
     cJSON_AddBoolToObject(j, "use_https", c->use_https);
     cJSON_AddBoolToObject(j, "camera_tls_insecure", c->camera_tls_insecure);
     cJSON_AddStringToObject(j, "rtsp_transport", c->rtsp_transport);
+    cJSON_AddStringToObject(j, "video_quality", c->video_quality);
+    cJSON_AddStringToObject(j, "stream_params", raw_str(o, "stream_params"));   /* set by hand */
+    cJSON_AddStringToObject(j, "stream_effective", c->stream_params);
+    cJSON_AddStringToObject(j, "photo_resolution", c->snap.resolution);
     cJSON_AddStringToObject(j, "username", raw_str(o, "username"));
     cJSON_AddBoolToObject(j, "password_set", cJSON_GetObjectItemCaseSensitive(o, "password") != NULL);
     cJSON_AddStringToObject(j, "rtsp_url_override", raw_str(o, "rtsp_url"));
@@ -295,7 +299,7 @@ static void handle_settings(int fd)
 static void merge_form(cJSON *obj, const cJSON *in)
 {
     static const char *strs[] = {"site_id", "model", "host", "username", "rtsp_transport",
-                                 "operating_hours", "vault_screen", NULL};
+                                 "operating_hours", "vault_screen", "video_quality", "stream_params", NULL};
     for (int k = 0; strs[k]; k++) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(in, strs[k]);
         if (!cJSON_IsString(v)) continue;

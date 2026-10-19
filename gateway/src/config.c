@@ -123,6 +123,7 @@ static void apply_camera(camera_cfg *c, const cJSON *o)
     get_int(o, "camera_tls_insecure", &c->camera_tls_insecure);
     get_str(o, "rtsp_transport", c->rtsp_transport, sizeof c->rtsp_transport);
     get_str(o, "stream_params", c->stream_params, sizeof c->stream_params);
+    get_str(o, "video_quality", c->video_quality, sizeof c->video_quality);
     get_str(o, "operating_hours", c->operating_hours, sizeof c->operating_hours);
     get_float(o, "inset_pct", &c->inset_pct);
     get_int(o, "board_width", &c->board_width);
@@ -510,11 +511,50 @@ fail:
     return -1;
 }
 
+/* For sites whose camera is on a weak link (poor wireless, low bandwidth): the
+ * video the gateway watches all the time gets smaller, slower and more
+ * compressed, and the photos smaller. The analysis runs at 5 frames a second,
+ * so 5 fps loses nothing; the board is a small part of the view, so detection
+ * works at 640x360. Resolutions are ones every Axis 16:9 camera offers. */
+static const video_quality QUALITIES[] = {
+    {"",        "Standard",  "resolution=1280x720&fps=10&videocodec=h264", "", 3},
+    {"reduced", "Reduced",   "resolution=1280x720&fps=5&compression=40&videocodec=h264", "1920x1080", 3},
+    {"low",     "Low",       "resolution=800x450&fps=5&compression=50&videocodec=h264", "1280x720", 2},
+    {"minimal", "Minimal",   "resolution=640x360&fps=5&compression=60&videocodec=h264", "1280x720", 1},
+};
+
+const video_quality *config_quality(const char *name)
+{
+    for (size_t i = 0; i < sizeof QUALITIES / sizeof QUALITIES[0]; i++)
+        if (!strcmp(QUALITIES[i].name, name ? name : "")) return &QUALITIES[i];
+    return NULL;
+}
+
+const video_quality *config_qualities(int *n)
+{
+    *n = (int)(sizeof QUALITIES / sizeof QUALITIES[0]);
+    return QUALITIES;
+}
+
 int config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *c, char *err, size_t n)
 {
     camera_defaults(c);
     apply_camera(c, (const cJSON *)g->defaults_json);
     apply_camera(c, (const cJSON *)obj);
+    const video_quality *q = config_quality(c->video_quality);
+    if (!q) {
+        snprintf(err, n, "camera %s: video quality must be standard, reduced, low or minimal", c->site_id);
+        return -1;
+    }
+    if (*q->name) {          /* the site's own stream_params / snapshot settings still win */
+        const cJSON *o = (const cJSON *)obj, *sn = cJSON_GetObjectItemCaseSensitive(o, "snapshot");
+        if (!cJSON_GetObjectItemCaseSensitive(o, "stream_params"))
+            snprintf(c->stream_params, sizeof c->stream_params, "%s", q->stream);
+        if (!cJSON_GetObjectItemCaseSensitive(sn, "resolution"))
+            snprintf(c->snap.resolution, sizeof c->snap.resolution, "%s", q->photo);
+        if (!cJSON_GetObjectItemCaseSensitive(sn, "burst") && c->snap.burst > q->burst)
+            c->snap.burst = q->burst;
+    }
     return validate_camera(c, 0, err, n);
 }
 

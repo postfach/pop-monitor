@@ -299,6 +299,15 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 <div class="check"><span class="muted" style="min-width:110px">Video transport</span>
   <div class="seg"><label><input type="radio" name="rtsp_transport" value="tcp" checked><span>RTSP</span></label><label><input type="radio" name="rtsp_transport" value="http"><span>Over web port</span></label></div></div>
 <p class="hint">Use "Over web port" when only the web port is forwarded, or if the video connects but no picture arrives.</p>
+<div class="grid">
+  <label class="f"><span>Video quality (for a weak link)</span><select name="video_quality">
+    <option value="">Standard: 1280&times;720 at 10 fps, full-size photos</option>
+    <option value="reduced">Reduced: 1280&times;720 at 5 fps, more compressed, 1920&times;1080 photos</option>
+    <option value="low">Low: 800&times;450 at 5 fps, 1280&times;720 photos</option>
+    <option value="minimal">Minimal: 640&times;360 at 5 fps, 1280&times;720 photos, one per play</option>
+  </select></label>
+</div>
+<p class="hint">For a camera on a poor wireless or low-bandwidth link that keeps dropping out. The gateway watches the video all the time, so a lighter stream is what helps most; detection still works at the lower settings (it looks at 5 frames a second, and the board is a small part of the view). The PoP photos get smaller too. Try one step down at a time. Saving restarts this camera. <span id="qnow"></span></p>
 <label class="check"><input type="checkbox" name="use_https"> Use HTTPS for snapshots</label>
 <label class="check"><input type="checkbox" name="camera_tls_insecure"> Accept the camera's self-signed certificate</label>
 <div class="grid">
@@ -309,6 +318,7 @@ button:disabled{opacity:.5;cursor:default} #msg{min-height:20px}
 <details><summary>Advanced: custom URLs</summary><div class="grid" style="margin-top:10px">
   <label class="f"><span>Video URL override (rtsp://&hellip;)</span><input type="text" name="rtsp_url_override" placeholder="built from the fields above"></label>
   <label class="f"><span>Snapshot base URL override</span><input type="text" name="vapix_url_override" placeholder="built from the fields above"></label>
+  <label class="f"><span>Video stream settings (replace the quality's)</span><input type="text" name="stream_params" placeholder="e.g. resolution=1920x1080&amp;fps=5&amp;videocodec=h264"></label>
 </div><p class="hint">Only for unusual setups. These replace the host, ports and transport above. <span id="effective"></span></p></details>
 </fieldset>
 
@@ -431,7 +441,7 @@ function fillFrom(c, copy) {
   if (!copy)
     $('sub').innerHTML = (current.connected ? '<span class="ok">Video connected</span>' : '<span class="bad">Video not connected</span>') +
       (current.active_faults.length ? ' &middot; <span class="bad">' + current.active_faults.join(', ') + '</span>' : '');
-  for (const k of copy ? ['model','username'] : ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override','vault_screen'])
+  for (const k of copy ? ['model','username','video_quality'] : ['site_id','display_name','model','host','username','rtsp_url_override','vapix_url_override','vault_screen','video_quality','stream_params'])
     setVal(k, current[k]);
   if (current.coverage_custom) { setVal('coverage_min_pct', current.coverage_min_pct); setVal('coverage_window_min', current.coverage_window_min); }
   setVal('http_port', current.http_port || ''); setVal('rtsp_port', current.rtsp_port || '');
@@ -445,6 +455,7 @@ function fillFrom(c, copy) {
   if (current.password_set) { $('pwhint').textContent = 'Password (blank = keep this site’s password)'; $('clearpw').hidden = false; }
   if (current.dayparts) $('rothint').textContent = `This site also has ${current.dayparts} time-of-day profile(s) from the config file; these fields set the default profile.`;
   $('effective').textContent = current.snapshot_url ? 'Snapshots currently use ' + current.snapshot_url + '.' : '';
+  $('qnow').textContent = current.stream_effective ? `Now: video ${current.stream_effective.replace(/&/g, ', ')}; photos ${current.photo_resolution || 'the camera\'s full size'}.` : '';
   loadRotation(c.id);
   $('save').textContent = 'Save changes'; $('test').hidden = $('region').hidden = $('del').hidden = $('dup').hidden = $('reset').hidden = false;
   sync();
@@ -495,6 +506,7 @@ function formData() {
     use_https: e.use_https.checked, camera_tls_insecure: e.use_https.checked && e.camera_tls_insecure.checked,
     username: e.username.value.trim(), rtsp_url_override: e.rtsp_url_override.value.trim(),
     vapix_url_override: e.vapix_url_override.value.trim(),
+    video_quality: e.video_quality.value, stream_params: e.stream_params.value.trim().replace(/^\?/, ''),
     takeover: e.takeover.checked, slot_count: e.takeover.checked ? 0 : num(e.slot_count.value),
     slot_ms: e.takeover.checked ? 0 : Math.round(num(e.slot_s.value) * 1000),
     operating_hours: e.allday.checked ? '00:00-24:00' : `${e.from.value}-${e.to.value}`,

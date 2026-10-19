@@ -34,6 +34,8 @@ typedef struct {
     int   camera_tls_insecure;  /* accept the camera's self-signed cert */
     char  rtsp_transport[8];    /* "tcp" (default) or "http" (RTSP tunnelled over the web port) */
     char  stream_params[160];   /* Axis media.amp query string         */
+    char  video_quality[12];    /* "" standard, or "reduced" / "low" / "minimal" for a weak link:
+                                   a lighter video stream and smaller photos (config_quality) */
     pc_region region;           /* the screen's outline: corners, shape (curve, fold) */
     float inset_pct;
     int   board_width;          /* the screen's resolution in pixels (0 = unknown): the  */
@@ -83,6 +85,11 @@ typedef struct {
 
 int  config_load(const char *path, gateway_cfg *g, char *err, size_t errlen);
 /* Build a camera from defaults + its own JSON object (cJSON*); validates. */
+/* The presets of video_quality: Axis stream parameters and photo resolution.
+ * config_quality returns NULL for an unknown name ("" = standard). */
+typedef struct { const char *name, *label, *stream, *photo; int burst; } video_quality;
+const video_quality *config_quality(const char *name);
+const video_quality *config_qualities(int *n);
 int  config_build_camera(const gateway_cfg *g, const void *obj, camera_cfg *out, char *err, size_t errlen);
 /* Write the active cameras' JSON objects to cameras_file. */
 int  config_save_cameras(const gateway_cfg *g);
