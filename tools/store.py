@@ -114,6 +114,7 @@ class Store:
         if migrate:
             self.migrate()
             self.tag_washed()
+            self.index_creatives()
 
     def db(self):
         c = getattr(self.local, "c", None)
@@ -280,12 +281,26 @@ class Store:
             self.version += 1
         return len(rows)
 
-    def creative_summary(self, site_id, creative):
-        """(plays, last play time, event ID of its newest play with a photo) of one creative ID."""
+    def index_creatives(self):
+        """An index by creative ID, so one creative's plays are found without reading every
+        record of its site (made once, at the first start with it; a big database takes a minute)."""
+        db = self.db()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='records_site_creative'").fetchone():
+            return
+        self.log("store: indexing plays by creative ID (once; may take a minute on a big database)")
+        t = time.time()
+        with self.wlock:
+            db.execute("CREATE INDEX IF NOT EXISTS records_site_creative ON records (site_id, type, creative, t)")
+        self.log(f"store: indexed in {time.time() - t:.0f} s")
+
+    def creative_summary(self, site_id, creative, photo_days=7):
+        """(plays, last play time, event ID of its newest play with a photo in the last
+        photo_days) of one creative ID."""
         n, last = self.db().execute("SELECT COUNT(*), MAX(t) FROM records WHERE site_id=? AND type='creative_change' "
                                     "AND creative=?", (site_id, creative)).fetchone()
         ph = self.db().execute("SELECT event_id FROM records WHERE site_id=? AND type='creative_change' AND creative=? "
-                               "AND has_roi=1 AND blank=0 ORDER BY t DESC LIMIT 1", (site_id, creative)).fetchone()
+                               "AND t>? AND has_roi=1 AND blank=0 ORDER BY t DESC LIMIT 1",
+                               (site_id, creative, time.time() - photo_days * 86400)).fetchone()
         return n or 0, last, ph[0] if ph else None
 
     def relabel(self, event_ids, creative):
