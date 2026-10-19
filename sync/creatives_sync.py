@@ -63,6 +63,7 @@ ROOT = ENV("SP_ROOT", "00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs").str
 RECEIVER = ENV("RECEIVER_URL", "http://receiver:8080").rstrip("/")
 API_KEY = ENV("POP_API_KEY", "")
 INTERVAL = float(ENV("SYNC_INTERVAL_MIN", "240")) * 60
+DOOHLY_WAIT = float(ENV("NEW_SITE_DOOHLY_WAIT_MIN", "10")) * 60   # a new site's artwork waits this long at most for Doohly
 CHECK = float(ENV("CHECK_MIN", "5")) * 60
 SCREENS_OVERRIDE = [s.strip() for s in ENV("SYNC_SCREENS", "").split(",") if s.strip()]
 MONTHS_BACK = int(ENV("MONTHS_BACK", "8"))    # how far back campaign folders are indexed
@@ -457,9 +458,10 @@ def fetch_inputs():
 
 
 def fingerprint(inputs):
+    """The Vault pull's identity. (The screens are tracked one by one: a new site syncs
+    only its own screen.)"""
     b = inputs.get("bookings") or {}
-    scr = sorted(mi.screen_norm(s) for s in (inputs.get("screens") or []))
-    return hashlib.sha256(json.dumps([b.get("generated_at"), len(b.get("proposals") or []), scr]).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps(["v2", b.get("generated_at"), len(b.get("proposals") or [])]).encode()).hexdigest()[:16]
 
 
 def week_dates(iso):
@@ -669,7 +671,9 @@ class Syncer:
         self.status.update(running=False, version=VERSION)
         self.last_fp = self.status.get("inputs")
         self.last_ok = self._ts(self.status.get("last_success"))
-        self.pending = False
+        self.synced = {mi.screen_norm(x) for x in self.status.get("synced_screens") or self.status.get("screens") or []}
+        self.waiting = {}                       # new screen (key) -> since: waiting for Doohly's bookings
+        self.pending, self.pending_full, self.pending_screens = False, False, set()
         self.reason = "start"
 
     @staticmethod
@@ -684,9 +688,39 @@ class Syncer:
         os.makedirs(STATE, exist_ok=True)
         atomic_json(os.path.join(STATE, "status.json"), self.status)
 
-    def request(self, reason):
+    def request(self, reason, screens=None):
+        """Sync soon: everything, or (screens given) only those screens."""
+        if screens is None:
+            self.pending_full = True
+        else:
+            self.pending_screens |= set(screens)
         self.reason, self.pending = reason, True
         self.wake.set()
+
+    def new_screens(self, inp, now=None):
+        """Screens monitored now but not synced yet (a site was added): returns the ones to
+        sync now. With Doohly they wait for its first read of the new player (it is woken
+        now, and asks for them itself), DOOHLY_WAIT at most; without it, straight away."""
+        now = now or time.time()
+        scr = inp.get("screens")
+        if scr is None or SCREENS_OVERRIDE:
+            return [], False
+        keys = {mi.screen_norm(x): x for x in scr}
+        added = [x for k, x in keys.items() if k not in self.synced]
+        removed = bool(self.synced - set(keys))
+        for k in list(self.waiting):
+            if k not in keys or k in self.synced:
+                self.waiting.pop(k)
+        if not added:
+            return [], removed
+        if not (DOOHLY and doohly.token()):
+            return added, removed
+        if any(mi.screen_norm(x) not in self.waiting for x in added):
+            log(f"sync: new screen(s) {', '.join(added)}: reading their Doohly bookings first")
+            DOOHLY.wake.set()
+        for x in added:
+            self.waiting.setdefault(mi.screen_norm(x), now)
+        return [x for x in added if now - self.waiting[mi.screen_norm(x)] >= DOOHLY_WAIT], removed
 
     def loop(self):
         time.sleep(float(ENV("START_DELAY_S", "20")))
@@ -694,15 +728,21 @@ class Syncer:
         while True:
             self.wake.wait(timeout=CHECK)
             self.wake.clear()
-            reason = None
+            reason, only = None, None
             if self.pending:
                 reason, self.pending = self.reason, False
+                if not self.pending_full:
+                    only = sorted(self.pending_screens)
+                self.pending_full, self.pending_screens = False, set()
             else:
                 try:
                     inp = fetch_inputs()
-                    fp = fingerprint(inp)
-                    if inp.get("screens") is not None and fp != self.last_fp:
-                        reason = "new Vault pull or site screens changed"
+                    if inp.get("screens") is not None and fingerprint(inp) != self.last_fp:
+                        reason = "new Vault pull"
+                    elif inp.get("screens") is not None:
+                        due, removed = self.new_screens(inp)
+                        if due or removed:
+                            reason, only = ("new screen(s): " + ", ".join(due)) if due else "screen(s) removed", due
                 except Exception as e:
                     log(f"inputs check: {e}")
                 if not reason and time.time() - self.last_ok >= INTERVAL:
@@ -710,9 +750,11 @@ class Syncer:
                 if not reason and self.status.get("ok") is False and time.time() - self._ts(self.status.get("last_run")) >= 30 * 60:
                     reason = "retry after failure"
             if reason:
-                self.run(reason)
+                self.run(reason, only)
 
-    def run(self, reason):
+    def run(self, reason, only=None):
+        """A sync: every screen, or (only = a list) just those screens, keeping the rest
+        of the library as it is."""
         if not (ENV("AZ_CLIENT_ID") or ENV("GRAPH_TEST_TOKEN")):
             self.save_status(running=False, ok=None, last_run=now_iso(),
                              error="not set up yet: AZ_TENANT_ID, AZ_CLIENT_ID and AZ_CLIENT_SECRET are empty "
@@ -722,9 +764,9 @@ class Syncer:
             return False
         t0 = time.time()
         self.save_status(running=True, started=now_iso(), reason=reason)
-        log(f"sync: starting ({reason})")
+        log(f"sync: starting ({reason})" + ("" if only is None else f" for {', '.join(only) or 'no screens'} only"))
         try:
-            res = self._run()
+            res = self._run(only)
             took = round(time.time() - t0)
             self.last_ok = time.time()
             was_bad = self.status.get("ok") is False
@@ -763,7 +805,7 @@ class Syncer:
                    "Run deploy/sharepoint/setup-sharepoint-app.ps1 again to make a new one (docs/sharepoint-setup.md).")
             self.save_status(secret_warned=now_iso())
 
-    def _run(self):
+    def _run(self, only=None):
         inputs = fetch_inputs()
         fp = fingerprint(inputs) if inputs.get("screens") is not None else self.last_fp
         bookings = inputs["bookings"]
@@ -776,6 +818,8 @@ class Syncer:
         if SCREENS_OVERRIDE == ["all"]:
             screens = sorted({sc["name"] for p in bookings["proposals"] for sc in p.get("screens") or [] if sc.get("name")})
         screens = sorted(set(screens), key=str.lower)
+        want = None if only is None else {mi.screen_norm(o) for o in only}
+        todo = screens if want is None else [x for x in screens if mi.screen_norm(x) in want]
         today = datetime.now(LOCAL).date()
         weeks = [mi.monday(today), mi.monday(today) + timedelta(days=7)]
         booked = bookings_by_screen(bookings, screens, weeks)
@@ -783,16 +827,17 @@ class Syncer:
         for screen, camps in dbooked.items():          # Doohly knows this screen: it decides what is booked
             booked[screen] = {cid: {"name": v["name"], "weeks": v["weeks"]} for cid, v in camps.items()}
 
+        all_cids = sorted({cid for x in todo for cid in booked.get(x, {})})
         g = Graph()
-        lib = Library(g).connect()
-        index = lib.index_campaigns(today)
+        # SharePoint is read only for the campaigns of the screens being synced
+        lib = Library(g).connect() if all_cids or only is None else None
+        index = lib.index_campaigns(today) if lib else {}
         specs = read_json(os.path.join(STATE, "screen-specs.json"), {}) or {}
         mi_cache_dir = os.path.join(STATE, "mi")
         os.makedirs(mi_cache_dir, exist_ok=True)
         prev = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
 
         camp_files, camp_mis, camp_folders, camp_err = {}, {}, {}, {}
-        all_cids = sorted({cid for s in booked.values() for cid in s})
         for cid5 in {re.search(r"\d{5}", c).group(0) for c in all_cids}:
             folders = index.get(cid5) or lib.search_campaign(cid5)
             camp_folders[cid5] = folders
@@ -888,7 +933,7 @@ class Syncer:
                 d["from"] = min(info["weeks"]).isoformat()
                 d["to"] = (max(info["weeks"]) + timedelta(days=6)).isoformat()
             return d
-        for screen in screens:
+        for screen in todo:
             sp = specs.get(mi.screen_norm(screen))
             size = (sp[0], sp[1]) if sp else None
             screen_info.append({"name": screen, "width": size[0] if size else None, "height": size[1] if size else None})
@@ -935,6 +980,12 @@ class Syncer:
                                          "not_found": rep_.get("not_found")},
                                         **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
 
+        if only is not None:          # the other screens keep what the last sync found for them
+            keep = {mi.screen_norm(x) for x in screens} - {mi.screen_norm(x) for x in todo}
+            creatives += [c for c in prev.get("creatives", []) if mi.screen_norm(c.get("screen")) in keep]
+            missing += [m for m in prev.get("missing", []) if mi.screen_norm(m.get("screen")) in keep]
+            screen_info += [x for x in prev.get("screens", []) if mi.screen_norm(x.get("name")) in keep]
+            screen_info.sort(key=lambda x: (x.get("name") or "").lower())
         downloaded, files_n = self.materialise(lib, creatives)
         manifest = {"format": "pop-monitor/vault-creatives", "version": 1, "generated_at": now_iso(),
                     "source": f"creatives-sync {VERSION} (Microsoft Graph, {SITE} / {LIBRARY} / {ROOT})",
@@ -943,8 +994,14 @@ class Syncer:
                     "missing": missing}
         atomic_json(os.path.join(OUT, "vault-creatives.json"), manifest)
         self.prune(manifest)
-        self.last_fp = fp
-        return {"inputs": fp, "screens": screens, "pairs": pairs, "pairs_ok": pairs_ok, "files": files_n,
+        if only is None:
+            self.last_fp = fp
+            self.synced = {mi.screen_norm(x) for x in screens}
+        else:
+            self.synced = (self.synced & {mi.screen_norm(x) for x in screens}) | {mi.screen_norm(x) for x in todo}
+        return {"inputs": self.last_fp, "screens": screens, "only": None if only is None else todo,
+                "synced_screens": sorted(x for x in screens if mi.screen_norm(x) in self.synced), "pairs": pairs, "pairs_ok": pairs_ok,
+                "files": sum(1 for c in creatives if c.get("file")), "new_files": files_n,
                 "videos": sum(1 for c in creatives if c.get("kind") == "video"),
                 "dco": len({(c["campaign_id"], c["screen"]) for c in creatives if c.get("dco")}),
                 "missing": sum(1 for m in missing if not m.get("partial")), "partial": sum(1 for m in missing if m.get("partial")),

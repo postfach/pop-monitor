@@ -175,6 +175,7 @@ class Watcher:
         self.players_p = os.path.join(state_dir, "doohly-players.json")
         self.player_cache = read_json(self.players_p, {}) or {}   # player id -> frame and loop
         self.lock = threading.Lock()
+        self.wake = threading.Event()                         # set: read Doohly now (a site was added)
         self.last_bookings = 0
         self.alerted = {}                                     # site -> since (offline alert sent)
         self.c = Client()
@@ -216,6 +217,10 @@ class Watcher:
 
     # ---------------------------------------------------------------- one pass
     def run(self, with_bookings):
+        """Read the players (and, with_bookings, every site's bookings). A site seen for
+        the first time has its bookings read straight away. Returns the screens whose
+        artwork should be synced again: new sites (found in Doohly or not, so their
+        artwork isn't held up) and sites whose bookings changed. Empty if nothing did."""
         with self.lock:
             sites, over = self.sites()
             devices = list(self.c.pages("/v2/devices"))
@@ -224,12 +229,16 @@ class Watcher:
             week0 = today - timedelta(days=today.weekday())
             weeks = [week0, week0 + timedelta(days=7)]
             prev = self.doc.get("sites") or {}
+            known = set(prev) | {u.get("site_id") for u in self.doc.get("unmatched") or []}
+            fresh = {s["site_id"] for s in sites if s["site_id"] not in known}
             out_sites = {}
             for s in sites:
                 sid = s["site_id"]
                 if sid not in ids:
                     continue
                 dev = self.c.get(f"/v2/devices/{ids[sid]}")
+                if ((prev.get(sid) or {}).get("device") or {}).get("id") not in (None, dev["id"]):
+                    fresh.add(sid)                    # now shows another player (its screen changed): read it now
                 fr = self.main_frame(dev)
                 lp = (fr or {}).get("loopPolicy") or {}
                 coords = ((dev.get("geoLocation") or {}).get("coordinates") or [None, None])
@@ -244,9 +253,9 @@ class Watcher:
                         "loop": {"name": lp.get("name"), "slot_count": lp.get("slotCount"), "slot_s": lp.get("slotDuration"),
                                  "programmatic": (lp.get("programmatic") or {}).get("enabled"),
                                  "overbookable": lp.get("overbookable")} if lp else None,
-                        "bookings": (prev.get(sid) or {}).get("bookings") or [],
-                        "bookings_at": (prev.get(sid) or {}).get("bookings_at")}
-                if with_bookings and fr:
+                        "bookings": [] if sid in fresh else (prev.get(sid) or {}).get("bookings") or [],
+                        "bookings_at": None if sid in fresh else (prev.get(sid) or {}).get("bookings_at")}
+                if (with_bookings or sid in fresh) and fr:
                     site["bookings"] = self.bookings(fr["id"], weeks[0], weeks[1] + timedelta(days=6))
                     site["bookings_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 out_sites[sid] = site
@@ -255,12 +264,21 @@ class Watcher:
                 pl["site_id"] = next((sid for sid, did in ids.items() if did == pl["id"]), None)
             bh = hashlib.sha256(json.dumps({k: v["bookings"] for k, v in sorted(out_sites.items())},
                                            sort_keys=True).encode()).hexdigest()[:16]
-            changed = bh != self.doc.get("bookings_hash")
+            hashes = {k: hashlib.sha256(json.dumps(v["bookings"], sort_keys=True).encode()).hexdigest()[:16]
+                      for k, v in out_sites.items()}
+            before = self.doc.get("bookings_hashes")
+            if before is None and self.doc.get("bookings_hash") is not None:     # written by an earlier version
+                before = {k: None for k in prev} if bh != self.doc.get("bookings_hash") else dict(hashes)
+            before = before or {}
+            screen_of = {s["site_id"]: s.get("vault_screen") or s.get("name") for s in sites}
+            redo = [sid for sid in sorted(screen_of) if sid in fresh or
+                    (sid in hashes and sid in before and hashes[sid] != before[sid])]
+            changed = sorted({screen_of[sid] for sid in redo if screen_of.get(sid)}, key=str.lower)
             self.doc = {"format": "pop-monitor/doohly", "version": 1,
                         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "weeks": [w.isoformat() for w in weeks], "sites": out_sites, "unmatched": unmatched,
                         "players": players,
-                        "bookings_hash": bh, "calls": self.c.calls, "ok": True, "error": None}
+                        "bookings_hash": bh, "bookings_hashes": hashes, "calls": self.c.calls, "ok": True, "error": None}
             self.atomic_json(self.path, self.doc)
             if with_bookings:
                 self.last_bookings = time.time()
@@ -389,9 +407,9 @@ class Watcher:
                     changed = self.run(with_bookings=full)
                     if full:
                         self.log(f"doohly: {self.status()['bookings']} booking(s) on {self.status()['sites']} screen(s)"
-                                 + (" (changed)" if changed else ""))
-                    if changed:
-                        self.on_change("Doohly bookings changed")
+                                 + (f" (changed: {', '.join(changed)})" if changed else ""))
+                    if changed:                       # only those screens' artwork is looked up again
+                        self.on_change("Doohly bookings read: " + ", ".join(changed), changed)
                     if failing:
                         self.notify("Reading Doohly works again.", ok=True, title="Recovered: Doohly sync")
                     failing = False
@@ -405,4 +423,5 @@ class Watcher:
                     if not failing:
                         self.notify(f"Reading Doohly failed: {e}", title="Warning: Doohly sync failed")
                     failing = True
-            time.sleep(DEVICE_EVERY)
+            self.wake.wait(DEVICE_EVERY)               # or sooner, when a site is added
+            self.wake.clear()

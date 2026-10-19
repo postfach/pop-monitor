@@ -101,7 +101,9 @@ time-of-day rotations (from the config file) are always left alone.
   and loop policy).
 * Every 30 minutes (`DOOHLY_INTERVAL_MIN`): their bookings for this week and next. Only
   new or changed bookings are read in full. When they change, the artwork sync runs
-  straight away.
+  straight away, for the screens whose bookings changed.
+* At once when a site is added (or shows another player): its bookings are read
+  straight away, before its artwork is looked up.
 
 It writes `doohly.json` into the artwork volume, which the receiver reads.
 

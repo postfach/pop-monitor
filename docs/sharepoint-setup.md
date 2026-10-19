@@ -71,10 +71,18 @@ SharePoint …* within a minute of the container starting.
 It runs:
 
 * when it starts;
-* within 5 minutes of the inputs changing: a new Vault pull (the receiver also nudges it
-  straight away when one is uploaded), or a site linked to a different Vault screen;
-* every `SYNC_INTERVAL_MIN` minutes (default 240) to pick up new or replaced artwork;
-* when someone clicks **Sync now** on the Bookings page.
+* within 5 minutes of a new Vault pull (the receiver also nudges it straight away when one
+  is uploaded);
+* for **a site that was added** (or linked to another Vault screen): its Doohly bookings are
+  read first, straight away, and then **only that screen** is synced. The other screens'
+  artwork isn't looked up again or downloaded. If the screen's player isn't in Doohly, it
+  goes ahead at once from the Vault pull; if Doohly doesn't answer within
+  `NEW_SITE_DOOHLY_WAIT_MIN` (10) minutes, it goes ahead anyway;
+* when Doohly's bookings change: only the screens whose bookings changed;
+* for a site that was removed: its artwork is dropped, with no SharePoint calls;
+* every `SYNC_INTERVAL_MIN` minutes (default 240), every screen, to pick up new or replaced
+  artwork;
+* when someone clicks **Sync now** on the Bookings page (every screen).
 
 For each monitored site's Vault screen and each campaign booked on it this week or next:
 
@@ -152,6 +160,7 @@ the folders are walked.)
 | `SP_LIBRARY` | `Sales` | Document library (name or URL segment) |
 | `SP_ROOT` | `00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs` | Folder in the library |
 | `SYNC_INTERVAL_MIN` | 240 | Full refresh interval |
+| `NEW_SITE_DOOHLY_WAIT_MIN` | 10 | How long a new site's artwork waits for its Doohly bookings |
 | `SYNC_SCREENS` | (monitored sites) | Comma-separated Vault screens, or `all` for every booked screen |
 | `MONTHS_BACK` | 8 | Month folders indexed |
 | `DCO_LIBRARY`, `DCO_ROOT` | `IT`, `6. LUMO Labs` | Where the renders of dynamic (HTML) creatives are |
