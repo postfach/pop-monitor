@@ -653,6 +653,76 @@ def fits(f, size):
     return named
 
 
+# ---------------------------------------------------------------- files picked by hand
+# A booking whose artwork is in its campaign folder under a name the sync can't tie to the
+# screen (no MI row, not named for the screen, another size): someone picks the file on the
+# Bookings page and it is matched against from then on, without renaming it in SharePoint.
+PICKS_FILE = "artwork-picks.json"
+FOLDER_FILES_MAX = 300
+
+
+def pick_key(cid, screen):
+    return f"{cid}|{mi.screen_norm(screen)}"
+
+
+def load_picks():
+    return read_json(os.path.join(STATE, PICKS_FILE), {}) or {}
+
+
+def picked(cid, screen, files, picks):
+    """The files picked for a booking that are still in its campaign folder, and the
+    names of those that aren't any more."""
+    out, gone = [], []
+    for p in picks.get(pick_key(cid, screen)) or []:
+        f = next((f for f in files if f.get("id") == p.get("id")), None) or \
+            next((f for f in files if f["name"] == p.get("name") and os.path.dirname(f.get("rel") or "") == p.get("path")), None) or \
+            next((f for f in files if f["name"] == p.get("name")), None)
+        if f:
+            out.append(entry(cid, screen, f, "picked", None, None, None, "chosen on the Bookings page"))
+        else:
+            gone.append(p.get("name"))
+    return out, gone
+
+
+def folder_files(files):
+    """The images and videos in a campaign folder, for picking one by hand."""
+    out = [{"name": f["name"], "id": f.get("id"), "path": os.path.dirname(f.get("rel") or ""),   # within the campaign folder
+            "size": [f["width"], f["height"]] if f.get("width") else None, "kind": mi.kind_of(f["name"])}
+           for f in files if mi.kind_of(f["name"])]
+    out.sort(key=lambda f: (f["path"].lower(), f["name"].lower()))
+    return out[:FOLDER_FILES_MAX]
+
+
+def pick_artwork(campaign_id, screen, names):
+    """Set the files picked for a booking (names from its campaign folder, as the last
+    sync listed them; [] clears them), then sync that screen. Returns (code, reply)."""
+    manifest = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
+    want = mi.screen_norm(screen)
+    picks = load_picks()
+    key = pick_key(campaign_id, screen)
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return 400, {"error": "names must be a list of file names"}
+    if names:
+        m = next((x for x in manifest.get("missing") or [] if x.get("campaign_id") == campaign_id
+                  and mi.screen_norm(x.get("screen")) == want), None)
+        avail = {f["name"]: f for f in (m or {}).get("folder_files") or []}
+        if not avail:
+            return 404, {"error": f"{campaign_id} on {screen} isn't listed as missing artwork with files to pick from (sync again first?)"}
+        bad = [n for n in names if n not in avail]
+        if bad:
+            return 400, {"error": f"not in the campaign folder: {', '.join(bad[:3])}"}
+        have = {p["name"] for p in picks.get(key) or []}
+        picks[key] = (picks.get(key) or []) + [
+            {"name": n, "id": avail[n].get("id"), "path": avail[n].get("path"), "screen": screen,
+             "at": now_iso()} for n in names if n not in have]
+    elif picks.pop(key, None) is None:
+        return 404, {"error": f"nothing is picked for {campaign_id} on {screen}"}
+    atomic_json(os.path.join(STATE, PICKS_FILE), picks)
+    log(f"artwork: {'picked ' + ', '.join(names) if names else 'cleared the files picked'} for {campaign_id} on {screen}")
+    SYNC.request(f"artwork picked for {campaign_id}", screens=[screen])
+    return 200, {"status": "saved", "picked": [p["name"] for p in picks.get(key) or []], "syncing": True}
+
+
 def entry(cid, screen, f, via, f0, f1, rot, note, hours=None):
     e = {"campaign_id": cid, "screen": screen, "name": f["name"], "kind": mi.kind_of(f["name"]),
          "from": f0.isoformat() if f0 else None, "to": f1.isoformat() if f1 else None,
@@ -868,6 +938,7 @@ class Syncer:
 
         creatives, missing, screen_info, pairs, pairs_ok = [], [], [], 0, 0
         month, dco = None, None
+        picks = load_picks()
 
         def dco_variants(cid, cid5, screen, size, info, html):
             """A dynamic creative (HTML zip in Doohly): its renders in LUMO Labs, one entry
@@ -964,22 +1035,30 @@ class Syncer:
                 rep_ = {}
                 got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
                                   [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_)
-                got = (got or []) + variants
+                hand, gone = picked(cid, screen, camp_files[cid5], picks)
+                names = {c["name"] for c in got or []}
+                got = (got or []) + [c for c in hand if c["name"] not in names] + variants
+                if gone:
+                    why = f"picked file(s) no longer in the folder: {', '.join(gone[:3])}" + (f"; {why}" if why else "")
+                pick_info = {"folder_files": folder_files(camp_files[cid5]),
+                             "picked": [c["name"] for c in hand]}
                 if got:
                     pairs_ok += 1
                     creatives += got
-                    if rep_.get("not_found"):            # some of what Doohly plays isn't in SharePoint
+                    if rep_.get("not_found") and not hand:   # some of what Doohly plays isn't in SharePoint
                         missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"], "partial": True,
                                              "reason": f"{len(rep_['not_found'])} of the files Doohly plays aren't in the folder",
                                              "folder_url": camp_folders[cid5][0].get("webUrl", ""),
                                              "not_found": rep_["not_found"]},
-                                            **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
+                                            **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"]),
+                                            **pick_info))
                 else:
                     missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
                                          "reason": (dco_why + "; " + why) if dco_why and why else (dco_why or why),
                                          "folder_url": camp_folders[cid5][0].get("webUrl", ""),
                                          "not_found": rep_.get("not_found")},
-                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
+                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"]),
+                                        **pick_info))
 
         if only is not None:          # the other screens keep what the last sync found for them
             keep = {mi.screen_norm(x) for x in screens} - {mi.screen_norm(x) for x in todo}
@@ -1355,6 +1434,13 @@ class H(BaseHTTPRequestHandler):
                 code, body = upload_artwork(qs.get("campaign", [""])[0], qs.get("screen", [""])[0], qs.get("name", [""])[0], data)
             except Exception as e:
                 code, body = 502, {"error": str(e)}
+            return self.reply(code, body)
+        if self.path == "/artwork/pick":          # Bookings page: match a booking against a file picked by hand
+            try:
+                d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536)) or b"{}")
+                code, body = pick_artwork(str(d["campaign_id"]), str(d["screen"]), d.get("names") or [])
+            except (ValueError, KeyError, TypeError):
+                code, body = 400, {"error": "campaign_id, screen and names required"}
             return self.reply(code, body)
         m = re.fullmatch(r"/pop/run\?phase=(day|night)", self.path)
         if m and POP:                             # upload now (testing, or after a fix)

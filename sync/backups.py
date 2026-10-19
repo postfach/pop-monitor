@@ -30,7 +30,7 @@ LIBRARY = ENV("BACKUP_LIBRARY", "IT")
 ROOT = ENV("BACKUP_ROOT", "PoP Monitor/Backups").strip("/")
 KEEP = int(ENV("BACKUP_KEEP", "14"))
 ENABLED = ENV("BACKUP_TO_SHAREPOINT", "1").lower() not in ("0", "no", "false", "off")
-STATE_FILES = ("pop-uploads.json", "screen-specs.json")
+STATE_FILES = ("pop-uploads.json", "screen-specs.json", "artwork-picks.json")
 CHUNK = 10 * 320 * 1024                     # upload session chunks (a multiple of 320 KiB)
 NAME = re.compile(r"^pop-monitor-backup-[0-9_-]+\.tar\.gz$")
 

@@ -1377,8 +1377,10 @@ function artCell(c, s) {
       ` <span class="muted">${dco.length} variant${dco.length === 1 ? '' : 's'}</span>` +
       rest.slice(0, 2).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('');
   }
-  return files.slice(0, 4).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}${a.from || a.to ? ' · ' + fmtd(a.from) + '–' + fmtd(a.to) : ''}${a.rotation ? ' · ' + a.rotation + '%' : ''}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('') +
-     (files.length > 4 ? ` <span class="muted">+${files.length - 4}</span>` : '');
+  const hand = files.find(a => a.via === 'picked');
+  return files.slice(0, 4).map(a => `<a href="${artUrl(a.file)}" target="_blank" title="${esc(a.name)}${a.via === 'picked' ? ' (chosen by hand)' : ''}${a.from || a.to ? ' · ' + fmtd(a.from) + '–' + fmtd(a.to) : ''}${a.rotation ? ' · ' + a.rotation + '%' : ''}"><img class="thumb sm" loading="lazy" src="${artUrl(a.file)}" alt=""></a>`).join('') +
+     (files.length > 4 ? ` <span class="muted">+${files.length - 4}</span>` : '') +
+     (hand ? ` <span class="pill" title="Matched against ${esc(files.filter(a => a.via === 'picked').map(a => a.name).join(', '))}, chosen from the campaign folder on this page">chosen</span> <button type="button" class="link" style="font-size:12px" data-unpick="${esc(c.campaign_id)}" data-screen="${esc(hand.screen || s.vault_screen)}" title="Stop matching against the file(s) chosen by hand">undo</button>` : '');
 }
 function refThumb(cr) {
   const a = cr.art; if (!a || !a.file || a.status === 'none') return '';
@@ -1583,6 +1585,9 @@ async function openMissing() {
           ${want.length ? `<div style="font-size:13px;margin-top:4px">Doohly plays (not in SharePoint):</div><ul>${want.map(n => `<li><code class="f">${esc(n)}</code></li>`).join('')}</ul>` :
             `<div style="font-size:13px;margin-top:4px">Should be: the campaign's artwork for this screen, ${esc(sz(m))}. Name the file with the screen's name (e.g. <i>${esc(m.screen)}</i>), or make it exactly that size, or name it in the Material Instructions.</div>`}
           <div style="font-size:13px">Goes ${where}</div>
+          ${(m.folder_files || []).length && r.can_upload ? `<div class="mpick" style="margin-top:6px;font-size:13px">Or match against a file already in the campaign folder (it isn't renamed):
+            <select data-i="${i}" style="max-width:100%"><option value="">Choose a file&hellip;</option>${m.folder_files.map(f => `<option value="${esc(f.name)}">${esc((f.path ? f.path + '/' : '') + f.name)}${f.size ? ` (${f.size[0]}×${f.size[1]})` : ''}</option>`).join('')}</select>
+            <button type="button" class="btn" data-pick="${i}">Use this file</button></div>` : ''}
           ${up ? `<div class="mup">` +
             want.map(n => `<label class="btn" style="cursor:pointer">Upload as ${esc(n)}<input type="file" hidden data-i="${i}" data-name="${esc(n)}" accept="image/*,video/*"></label>`).join('') +
             `<label class="btn" style="cursor:pointer">${want.length ? 'Upload another file' : 'Upload artwork'}<input type="file" hidden data-i="${i}" accept="image/*,video/*"></label>
@@ -1593,6 +1598,30 @@ async function openMissing() {
 }
 document.getElementById('missclose').onclick = () => document.getElementById('missdlg').close();
 document.addEventListener('click', e => { if (e.target.closest('[data-missing]')) { e.preventDefault(); openMissing(); } });
+document.getElementById('misslist').addEventListener('click', async e => {   // match against a file in the folder
+  const b = e.target.closest('button[data-pick]'); if (!b) return;
+  const box = b.closest('.msite'), sel = box.querySelector('.mpick select'), stat = box.querySelector('.mstat') || b;
+  const m = missing[+b.dataset.pick];
+  if (!sel.value) { sel.focus(); return; }
+  b.disabled = true;
+  const r = await fetch('/bookings/artwork-pick', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({campaign_id: m.campaign_id, screen: m.screen, names: [sel.value]})});
+  const j = await r.json().catch(() => ({}));
+  b.disabled = false;
+  const out = box.querySelector('.mstat');
+  if (!r.ok) { if (out) { out.className = 'mstat bad'; out.textContent = 'Not saved: ' + (j.error || r.status); } return; }
+  if (out) { out.className = 'mstat ok'; out.textContent = `${sel.value} will be matched against for ${m.site_name || m.screen}. The artwork sync for this screen is running; this list and the page update when it finishes.`; }
+  missWatch = true; loadSync();
+});
+document.getElementById('out').addEventListener('click', async e => {    // undo a file chosen by hand
+  const b = e.target.closest('button[data-unpick]'); if (!b) return;
+  b.disabled = true;
+  const r = await fetch('/bookings/artwork-pick', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({campaign_id: b.dataset.unpick, screen: b.dataset.screen, names: []})});
+  const j = await r.json().catch(() => ({}));
+  b.textContent = r.ok ? 'undone; syncing…' : 'failed: ' + (j.error || r.status);
+  if (r.ok) loadSync();
+});
 document.getElementById('misslist').addEventListener('change', async e => {
   const inp = e.target.closest('input[type=file]'); if (!inp || !inp.files.length) return;
   const m = missing[+inp.dataset.i], f = inp.files[0], stat = inp.closest('.msite').querySelector('.mstat');
@@ -2624,13 +2653,22 @@ def match(creatives, campaigns, links, art=None):
 
 PROG_MIN_SAMPLES = 3       # PoP images compared before a creative can be called programmatic
 PROG_MIN_PLAYS = 3
+# A creative that only faintly resembles a booked campaign ("looks like X?") is still
+# programmatic when X is already fully delivered here by the creatives matched to it, or
+# when X isn't booked here this week and the resemblance is clearly weak: programmatic
+# ads often look a little like something (the MetService ad scores ~0.30 against unrelated
+# artwork). A closer look-alike of a campaign not booked here (an overrun) stays unassigned.
+PROG_WEAK_UNBOOKED = 0.35
+PROG_DELIVERED = 0.95          # X counts as fully delivered at this share of its booked slots
 
 
-def infer_programmatic(ds, week, crs, assigned, art, library):
+def infer_programmatic(ds, week, crs, assigned, art, library, campaigns=None):
     """Creatives that are almost certainly programmatic: the screen's loop fills its
     unbooked slots with programmatic (Doohly), Doohly says exactly what is booked,
-    every booked image has its artwork here, and the creative matches none of it.
-    Returns (set of creative IDs, reason it can't be done or "")."""
+    every booked image has its artwork here (or a creative linked to it by hand), and
+    the creative matches none of it (a faint look-alike of a campaign that is already
+    delivered, or isn't booked here, counts as none). Returns (set of creative IDs,
+    reason it can't be done or "")."""
     if not ART_OK:
         return set(), "artwork matching is unavailable"
     lp = ds.get("loop") or {}
@@ -2643,8 +2681,9 @@ def infer_programmatic(ds, week, crs, assigned, art, library):
     video_block = False
     for b in live:
         cid, kinds = b.get("campaign_id"), {c.get("type") for c in b.get("creatives") or []}
-        if "image" in kinds and cid not in have:
-            return set(), f"the artwork for {b.get('campaign_name') or cid} isn't in the library, so its plays could be mistaken for programmatic"
+        if "image" in kinds and cid not in have and cid not in taken:
+            return set(), (f"the artwork for {b.get('campaign_name') or cid} isn't in the library, so its plays could be "
+                           "mistaken for programmatic: upload it, or link its creative to the campaign below")
         if "html" in kinds and cid not in taken and not any(
                 x.get("campaign_id") == cid and x.get("dco") and x.get("file") for x in library):
             # live web content with no renders of its variants: needs a creative linked first
@@ -2653,12 +2692,29 @@ def infer_programmatic(ds, week, crs, assigned, art, library):
         if "video" in kinds and cid not in taken and not any(
                 x.get("campaign_id") == cid and x.get("kind") == "video" and x.get("frames") for x in library):
             video_block = True                       # a booked video with no frames to compare with
+    booked = {c["campaign_id"]: c.get("plays_per_loop") or 0 for c in campaigns or []}
+    delivered = {}
+    for cr in crs:
+        a = assigned.get(cr["creative_id"])
+        if a in booked:
+            delivered[a] = delivered.get(a, 0) + (cr.get("share") or 0)
+
+    def faint(a):
+        """A "looks like X?" that isn't X."""
+        x, sc = a.get("campaign_id"), a.get("score") or 0
+        if campaigns is None or not x:
+            return False
+        if x in booked:
+            return booked[x] > 0 and delivered.get(x, 0) >= PROG_DELIVERED * booked[x]
+        return sc < PROG_WEAK_UNBOOKED
     out = set()
     for cr in crs:
         a = art.get(cr["creative_id"]) or {}
         if cr["blank"] or assigned.get(cr["creative_id"]) != "unassigned":
             continue
-        if a.get("status") != "none" or (a.get("samples") or 0) < PROG_MIN_SAMPLES or cr["plays"] < PROG_MIN_PLAYS:
+        if not (a.get("status") == "none" or (a.get("status") == "possible" and faint(a))):
+            continue
+        if (a.get("samples") or 0) < PROG_MIN_SAMPLES or cr["plays"] < PROG_MIN_PLAYS:
             continue
         if cr.get("video") and video_block:
             continue
@@ -3542,9 +3598,10 @@ def site_bookings(cam, week, links_all):
                  linked=[k for k, v in site_links.items() if v == c["campaign_id"]],
                  artwork=[{"name": x.get("name"), "file": x.get("file"), "kind": x.get("kind", "image"),
                            "from": x.get("from"), "to": x.get("to"), "rotation": x.get("rotation"),
-                           "dco": bool(x.get("dco")), "variant": x.get("variant")} for x in mine])
+                           "dco": bool(x.get("dco")), "variant": x.get("variant"), "via": x.get("via"),
+                           "screen": x.get("screen")} for x in mine])
     ds = doohly_site(sid, res["vault_screen"])
-    inferred, why_not = (infer_programmatic(ds, week, crs, m, art, library) if ds else (set(), ""))
+    inferred, why_not = (infer_programmatic(ds, week, crs, m, art, library, campaigns) if ds else (set(), ""))
     res["programmatic_inference"] = {"on": bool(ds) and not why_not, "why_not": why_not, "creatives": sorted(inferred)}
     tally = {"programmatic": 0.0, "house": 0.0, "unbooked": 0.0, "unassigned": 0.0}
     for cr in crs:
@@ -4803,6 +4860,12 @@ class H(BaseHTTPRequestHandler):
                 return
             code, body = sync_call("POST", f"/pop/run?phase={m.group(1)}", timeout=10)
             return self.reply(code if code >= 400 else 202, body)
+        if self.path == "/bookings/artwork-pick":   # match a booking against a file in its folder, or undo that
+            if not self.authorised():
+                return
+            data = self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536))
+            code, body = sync_call("POST", "/artwork/pick", timeout=15, data=data)
+            return self.reply(code, body)
         if self.path.startswith("/bookings/artwork?"):   # artwork for a booking with none: to SharePoint
             if not self.authorised():
                 return

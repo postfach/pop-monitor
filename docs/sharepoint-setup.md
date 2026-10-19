@@ -120,6 +120,18 @@ A first run for three screens takes about 120 Graph calls and a few seconds; lat
 about 70 calls and download nothing unless artwork changed. Graph's limits are far above
 this.
 
+## Artwork under another name
+
+When a booking's artwork is in its campaign folder but under a name the sync can't tie to the
+screen (no Material Instructions row, not named for the screen or for what Doohly plays, another
+size), the booking shows under **Bookings without artwork** with the folder's images and videos
+listed. Pick one and **Use this file**: from then on that file is the booking's artwork on that
+screen (each screen is picked separately), without renaming anything in SharePoint. The sync for
+that screen runs straight away. The file is found by its SharePoint ID, so a rename later doesn't
+lose it; if it is deleted, the booking is listed as missing again and says so. On the Bookings
+page the campaign's artwork then shows **chosen**, with **undo** to stop using it. The picks are
+in `artwork-picks.json` in the sync's state folder and are part of backups.
+
 ## Dynamic creatives (DCO)
 
 Doohly books a dynamic creative (one that changes with the weather or time of day) as an

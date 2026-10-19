@@ -67,8 +67,14 @@ Doohly's API doesn't report plays, so it can't say when a programmatic ad played
 loops fill every unbooked slot with programmatic, and Doohly says exactly what is booked,
 so on a screen with a Doohly player a creative is marked **Programmatic (inferred)** when:
 
-* every campaign booked there that week with images has its artwork in the library;
-* the creative's PoP images (at least 3 compared, and at least 3 plays) match none of it;
+* every campaign booked there that week with images has its artwork in the library, or one of
+  its creatives linked to it by hand on the Bookings page;
+* the creative's PoP images (at least 3 compared, and at least 3 plays) match none of it. A
+  creative that only faintly resembles a campaign (*looks like X?*) counts as matching none
+  when X is already fully delivered there (95% of its booked slots) by the creatives matched
+  to it, or when X isn't booked there that week and the resemblance is weak (below 0.35).
+  Programmatic ads often look a little like something; a closer look-alike of a campaign not
+  booked there (an overrun of an old booking) stays unassigned;
 * it isn't a video while a booked video has no frames in the library (its download or frame
   extraction failed), as its plays could then be mistaken for programmatic.
 
