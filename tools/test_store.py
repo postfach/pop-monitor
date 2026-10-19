@@ -118,6 +118,24 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.delete_site("NEW"), 1)
         self.assertEqual(os.listdir(os.path.join(self.dir, "images")), [])
 
+    def test_washed_out_photos(self):
+        s, t = self.s, self.now
+        r = pop("w", "S", t - 30)
+        r["quality"] = {"usable": False, "reason": "62% of board blown out"}
+        s.add(r)
+        r = pop("m", "S", t - 20)
+        r["quality"] = {"usable": False, "reason": "frame does not match the settled creative"}
+        s.add(r)
+        s.add(pop("ok", "S", t - 10))
+        got = {p[4]: (p[6], p[7]) for p in s.plays("S", t - 100, t)}
+        self.assertEqual(got, {"w": (False, True), "m": (False, False), "ok": (True, False)})
+        self.assertEqual(s.play("w")[6], 2)
+        # records stored before the tag existed are tagged once, on start
+        s.db().execute("UPDATE records SET usable=0 WHERE event_id='w'")
+        s.db().execute("DELETE FROM meta WHERE k='washed_v1'")
+        self.assertEqual(store.Store(self.dir, log=lambda m: None).plays("S", t - 100, t)[0][7], True)
+        self.assertEqual(s.tag_washed(), 0)                               # once only
+
     def test_setup_periods(self):
         s, t = self.s, self.now
         self.assertTrue(s.setup_start("S", t - 100))

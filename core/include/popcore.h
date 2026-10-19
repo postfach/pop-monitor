@@ -397,6 +397,7 @@ typedef struct {
     float grid_distance;
     float clip_typical;   /* what this creative usually shows clipped (the
                              verdict's baseline; 0 = judged absolutely)   */
+    float detail;         /* fine-detail correlation with it (1 = no reference) */
     int   mismatch;       /* doesn't look like the settled creative       */
     float score;          /* higher is better                             */
     int   usable;         /* passes all hard checks                       */
@@ -416,6 +417,10 @@ int pc_snapshot_score_region(const pc_frame *f, const pc_region *r, float inset_
 
 /* Blown out = clipped highlights this much beyond what the creative
  * normally shows (artwork with a lot of white clips on camera every time). */
+/* A photo is of a different creative only if its fine detail disagrees too: the
+ * brightness grid and the hash also move with exposure, and the hash's bits are
+ * noise on large areas of near-identical white (white-heavy artwork). */
+#define PC_MISMATCH_DETAIL 0.35f
 #define PC_CLIP_EXCESS 0.15f
 /* Until a creative's usual clipping is known, only this much counts. */
 #define PC_CLIP_UNKNOWN_MAX 0.50f

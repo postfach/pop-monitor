@@ -493,6 +493,24 @@ static void test_snapshot_score(void)
     pc_snapshot_score(&fb, QUAD, 3.f, &ref, &qe, NULL, NULL, NULL);
     CHECK(qd.usable, "matching frame usable (%s, hd %d gd %.1f)", qd.reason, qd.hash_distance, qd.grid_distance);
     CHECK(!qe.usable, "different creative rejected (hd %d gd %.1f)", qe.hash_distance, qe.grid_distance);
+    /* the same creative photographed much brighter (white artwork, the photo exposed
+     * differently from the video): brightness grid and hash say "different", the
+     * fine detail says it is the same, so it is kept */
+    {
+        uint8_t *bright = malloc((size_t)FW * FH * 3);
+        for (size_t i = 0; i < (size_t)FW * FH * 3; i++) {
+            int x = (int)(a[i] * 1.7 + 40);
+            bright[i] = (uint8_t)(x > 255 ? 255 : x);
+        }
+        pc_frame fbr = frame_of(bright);
+        pc_snapshot_quality qb;
+        pc_snapshot_score(&fbr, QUAD, 3.f, &ref, &qb, NULL, NULL, NULL);
+        CHECK(qb.hash_distance > 18 || qb.grid_distance > 22.f,
+              "brighter photo trips the old test (hd %d gd %.1f)", qb.hash_distance, qb.grid_distance);
+        CHECK(qb.usable, "brighter photo of the same creative kept (%s, detail %.2f)", qb.reason, qb.detail);
+        CHECK(qe.detail < PC_MISMATCH_DETAIL, "different creative's detail disagrees (%.2f)", qe.detail);
+        free(bright);
+    }
     pc_warp_free(&w);
 
     /* clipping is judged against what the creative usually shows: artwork with

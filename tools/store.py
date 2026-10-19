@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS records (
   creative TEXT,
   blank    INTEGER NOT NULL DEFAULT 0,
   video    INTEGER NOT NULL DEFAULT 0,
-  usable   INTEGER NOT NULL DEFAULT 1,
+  usable   INTEGER NOT NULL DEFAULT 1,   -- 1 usable, 0 not, 2 not but only for being washed out (blown out)
   has_roi  INTEGER NOT NULL DEFAULT 0,   -- the photos are on disk (cleared when removed)
   has_frame INTEGER NOT NULL DEFAULT 0,
   name     TEXT,
@@ -88,6 +88,13 @@ def _flags(r, roi, frame):
     return r
 
 
+def _usable(q):
+    """1 usable, 0 not, 2 not usable only because the board was blown out (washed out)."""
+    if q.get("usable", True) is not False:
+        return 1
+    return 2 if "blown out" in str(q.get("reason") or "") else 0
+
+
 def _name(r):
     return r.get("site_name") or r.get("camera") or ""
 
@@ -106,6 +113,7 @@ class Store:
         db.executescript(SCHEMA)
         if migrate:
             self.migrate()
+            self.tag_washed()
 
     def db(self):
         c = getattr(self.local, "c", None)
@@ -123,7 +131,7 @@ class Store:
         t = _ts(r.get("play_started_at")) if typ == "creative_change" else _ts(r.get("at") or r.get("since"))
         return (r.get("event_id"), typ, r.get("site_id") or "", t, r.get("local_creative_id"),
                 int(bool(r.get("is_blank"))), int(bool(r.get("video_creative"))),
-                int((r.get("quality") or {}).get("usable", True) is not False),
+                _usable(r.get("quality") or {}),
                 int("roi_sha256" in r), int("frame_sha256" in r), _name(r), _enc(r))
 
     def add(self, r):
@@ -144,17 +152,18 @@ class Store:
     # ---------------------------------------------------------------- reading
     def plays(self, site_id, t0, t1):
         """A site's PoP plays with t0 <= start < t1, oldest first, as tuples
-        (t, creative, blank, video, event_id, has_roi, usable)."""
+        (t, creative, blank, video, event_id, has_roi, usable, washed out): washed out =
+        not usable only because much of the board was blown out (still good for matching)."""
         rows = self.db().execute(
             "SELECT t, creative, blank, video, event_id, has_roi, usable FROM records "
             "WHERE site_id=? AND type='creative_change' AND t>=? AND t<? ORDER BY t", (site_id, t0, t1)).fetchall()
-        return [(t, c, bool(b), bool(v), e, bool(h), bool(u)) for t, c, b, v, e, h, u in rows]
+        return [(t, c, bool(b), bool(v), e, bool(h), u == 1, u == 2) for t, c, b, v, e, h, u in rows]
 
     def last_plays(self, site_id, n):
         rows = self.db().execute(
             "SELECT t, creative, blank, video, event_id, has_roi, usable FROM records "
             "WHERE site_id=? AND type='creative_change' ORDER BY t DESC LIMIT ?", (site_id, n)).fetchall()
-        return [(t, c, bool(b), bool(v), e, bool(h), bool(u)) for t, c, b, v, e, h, u in reversed(rows)]
+        return [(t, c, bool(b), bool(v), e, bool(h), u == 1, u == 2) for t, c, b, v, e, h, u in reversed(rows)]
 
     def play(self, event_id):
         r = self.db().execute("SELECT t, creative, blank, video, event_id, has_roi, usable, site_id FROM records "
@@ -442,6 +451,24 @@ class Store:
             time.sleep(every_s)
 
     # ---------------------------------------------------------------- upgrade
+    def tag_washed(self, days=14):
+        """Mark the recent photos that were rejected only for being blown out (once)."""
+        if self.db().execute("SELECT v FROM meta WHERE k='washed_v1'").fetchone():
+            return 0
+        rows = self.db().execute("SELECT event_id, json FROM records WHERE type='creative_change' AND usable=0 AND t>?",
+                                 (time.time() - days * 86400,)).fetchall()
+        ids = [e for e, j in rows if _usable(_dec(j).get("quality") or {}) == 2]
+        with self.wlock:
+            db = self.db()
+            db.execute("BEGIN")
+            db.executemany("UPDATE records SET usable=2 WHERE event_id=?", [(e,) for e in ids])
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('washed_v1', ?)", (str(len(ids)),))
+            db.execute("COMMIT")
+            self.version += 1
+        if ids:
+            self.log(f"store: {len(ids)} washed-out photo(s) from the last {days} days can now be used for matching")
+        return len(ids)
+
     def migrate(self):
         """Import records.jsonl / heartbeats.jsonl from before the database."""
         for name, table in (("records.jsonl", "records"), ("heartbeats.jsonl", "heartbeats")):

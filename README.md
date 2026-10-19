@@ -362,7 +362,12 @@ SharePoint. The screen crops stay their 3 days, so every photo still shows on th
 
 Every play is logged and counted, but the gateway photographs each creative at most every
 10 minutes (a creative not photographed in the last 10 minutes, so one that plays rarely,
-is photographed every time it plays; `snapshot.photo_every_min`, 0 photographs every play). A photo is three
+is photographed every time it plays; `snapshot.photo_every_min`, 0 photographs every play).
+Two exceptions get a creative matched to its artwork quickly: a **new creative** is
+photographed on every play until it has 3 usable photos (6 photos at most, for one that
+always comes out washed out), and a photo that comes out **unusable** (or can't be taken)
+is retried once on the next play. How many photos each creative has, and its clipping
+history (below), are kept in `state/photos/<site>.json`, so a restart doesn't start over. A photo is three
 full-resolution snapshots from the camera, a straightened crop, an upload and about 400 KB
 on disk, so photographing all of them (about 450 plays an hour per site) came to some
 150 GB for seven sites over 3 days, and camera traffic to match. Six photos an hour of
@@ -547,8 +552,23 @@ gateway remembers the clipping (pixels at full white) of each creative's last 48
 by day and by night, and calls a snapshot blown out only when it clips more than 15% of the
 board beyond the usual (the lower quarter of those snapshots, so a spell of sunstrike doesn't
 become usual). Artwork with a lot of white clips on camera every time and isn't flagged.
-Until a creative has 6 snapshots (after a restart, or a new creative) only more than 50%
-counts. `quality` in the PoP metadata carries `clipped_usual` and `night`.
+Until a creative has 6 snapshots (a new creative; the history survives restarts) only more
+than 50% counts, and while it is still being learned a blown-out photo isn't sent to Teams
+(the record still says so). `quality` in the PoP metadata carries `clipped_usual` and `night`.
+
+A **blown-out photo is still used for artwork matching** when a creative has fewer than 5
+clean photos: the fine detail left (text, logos, edges) still says which artwork it is,
+and the parts that blow out are mostly the artwork's own white. The match needs the same
+score and the same lead over every other campaign, so it only comes sooner. (On the real
+Adelaide Road photos and synthetic ones blown out up to 99%, the right artwork scored
+0.64-0.99 and unrelated creatives at most 0.31.) A board blown out completely matches nothing.
+
+"**Frame does not match the settled creative**" means the photo shows something other than
+what the video stream saw when the creative settled (taken just after a change). It now
+needs the fine detail to disagree as well (correlation under 0.35, the same bar the
+detector uses for "same creative"): the brightness grid and the hash it used alone also
+move with exposure, and on white-heavy artwork the hash is noise, so good photos of bright
+creatives were being thrown away. `quality.detail` in the PoP metadata is that correlation.
 
 **`POST /v1/heartbeat`** (JSON, every `heartbeat_s`): per camera `connected`, `state`,
 `fps`, `last_frame_at`, `last_play_at`, `plays_last_hour`, `expected_per_hour`,

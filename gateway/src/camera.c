@@ -21,6 +21,9 @@
 #define IMGMAP 512
 #define CLIPN 48            /* snapshots remembered per creative, day and night */
 #define CLIP_MIN 6          /* ...needed before its usual clipping is trusted   */
+#define PHOTO_WARM_GOOD 3   /* a new creative is photographed every play until it has this many usable photos */
+#define PHOTO_WARM_MAX 6    /* ...or this many photos in all (one that always washes out doesn't go on forever) */
+enum { DUE_NO = 0, DUE_INTERVAL, DUE_WARM, DUE_RETRY };
 
 typedef struct {
     pc_event   ev;
@@ -39,7 +42,12 @@ typedef struct {
     pthread_cond_t  cv;
     snap_job    jobs[JOBQ];
     int         jh, jn;
-    struct { int id; int64_t last; } imgmap[IMGMAP];
+    /* photo timing per creative: when the last one was taken, how many usable ones
+     * it has (warm-up), and a pending retry after a bad one */
+    struct { int id; int64_t last; uint8_t good, taken, retry, retried; } imgmap[IMGMAP];
+    int         photo_dirty;    /* photo timing or clipping changed since the last save */
+    int64_t     blank_last;     /* blank screens: photographed at most every photo_every_min */
+    int64_t     photo_saved;
     /* Recent clipping of each creative's snapshots, by day and by night:
      * artwork with a lot of white always clips on camera, so "blown out"
      * means well beyond what that creative usually shows. */
@@ -222,20 +230,139 @@ static int frame_is_night(const pc_frame *f)
     return n && s / n < 55.0;
 }
 
-static int image_due(camera *cm, int creative_id, int64_t now)
+static int img_slot(camera *cm, int creative_id)
 {
-    int every = cm->cfg->snap.photo_every_min;
-    if (every <= 0) return 1;
     int slot = -1;
     for (int i = 0; i < IMGMAP; i++) {
-        if (cm->imgmap[i].id == creative_id) { slot = i; break; }
+        if (cm->imgmap[i].id == creative_id) return i;
         if (slot < 0 && cm->imgmap[i].id == 0) slot = i;
     }
     if (slot < 0) slot = creative_id % IMGMAP;
-    if (cm->imgmap[slot].id == creative_id && now - cm->imgmap[slot].last < (int64_t)every * 60000) return 0;
+    memset(&cm->imgmap[slot], 0, sizeof cm->imgmap[slot]);
     cm->imgmap[slot].id = creative_id;
-    cm->imgmap[slot].last = now;
-    return 1;
+    return slot;
+}
+
+/* Whether this play of a creative is photographed, and why. Every play is still
+ * logged; photos are taken at most every photo_every_min per creative, except that
+ * a new creative is photographed every play until it has a few usable photos (so
+ * it can be matched to its artwork straight away), and a bad photo is retried once
+ * on the next play. */
+static int image_due(camera *cm, int creative_id, int64_t now)
+{
+    int every = cm->cfg->snap.photo_every_min;
+    if (every <= 0) return DUE_INTERVAL;
+    int s = img_slot(cm, creative_id);
+    if (cm->imgmap[s].good < PHOTO_WARM_GOOD && cm->imgmap[s].taken < PHOTO_WARM_MAX) return DUE_WARM;
+    if (cm->imgmap[s].retry) { cm->imgmap[s].retry = 0; return DUE_RETRY; }
+    if (now - cm->imgmap[s].last >= (int64_t)every * 60000) { cm->imgmap[s].retried = 0; return DUE_INTERVAL; }
+    return DUE_NO;
+}
+
+/* What came of a photo: usable or not (or none could be taken). */
+static void photo_result(camera *cm, int creative_id, int why, int ok, int64_t now)
+{
+    int s = img_slot(cm, creative_id);
+    if (cm->imgmap[s].taken < 255) cm->imgmap[s].taken++;
+    cm->imgmap[s].last = now;
+    if (ok) {
+        if (cm->imgmap[s].good < 255) cm->imgmap[s].good++;
+    } else if (why == DUE_INTERVAL && !cm->imgmap[s].retried) {
+        cm->imgmap[s].retry = cm->imgmap[s].retried = 1;      /* one more try, next play */
+    }
+    cm->photo_dirty = 1;
+}
+
+/* The photo timing and clipping history survive restarts: state/photos/<site>.json */
+static void photo_state_path(camera *cm, char *out, size_t n, char *dir, size_t dn)
+{
+    char lib[700];
+    config_library_path(cm->app->cfg, cm->cfg->site_id, lib, sizeof lib);
+    const char *base = strrchr(lib, '/');
+    snprintf(dir, dn, "%s/photos", cm->app->cfg->state_dir);
+    snprintf(out, n, "%s%s", dir, base ? base : "/site.json");
+}
+
+static void photo_state_save(camera *cm)
+{
+    char path[760], dir[720];
+    photo_state_path(cm, path, sizeof path, dir, sizeof dir);
+    util_mkdir_p(dir);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON *items = cJSON_AddArrayToObject(root, "creatives");
+    for (int i = 0; i < IMGMAP; i++) {
+        int id = cm->imgmap[i].id;
+        if (!id) continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "id", id);
+        cJSON_AddNumberToObject(o, "good", cm->imgmap[i].good);
+        cJSON_AddNumberToObject(o, "taken", cm->imgmap[i].taken);
+        cJSON_AddItemToArray(items, o);
+    }
+    cJSON *clips = cJSON_AddArrayToObject(root, "clipping");
+    for (int i = 0; i < IMGMAP; i++) {
+        if (!cm->clipmap[i].id) continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "id", cm->clipmap[i].id);
+        static const char *names[2] = {"day", "night"};
+        for (int k = 0; k < 2; k++) {                 /* oldest first */
+            int n = cm->clipmap[i].n[k], h = cm->clipmap[i].head[k];
+            cJSON *a = cJSON_AddArrayToObject(o, names[k]);
+            for (int j = 0; j < n; j++)
+                cJSON_AddItemToArray(a, cJSON_CreateNumber(cm->clipmap[i].v[k][(h - n + j + CLIPN * 2) % CLIPN]));
+        }
+        cJSON_AddItemToArray(clips, o);
+    }
+    char *txt = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (util_write_file_atomic(path, txt, strlen(txt)) != 0) LOGW(cm->cfg->name, "cannot save photo state");
+    free(txt);
+    cm->photo_dirty = 0;
+    cm->photo_saved = util_mono_ms();
+}
+
+static void photo_state_load(camera *cm)
+{
+    char path[760], dir[720];
+    photo_state_path(cm, path, sizeof path, dir, sizeof dir);
+    size_t len;
+    char *txt = util_read_file(path, &len);
+    if (!txt) return;
+    cJSON *root = cJSON_Parse(txt);
+    free(txt);
+    const cJSON *o;
+    int n_img = 0, n_clip = 0;
+    cJSON_ArrayForEach(o, cJSON_GetObjectItemCaseSensitive(root, "creatives")) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
+        if (!cJSON_IsNumber(id) || id->valueint <= 0 || n_img >= IMGMAP) continue;
+        int s = img_slot(cm, id->valueint);
+        const cJSON *g = cJSON_GetObjectItemCaseSensitive(o, "good"), *t = cJSON_GetObjectItemCaseSensitive(o, "taken");
+        cm->imgmap[s].good = cJSON_IsNumber(g) ? (uint8_t)(g->valueint > 255 ? 255 : g->valueint) : 0;
+        cm->imgmap[s].taken = cJSON_IsNumber(t) ? (uint8_t)(t->valueint > 255 ? 255 : t->valueint) : 0;
+        n_img++;
+    }
+    cJSON_ArrayForEach(o, cJSON_GetObjectItemCaseSensitive(root, "clipping")) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
+        if (!cJSON_IsNumber(id) || id->valueint <= 0 || n_clip >= IMGMAP) continue;
+        int s = clip_slot(cm, id->valueint);
+        static const char *names[2] = {"day", "night"};
+        for (int k = 0; k < 2; k++) {
+            const cJSON *v;
+            int j = 0;
+            cJSON_ArrayForEach(v, cJSON_GetObjectItemCaseSensitive(o, names[k])) {
+                if (!cJSON_IsNumber(v)) continue;
+                int x = v->valueint < 0 ? 0 : v->valueint > 200 ? 200 : v->valueint;
+                cm->clipmap[s].v[k][j % CLIPN] = (uint8_t)x;
+                j++;
+            }
+            cm->clipmap[s].n[k] = (uint8_t)(j < CLIPN ? j : CLIPN);
+            cm->clipmap[s].head[k] = (uint8_t)(j % CLIPN);
+        }
+        n_clip++;
+    }
+    cJSON_Delete(root);
+    if (n_img || n_clip) LOGI(cm->cfg->name, "photo history for %d creative(s) loaded", n_clip > n_img ? n_clip : n_img);
 }
 
 static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
@@ -253,7 +380,13 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
     snprintf(query, sizeof query, "compression=%d%s%s", c->snap.compression,
              *c->snap.resolution ? "&resolution=" : "", c->snap.resolution);
 
-    int want_images = image_due(cm, job->ev.creative_id, util_wall_ms());
+    int64_t wall = util_wall_ms();
+    int why;
+    if (!job->ev.is_blank) why = image_due(cm, job->ev.creative_id, wall);
+    else if (cm->cfg->snap.photo_every_min <= 0 || wall - cm->blank_last >= (int64_t)cm->cfg->snap.photo_every_min * 60000)
+        { why = DUE_INTERVAL; cm->blank_last = wall; }
+    else why = DUE_NO;
+    int want_images = why != DUE_NO;
     const pc_features *ref = (job->ev.is_blank || job->ev.motion) ? NULL : &job->ev.fp;
 
     /* burst capture */
@@ -323,6 +456,10 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
         }
     }
 
+    if (want_images && !job->ev.is_blank)
+        photo_result(cm, job->ev.creative_id, why, best_jpg && best_q.usable, util_wall_ms());
+    if (cm->photo_dirty && util_mono_ms() - cm->photo_saved > 60000) photo_state_save(cm);
+
     uint8_t *roi_jpg = NULL;
     size_t roi_len = 0;
     if (best_rgb) {
@@ -390,6 +527,7 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
             cJSON_AddNumberToObject(qj, "clipped_usual", round((double)best_q.clip_typical * 1000) / 1000);
         cJSON_AddBoolToObject(qj, "night", night);
         cJSON_AddNumberToObject(qj, "banding", round((double)best_q.banding * 100) / 100);
+        if (ref) cJSON_AddNumberToObject(qj, "detail", round((double)best_q.detail * 100) / 100);
         cJSON_AddBoolToObject(qj, "usable", best_q.usable);
         if (!best_q.usable) cJSON_AddStringToObject(qj, "reason", best_q.reason);
         cJSON_AddNumberToObject(qj, "burst_index", best_idx);
@@ -420,7 +558,10 @@ static void capture_and_queue(camera *cm, vapix *vx, const snap_job *job)
         int64_t t = util_wall_ms();
         alerts_send(cm->app, c, "snapshot_failed", "occurred", t, t,
                     "could not fetch a JPEG from the camera for a PoP record", NULL, 0);
-    } else if (best_jpg && !best_q.usable && !job->ev.is_blank) {
+    } else if (best_jpg && !best_q.usable && !job->ev.is_blank &&
+               !(best_q.clip_typical < 0 && strstr(best_q.reason, "blown out"))) {
+        /* (not while the creative's usual clipping is still being learned: white
+         * artwork would alert on every new creative; the record still says so) */
         int64_t t = util_wall_ms();
         alerts_send(cm->app, c, "poor_pop_image", "occurred", t, t, best_q.reason, roi_jpg, roi_len);
     }
@@ -474,6 +615,7 @@ static void *snapshot_thread(void *arg)
         return NULL;
     }
     int64_t next_ptz = util_mono_ms() + 2000;
+    photo_state_load(cm);
     while (RUNNING(cm)) {
         snap_job job;
         int have = 0;
@@ -497,6 +639,7 @@ static void *snapshot_thread(void *arg)
             next_ptz = util_mono_ms() + 60000;
         }
     }
+    if (cm->photo_dirty) photo_state_save(cm);
     vapix_free(&vx);
     return NULL;
 }

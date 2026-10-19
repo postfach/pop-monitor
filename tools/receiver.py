@@ -1292,7 +1292,7 @@ function artPill(cr, s, cname) {
   const a = cr.art;
   if (cr.link) return '<span class="pill">set by hand</span>';
   if (!a) return '';
-  const sc = `match ${Math.round(a.score * 100)}%, next best ${Math.round(a.next * 100)}%, over ${a.samples} PoP image(s) and ${a.candidates} booked artwork(s)`;
+  const sc = `match ${Math.round(a.score * 100)}%, next best ${Math.round(a.next * 100)}%, over ${a.samples} PoP image(s)${a.washed ? ` (${a.washed} washed out)` : ''} and ${a.candidates} booked artwork(s)`;
   if (a.status === 'matched') return `<span class="pill ok" title="${esc(sc)}">artwork match</span>` +
      (a.off_schedule ? ` <span class="pill warn" title="${esc(a.name)} runs ${fmtd(a.from)}–${fmtd(a.to)}">off schedule</span>` : '');
   if (a.status === 'possible') return `<span class="pill" title="${esc(sc)}">looks like ${esc(cname(a.campaign_id))}?</span>`;
@@ -2420,6 +2420,11 @@ ART_POSSIBLE = 0.30              # shown as "looks like" below a match
 ART_MATCH_VIDEO = float(os.environ.get("ART_MATCH_VIDEO", "0.36"))
 ART_MARGIN_VIDEO = float(os.environ.get("ART_MARGIN_VIDEO", "0.08"))
 ART_SAMPLES = 5                  # PoP images per creative compared
+# A photo the gateway called "blown out" (white artwork, low sun) is still compared when
+# there aren't enough clean photos of the creative: the fine detail it keeps (text, logos,
+# edges) still says which artwork it is, and the blown-out parts are mostly the
+# artwork's own blank white. The thresholds and the margin over other campaigns are the
+# same, so it only makes a match sooner, not a different one.
 CRE = {"mtime": None, "path": None, "data": None, "root": None}
 CRE_LOCK = threading.Lock()
 ART_CACHE = {}                   # (path, mtime, inset) or event id -> prepared arrays
@@ -2706,8 +2711,8 @@ def artwork_matches(cam, t0, t1, setup=False):
     state = art_state().setdefault(sid, {})
     plays = site_plays(sid, t0, t1, setup=setup)
     by_cid = {}
-    for p in plays:                                  # usable images in this period, oldest first
-        if not p[2] and p[5] and (len(p) < 7 or p[6]):
+    for p in plays:                                  # usable (or washed-out) images in this period, oldest first
+        if not p[2] and p[5] and (len(p) < 7 or p[6] or (len(p) > 7 and p[7])):
             by_cid.setdefault(p[1], []).append(p)
     now = time.time()
     out = {}
@@ -2715,9 +2720,18 @@ def artwork_matches(cam, t0, t1, setup=False):
         st = state.get(cid)
         fresh = st and st.get("lib") == lib and now - st.get("at", 0) < (
             ART_RECHECK_MATCHED if st["res"]["status"] == "matched" else ART_RECHECK_OTHER)
+        # not matched yet on only a few photos: look again as soon as there is a new one
+        if fresh and st["res"]["status"] != "matched" and st["res"].get("samples", 0) < ART_SAMPLES \
+                and st.get("last") and ps[-1][4] != st.get("last"):
+            fresh = False
         if not fresh:
-            sample = _spread(ps, ART_SAMPLES)
-            fps = [f for f in (_pop_fp(p[4], grid) for p in sample) if f is not None]
+            clean = [p for p in ps if len(p) < 7 or p[6]]
+            sample = _spread(clean, ART_SAMPLES)
+            if len(sample) < ART_SAMPLES:            # washed-out photos fill in
+                sample += _spread([p for p in ps if not (len(p) < 7 or p[6])], ART_SAMPLES - len(sample))
+            got = [(p, f) for p, f in ((p, _pop_fp(p[4], grid)) for p in sample) if f is not None]
+            fps = [f for _, f in got]
+            n_washed = sum(1 for p, _ in got if not (len(p) < 7 or p[6]))
             if not fps:
                 continue
             raw = [_scores(f, stack) for f in fps]
@@ -2737,11 +2751,12 @@ def artwork_matches(cam, t0, t1, setup=False):
                 idx = _np.flatnonzero(owner == bk)
                 votes = [int(idx[int(_np.argmax(r[idx]))]) for r in raw]
                 frame = frame_of[max(set(votes), key=votes.count)]
-            st = {"lib": lib, "at": now, "eid": sample[-1][4],
+            st = {"lib": lib, "at": now, "eid": sample[-1][4], "last": ps[-1][4],
                   "res": {"status": status, "campaign_id": bc["campaign_id"], "name": bc.get("name"),
                           "file": bc.get("file"), "score": round(best, 2), "next": round(other, 2),
                           "kind": bc.get("kind", "image"), "frame": frame, "variant": bc.get("variant"),
-                          "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(used)}}
+                          "from": bc.get("from"), "to": bc.get("to"), "samples": len(fps), "candidates": len(used),
+                          "washed": n_washed}}
             state[cid] = st
             ART_STATE["dirty"] = True
         res = dict(st["res"])
@@ -3816,7 +3831,7 @@ def _play_by_eid(site_id, eid):
     p = STORE.play(eid)
     if not p or p[7] != site_id:
         return None
-    return (p[0], canon(site_id, p[1]), bool(p[2]), bool(p[3]), p[4], bool(p[5]), bool(p[6]))
+    return (p[0], canon(site_id, p[1]), bool(p[2]), bool(p[3]), p[4], bool(p[5]), p[6] == 1, p[6] == 2)
 
 
 def best_pops(t0, t1, phase, current=None):

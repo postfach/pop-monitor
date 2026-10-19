@@ -46,9 +46,11 @@ int pc_snapshot_score_region(const pc_frame *f, const pc_region *r, float inset_
     pc_features_compute(buf, buf + n, buf + 2 * n, ow, oh, &fe);
     q->sharpness = fe.sharpness;
     q->clipped = fe.clipped;
+    q->detail = 1.f;
     if (ref) {
         q->hash_distance = pc_hamming64(fe.dhash, ref->dhash);
         q->grid_distance = pc_features_grid_distance(&fe, ref);
+        q->detail = pc_fingerprint_detail(&fe, ref);
     }
     if (board_y) {
         uint8_t *y = realloc(buf, n);     /* keep only the luma plane */
@@ -59,7 +61,8 @@ int pc_snapshot_score_region(const pc_frame *f, const pc_region *r, float inset_
         free(buf);
     }
 
-    q->mismatch = ref && fe.std_y >= 6.f && (q->hash_distance > 18 || q->grid_distance > 22.f);
+    q->mismatch = ref && fe.std_y >= 6.f && (q->hash_distance > 18 || q->grid_distance > 22.f) &&
+                  q->detail < PC_MISMATCH_DETAIL;
     pc_snapshot_judge(q, 0.f);
     return 0;
 }
