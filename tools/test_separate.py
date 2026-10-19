@@ -120,5 +120,40 @@ class Separate(unittest.TestCase):
         self.assertEqual((info["canon"], info["plays"], info["image"]), ("c-0001", 1, "m1"))
 
 
+class OtherProcess(unittest.TestCase):
+    """The report worker keeps its own copy of the merges and artwork matches: a change
+    made by the web process (a merge separated) must reach it."""
+
+    def test_worker_sees_changes(self):
+        out = tempfile.mkdtemp()
+        saved = {k: getattr(rx, k) for k in ("ARGS",)}
+        self.addCleanup(lambda: [setattr(rx, k, v) for k, v in saved.items()])
+        rx.ARGS = types.SimpleNamespace(out=out, api_key="k")
+        rx.MERGES.clear()
+        rx.MERGES.update(loaded=False, sites={}, apart={}, mtime=None)
+        rx.merges().setdefault("S", {})["c-0002"] = {"into": "c-0001", "at": 1, "pushed": None, "why": "x"}
+        rx.save_merges()
+        self.assertEqual(rx.canon("S", "c-0002"), "c-0001")
+        # the other process separates it
+        time.sleep(0.05)
+        with open(rx._merges_path(), "w") as f:
+            f.write('{"sites": {"S": {}}, "apart": {"S": [["c-0001", "c-0002"]]}}')
+        os.utime(rx._merges_path(), (time.time() + 5, time.time() + 5))
+        rx.MERGES["checked"] = 0
+        self.assertEqual(rx.canon("S", "c-0002"), "c-0002")
+        self.assertTrue(rx.kept_apart("S", "c-0001", "c-0002"))
+        # artwork matches the same way
+        rx.ART_STATE.clear()
+        rx.ART_STATE.update(loaded=False, dirty=False, sites={})
+        rx.art_state()["S"] = {"c-0001": {"status": "matched"}}
+        rx.ART_STATE["dirty"] = True
+        rx.save_art_state()
+        with open(rx._art_state_path(), "w") as f:
+            f.write('{"sites": {"S": {}}}')
+        os.utime(rx._art_state_path(), (time.time() + 5, time.time() + 5))
+        rx.ART_STATE["checked"] = 0
+        self.assertEqual(rx.art_state()["S"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

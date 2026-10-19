@@ -2256,8 +2256,33 @@ def _merges_path():
     return os.path.join(ARGS.out, "creative-merges.json")
 
 
+def _changed_on_disk(state, path, every=2.0):
+    """True if the file was written (by the other process: the web process and the
+    report worker each keep a copy) since this process last read or wrote it.
+    Checked at most every `every` seconds."""
+    now = time.monotonic()
+    if now - state.get("checked", 0) < every:
+        return False
+    state["checked"] = now
+    try:
+        m = os.path.getmtime(path)
+    except OSError:
+        return False
+    return state.get("disk_mtime") is not None and m != state["disk_mtime"]
+
+
+def _note_disk(state, path):
+    try:
+        state["disk_mtime"] = os.path.getmtime(path)
+    except OSError:
+        state["disk_mtime"] = 0
+
+
 def merges():
+    if MERGES["loaded"] and _changed_on_disk(MERGES, _merges_path()):
+        MERGES["loaded"] = False
     if not MERGES["loaded"]:
+        _note_disk(MERGES, _merges_path())
         try:
             with open(_merges_path(), encoding="utf-8") as f:
                 d = json.load(f)
@@ -2275,6 +2300,7 @@ def save_merges():
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"sites": merges(), "apart": apart_all()}, f, indent=1)
         os.replace(tmp, _merges_path())
+        _note_disk(MERGES, _merges_path())
     MERGES["mtime"] = time.time()
 
 
@@ -2867,7 +2893,10 @@ def _art_state_path():
 
 def art_state():
     """Per-creative artwork matches, kept on disk so a restart doesn't redo them."""
+    if ART_STATE["loaded"] and not ART_STATE["dirty"] and _changed_on_disk(ART_STATE, _art_state_path()):
+        ART_STATE["loaded"] = False
     if not ART_STATE["loaded"]:
+        _note_disk(ART_STATE, _art_state_path())
         try:
             with open(_art_state_path(), encoding="utf-8") as f:
                 ART_STATE["sites"] = json.load(f).get("sites", {})
@@ -2885,6 +2914,7 @@ def save_art_state():
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"sites": ART_STATE["sites"]}, f)
         os.replace(tmp, _art_state_path())
+        _note_disk(ART_STATE, _art_state_path())
     ART_STATE["dirty"] = False
 
 
@@ -3625,6 +3655,7 @@ def _worker_init(out, api_key, hmac_key):
 
 def _worker_report(week_iso, cams):
     week = datetime.fromisoformat(week_iso).date()
+    MERGES["checked"] = ART_STATE["checked"] = 0      # pick up merges and matches changed by the web process
     return _build_report(week, cams)
 
 
