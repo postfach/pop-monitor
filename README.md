@@ -139,6 +139,17 @@ Triggers derived from the rotation profile (N slots of S ms):
 | Missing creative | fewer than N distinct creatives in 2 loops | under 6 |
 | Coverage (heartbeat) | plays per hour vs 3600 / S | out of 360 |
 
+## Look
+
+The pages share the LUMO look, taken from lumodigital.nz and Vault: a header with the LUMO
+wordmark (from Vault's logo) on Vault's blue-plum-pink gradient, Lumo pink `#dd078c` and
+purple `#782b90`, pink-to-purple pill buttons for the main action, white pages with light
+grey panels, and a dark mode. The type is Geist (SIL Open Font Licence, bundled), as the
+brand fonts (TT Hoves Pro on the website, Calibre in Vault) are licensed. It is all in
+`tools/static/lumo.css`, added to every page by the receiver (`lumo_page`), so the pages'
+own code is unchanged; with a web licence, the brand font can be dropped into
+`tools/static` and named there instead.
+
 ## Managing sites from the review page
 
 The **Sites** page lists every camera with its status, rotation and plays per hour.

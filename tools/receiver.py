@@ -1658,6 +1658,41 @@ load();
 
 # Every page: a photo or artwork that fails to load (the receiver was busy, a
 # connection dropped) is asked for again a few times instead of staying black.
+# ---------------------------------------------------------------- the LUMO look
+# Every page gets the same header (the LUMO wordmark, from Vault's logo, as a lockup like
+# Vault's) and tools/static/lumo.css, which re-colours the pages' own styles.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC = {"lumo.css": "text/css; charset=utf-8", "Geist-Variable.woff2": "font/woff2",
+          "favicon.svg": "image/svg+xml", "Geist-OFL.txt": "text/plain; charset=utf-8"}
+LUMO_LOGO = ('<svg viewBox="0 25 469 95" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LUMO" fill="currentColor">'
+             '<polygon points="0 25.6 23.1 25.6 23.1 95.7 53.8 95.7 53.8 116 0 116 0 25.6"/>'
+             '<path d="M126.4,25.6l.1,48.5c.1,13.4-7.2,23.1-19.9,23.1-12.7.1-19.9-9.2-20-23l-.1-48.7h-22.3l.1,47.9'
+             'c.1,32.4,23,45.9,42.5,45.9,19.5-.1,42.2-14.1,42.1-46.4l-.1-47.3h-22.4Z"/>'
+             '<polygon points="270.1 25.6 244 25.6 217.7 86.8 191.3 25.6 166 25.6 166 116 187.6 116 187.6 68.8 187.6 68.3 '
+             '208.1 116 227.2 116 248.4 66.7 248.5 67.9 248.5 116 270.1 116 270.1 25.6"/>'
+             '<path d="M329.5,96.8c-11.7,0-21.7-10.3-21.7-24.3s9.9-24.3,21.7-24.3h92.9c11.7,0,21.7,10.3,21.7,24.3'
+             's-9.9,24.3-21.7,24.3h-92.9ZM468.8,72.5c0-21.6-15.4-46.8-47.3-46.9h-91.1c-32.1,0-47.2,25.3-47.2,46.9'
+             's15.4,46.8,47.4,46.9h91c31.8-.2,47.2-25.3,47.2-46.9Z"/></svg>')
+LUMO_SECTIONS = (("/", "Review"), ("/sites", "Sites"), ("/bookings", "Bookings"), ("/health", "Health"))
+
+
+def lumo_page(body, path):
+    """Put the LUMO header, styles and favicon on a page (bytes)."""
+    on = "/sites" if path in ("/sites", "/site", "/roi", "/sites/import") else path
+    links = "".join(f'<a href="{h}"{" class=\"lumo-on\"" if h == on else ""}>{t}</a>' for h, t in LUMO_SECTIONS)
+    header = (f'<header class="lumo-bar"><div class="lumo-in"><a class="lumo-brand" href="/" aria-label="LUMO PoP Monitor">'
+              f'{LUMO_LOGO}<i class="lumo-div"></i><span class="lumo-prod">PoP Monitor</span></a>'
+              f'<nav class="lumo-nav">{links}</nav></div></header>').encode()
+    body = re.sub(rb"<nav\b[^>]*>.*?</nav>", b"", body, count=1, flags=re.S)
+    body = re.sub(rb"(<body[^>]*>)", lambda m: m.group(1) + header, body, count=1)
+    head = (b'<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
+            b'<link rel="preload" href="/static/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>'
+            b'<link rel="stylesheet" href="/static/lumo.css">')
+    body = body.replace(b"</head>", head + b"</head>", 1)
+    return re.sub(rb"<title>(.*?)</title>", lambda m: b"<title>" + m.group(1) + b" \xc2\xb7 LUMO PoP Monitor</title>",
+                  body, count=1, flags=re.S)
+
+
 IMG_RETRY = b"""<script>addEventListener('error', e => {
   const i = e.target; if (!(i instanceof HTMLImageElement)) return;
   const n = +(i.dataset.retry || 0); if (n >= 4) return; i.dataset.retry = n + 1;
@@ -4519,6 +4554,15 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", 'attachment; filename="pop-sites-template.csv"')
+        elif path.startswith("/static/") and path[8:] in STATIC:     # the LUMO look: styles, font, icon
+            try:
+                with open(os.path.join(STATIC_DIR, path[8:]), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self.reply(404)
+            self.send_response(200)
+            self.send_header("Content-Type", STATIC[path[8:]])
+            self.send_header("Cache-Control", "max-age=3600")
         elif path == "/":
             m = re.search(r"(?:^|&)site=([^&]+)", query)
             body = render_page(m.group(1) if m else "").encode()
@@ -4547,7 +4591,7 @@ class H(BaseHTTPRequestHandler):
         else:
             return self.reply(404)
         if body[:15].lower() == b"<!doctype html>":
-            body = body.replace(b"</body>", IMG_RETRY + b"</body>", 1)
+            body = lumo_page(body, path).replace(b"</body>", IMG_RETRY + b"</body>", 1)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

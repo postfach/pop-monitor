@@ -1,0 +1,59 @@
+/* LUMO look for the PoP Monitor pages, from lumodigital.nz and Vault (vaultcms.nz):
+ * Lumo pink #dd078c and purple #782b90 (the website's --lumo-pink / --lumo-purple), the
+ * website's pink-to-purple button gradient, Vault's 135° blue-plum-pink gradient for the
+ * header, pill buttons, white pages with light grey panels (as in Lumo's own documents),
+ * and Geist (open licence) standing in for the brand's licensed TT Hoves / Calibre.
+ * Loaded after each page's own styles, so these colours win. */
+@font-face{font-family:"Geist";src:url(/static/Geist-Variable.woff2) format("woff2");font-weight:100 900;font-display:swap}
+
+:root{
+  --lumo-pink:#dd078c; --lumo-purple:#782b90; --lumo-blue:#191fb3; --lumo-plum:#330038; --lumo-ink:#1d0536;
+  --lumo-grad:linear-gradient(90deg,#dc078c 0%,#91228f 100%);
+  --lumo-hero:linear-gradient(135deg,#1d0097 0%,#1d0536 28%,#330038 52%,#c31980 100%);
+  --bg:#ffffff; --fg:#16131c; --muted:#6c6775; --line:#e6e3ea; --panel:#f5f4f7;
+  --accent:#dd078c; --ok:#1f7a35; --warn:#a85d00; --bad:#c8102e;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f0c1d; --fg:#f2eff7; --muted:#a39db2; --line:#2c2742; --panel:#1a162d;
+  --accent:#ff3aa8; --ok:#55c66f; --warn:#eaa94c; --bad:#ff6b7d;
+}}
+
+html{background:var(--bg)}
+body{background:var(--bg);color:var(--fg);font-family:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;font-feature-settings:"ss01" 0}
+button,input,select,textarea{font-family:inherit}
+h1{font-weight:650;letter-spacing:-.015em} h2,h3{font-weight:600;letter-spacing:-.01em}
+::selection{background:rgba(221,7,140,.22)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+a:hover{color:var(--accent)}
+
+/* header: the LUMO lockup on Vault's gradient */
+.lumo-bar{background:var(--lumo-hero);color:#fff;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+.lumo-bar .lumo-in{max-width:1200px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:10px 28px;flex-wrap:wrap}
+.lumo-bar .lumo-brand{display:flex;align-items:center;gap:12px;color:#fff;text-decoration:none}
+.lumo-bar .lumo-brand svg{height:19px;width:auto;display:block}
+.lumo-bar .lumo-div{width:1px;height:22px;background:rgba(255,255,255,.35);display:block}
+.lumo-bar .lumo-prod{font-size:14px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;opacity:.8;white-space:nowrap}
+.lumo-bar .lumo-nav{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 0 auto}
+.lumo-bar .lumo-nav a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:500;font-size:14px;padding:6px 12px;border-radius:999px}
+.lumo-bar .lumo-nav a:hover{color:#fff;background:rgba(255,255,255,.12)}
+.lumo-bar .lumo-nav a.lumo-on{color:#fff;background:rgba(255,255,255,.18)}
+@media (max-width:640px){.lumo-bar .lumo-nav{margin:0}.lumo-bar .lumo-prod{font-size:12px}}
+
+/* buttons: pills; the main action in Lumo's gradient */
+button,.btn,a.btn{border-radius:999px}
+.btn.primary,button.primary{background:var(--lumo-grad);border-color:transparent;color:#fff}
+.btn.primary:hover,button.primary:hover{filter:brightness(1.08);color:#fff}
+button:not(.linkbtn):not(.link):hover,.btn:hover{border-color:var(--accent)}
+.btn.danger,button.danger{border-color:var(--bad);color:var(--bad)}
+input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{border-radius:8px}
+input[type=checkbox],input[type=radio]{accent-color:var(--lumo-pink)}
+
+/* cards and panels: rounded like the website's */
+.card,.gw,.panel,details.site,.mcamp,.alerts{border-radius:14px}
+.tile{border-radius:10px}
+.thumb{border-radius:0}
+.pill{border-radius:999px} a.pill{text-decoration:none}
+
+/* tables: quiet headers, as small labels */
+th{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:.03em}
