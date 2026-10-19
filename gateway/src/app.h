@@ -63,6 +63,7 @@ typedef struct {
     gateway_cfg  *cfg;
     gw_health     health;
     volatile int  running;
+    volatile int  exit_code;     /* non-zero: restart wanted (a restore was staged) */
     cam_status   *status;            /* MAX_CAMERAS slots, one per camera */
     pthread_mutex_t cams_mu;         /* guards the camera list (add/edit/remove) */
 } app_ctx;

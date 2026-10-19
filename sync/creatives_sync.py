@@ -51,6 +51,7 @@ import mi  # noqa: E402
 import pop_upload  # noqa: E402
 import videoframes  # noqa: E402
 import doohly  # noqa: E402
+import backups  # noqa: E402
 
 VERSION = "0.1.0"
 ENV = os.environ.get
@@ -1171,6 +1172,7 @@ def notify(text, ok=False, title=None):
 SYNC = None
 POP = None
 DOOHLY = None
+BACKUPS = None
 
 
 def configured():
@@ -1275,12 +1277,63 @@ class H(BaseHTTPRequestHandler):
                 "%Y-%m-%dT%H:%M:%SZ") if nxt else None, configured=configured())
             st["pop_upload"] = POP.status() if POP else None
             st["doohly"] = DOOHLY.status() if DOOHLY else None
+            st["backup"] = BACKUPS.status() if BACKUPS else None
             return self.reply(200, st)
+        if self.path == "/backup":                 # the receiver's backup: this service's part
+            return self.reply(200, backups.state(STATE))
+        if self.path == "/backups":                # the Health page: the backups in SharePoint
+            if not configured() or not BACKUPS:
+                return self.reply(200, {"items": [], "configured": False, "status": BACKUPS.status() if BACKUPS else None})
+            try:
+                return self.reply(200, {"items": BACKUPS.items(), "status": BACKUPS.status(), "configured": True})
+            except Exception as e:
+                return self.reply(502, {"error": f"cannot list the backups in SharePoint: {e}", "status": BACKUPS.status()})
+        m = re.fullmatch(r"/backups/([A-Za-z0-9!._-]{6,200})", self.path)
+        if m and BACKUPS:                          # the receiver fetching one to restore
+            tmp = os.path.join(STATE, "restore.part")
+            try:
+                with open(tmp, "wb") as f:
+                    BACKUPS.download(m.group(1), f)
+                size = os.path.getsize(tmp)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                with open(tmp, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile, 1 << 20)
+            except Exception as e:
+                return self.reply(502, {"error": f"cannot fetch that backup: {e}"})
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            return
         self.reply(404, {})
 
     def do_POST(self):
         if not self.ok_auth():
             return
+        if self.path == "/restore":               # the receiver restoring a backup: this service's part
+            try:
+                n = backups.restore(STATE, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+            except (ValueError, OSError) as e:
+                return self.reply(400, {"error": str(e)})
+            log(f"restore: {n} state file(s) from a backup; restarting")
+            self.reply(202, {"restored": n, "restarting": True})
+
+            def restart():
+                time.sleep(1)
+                os._exit(3)                        # the container starts it again, with the restored state
+            threading.Thread(target=restart, daemon=True).start()
+            return
+        if self.path == "/backup/run":            # Health page: back up to SharePoint now
+            if not configured() or not BACKUPS:
+                return self.reply(409, {"error": "SharePoint access is not set up"})
+            if BACKUPS.lock.locked():
+                return self.reply(409, {"error": "a backup is already running"})
+            threading.Thread(target=BACKUPS.run, daemon=True).start()
+            return self.reply(202, {"status": "started"})
         if self.path == "/check":                 # receiver: inputs may have changed
             SYNC.wake.set()
             return self.reply(202, {"status": "checking"})
@@ -1335,6 +1388,9 @@ def main():
     DOOHLY = doohly.Watcher(OUT, STATE, fetch_inputs, LOCAL, log, notify, atomic_json, read_json,
                             on_change=SYNC.request)
     threading.Thread(target=DOOHLY.loop, daemon=True).start()
+    global BACKUPS
+    BACKUPS = backups.Backups(Graph, STATE, RECEIVER, API_KEY, LOCAL, log, notify, atomic_json, read_json, q)
+    threading.Thread(target=BACKUPS.loop, args=(configured,), daemon=True).start()
     port = int(ENV("PORT", "8091"))
     log(f"creatives-sync {VERSION} on :{port}; library {OUT}; refresh every {INTERVAL / 60:.0f} min, "
         f"inputs checked every {CHECK / 60:.0f} min")

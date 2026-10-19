@@ -5,8 +5,12 @@
         │                 how clearly the creative shows: tools/popscore.py)
         ▼
   SharePoint  Sales / 00_Sales (NEW FOLDER) / Booked Campaigns / PoP Images /
-              <year> / <MM - Month> / <site> /
+              <year> / <MM - Month> / <campaign> / <site> /
+                2026 / 10 - October / LUMO_19391 - HBO Max / Curletts In /
                 LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg
+
+(Photos put up before the campaign folders, in <year>/<MM - Month>/<site>/, are moved
+into them once; empty old site folders are then removed.)
 
 When it runs (local time, TZ):
   * POP_DAY_AT (20:00): the daytime photos taken since the last daytime run;
@@ -75,6 +79,20 @@ def file_name(item, phase, version_no):
             f"Score{int(round(item['score']))}_v{version_no}.jpg")
 
 
+def campaign_dir(campaign_id, advertiser="", campaign_name=""):
+    """The campaign's folder: "LUMO_17107 - ACT Party" (the advertiser, else the campaign's
+    name without its number)."""
+    who = (advertiser or "").strip() or re.sub(rf"(?i)^\s*{re.escape(campaign_id)}\s*[-–:]?\s*", "",
+                                                 campaign_name or "").strip()
+    return safe_part(f"{campaign_id} - {who}" if who else campaign_id)
+
+
+def adv_from_name(name, campaign_id):
+    """The advertiser written into an uploaded file's name ("LUMO_1_HBO.Max_Site_...")."""
+    m = re.match(rf"{re.escape(campaign_id)}_([^_]+)_[^_]+_\d{{4}}-\d\d-\d\d_", name or "")
+    return m.group(1).replace(".", " ") if m else ""
+
+
 def at_today(hhmm, now):
     h, m = (int(x) for x in hhmm.split(":"))
     return now.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -88,10 +106,11 @@ class PopUploader:
         self.receiver, self.key, self.tz = receiver, api_key, local_tz
         self.log, self.notify, self.atomic_json, self.q = log, notify, atomic_json, quote
         self.st = read_json(self.path, {}) or {}
-        for k in ("runs", "items", "versions", "folders", "status"):
+        for k in ("runs", "items", "versions", "folders", "status", "campaign_dirs"):
             self.st.setdefault(k, {})
         self.lock = threading.Lock()
         self.drive = None
+        self.folder_ids = {}
 
     # ------------------------------------------------------------ state
     def save(self):
@@ -167,6 +186,92 @@ class PopUploader:
             last.raise_for_status()
         return last.json()
 
+    def folder_id(self, rel_path):
+        """The folder at rel_path (made, with any missing parents, if need be)."""
+        if rel_path in self.folder_ids:
+            return self.folder_ids[rel_path]
+        drive = self._drive()
+        try:
+            fid = self.g.request("GET", f"/drives/{drive}/root:/{self.q(rel_path)}", params={"$select": "id"}).json()["id"]
+        except Exception as e:
+            if " 404 " not in str(e):
+                raise
+            parent, _, name = rel_path.rpartition("/")
+            pid = self.folder_id(parent) if parent else None
+            url = f"/drives/{drive}/items/{pid}/children" if pid else f"/drives/{drive}/root/children"
+            try:
+                fid = self.g.request("POST", url, json={"name": name, "folder": {},
+                                                        "@microsoft.graph.conflictBehavior": "fail"}).json()["id"]
+            except Exception as e2:
+                if "409" not in str(e2) and "nameAlreadyExists" not in str(e2):
+                    raise
+                fid = self.g.request("GET", f"/drives/{drive}/root:/{self.q(rel_path)}", params={"$select": "id"}).json()["id"]
+        self.folder_ids[rel_path] = fid
+        return fid
+
+    def campaign_dir_for(self, ck, it=None, item=None):
+        """The campaign folder name, fixed once chosen so a campaign's photos stay together."""
+        if ck not in self.st["campaign_dirs"]:
+            cid = ck.split("|")[0]
+            adv = (it or {}).get("advertiser") or adv_from_name((item or {}).get("name"), cid)
+            if not adv and not it:
+                return campaign_dir(cid)                 # not known yet: don't fix it
+            self.st["campaign_dirs"][ck] = campaign_dir(cid, adv, (it or {}).get("campaign_name"))
+        return self.st["campaign_dirs"][ck]
+
+    def relayout(self, best_items=()):
+        """Move photos put up in <year>/<MM - Month>/<site>/ into <year>/<MM - Month>/<campaign>/<site>/
+        (the same files: links to them follow), then remove the old site folders left empty.
+        Done once; anything that fails is tried again on the next run."""
+        if self.st.get("layout") == 2:
+            return 0
+        known = {f"{it['campaign_id']}|{it['site_id']}": it for it in best_items if it.get("campaign_id")}
+        drive, moved, failed, old_dirs = self._drive(), 0, 0, set()
+        for key, item in list(self.st["items"].items()):
+            ck = "|".join(key.split("|")[:2])
+            folder = self.st["folders"].get(ck)
+            path = item.get("path") or ""
+            if not folder or not item.get("item_id") or not path:
+                continue
+            parent, _, name = path.rpartition("/")
+            site_dir = parent.rsplit("/", 1)[-1]
+            want = f"{POP_ROOT}/{folder}/{self.campaign_dir_for(ck, known.get(ck), item)}/{site_dir}"
+            if parent == want:
+                continue
+            try:
+                new = self.g.request("PATCH", f"/drives/{drive}/items/{item['item_id']}",
+                                     json={"parentReference": {"id": self.folder_id(want)}}).json()
+            except Exception as e:
+                if " 404 " in str(e):                    # removed by hand: nothing to move
+                    item["path"] = f"{want}/{name}"
+                    continue
+                failed += 1
+                self.log(f"pop-upload: could not move {name} into its campaign folder: {e}")
+                continue
+            item.update(path=f"{want}/{name}", url=new.get("webUrl", item.get("url")))
+            old_dirs.add(parent)
+            moved += 1
+            self.save()
+        removed = 0
+        for d in sorted(old_dirs):
+            if d.rsplit("/", 1)[-1].upper().startswith("LUMO_"):
+                continue
+            try:
+                it = self.g.request("GET", f"/drives/{drive}/root:/{self.q(d)}",
+                                    params={"$select": "id,folder"}).json()
+                if (it.get("folder") or {}).get("childCount", 1) == 0:
+                    self.g.request("DELETE", f"/drives/{drive}/items/{it['id']}")
+                    removed += 1
+            except Exception as e:
+                self.log(f"pop-upload: could not tidy {d}: {e}")
+        if moved or failed:
+            self.log(f"pop-upload: {moved} photo(s) moved into campaign folders, {removed} empty site folder(s) removed"
+                     + (f", {failed} to try again" if failed else ""))
+        if not failed:
+            self.st["layout"] = 2
+        self.save()
+        return moved
+
     def delete(self, item_id):
         try:
             self.g.request("DELETE", f"/drives/{self._drive()}/items/{item_id}")
@@ -211,6 +316,10 @@ class PopUploader:
             best = r.json()
             if best.get("error"):
                 raise RuntimeError(best["error"])
+            try:
+                self.relayout(best.get("items", []))
+            except Exception as e:                     # never stops the photos going up
+                self.log(f"pop-upload: moving photos into campaign folders: {e}")
             for it in best.get("items", []):
                 try:
                     if self.consider(it, phase):
@@ -287,7 +396,7 @@ class PopUploader:
         vno = vers.get(it["version"]) or (max(vers.values() or [0]) + 1)
         name = file_name(it, phase, vno)
         site_dir = safe_part(it.get("screen") or it.get("site_name") or it["site_id"])
-        rel = f"{POP_ROOT}/{folder}/{site_dir}/{name}"
+        rel = f"{POP_ROOT}/{folder}/{self.campaign_dir_for(ck, it)}/{site_dir}/{name}"
         data = self._get(f"/pop/frame/{it['event_id']}.jpg").content
         new = self.upload(rel, data)
         if cur and cur.get("item_id") and cur.get("item_id") != new.get("id"):

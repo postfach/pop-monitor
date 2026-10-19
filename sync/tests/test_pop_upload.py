@@ -100,7 +100,7 @@ class Uploads(unittest.TestCase):
         ok, _ = self.run_with([item(80, "e1")])
         self.assertTrue(ok)
         self.assertEqual(list(self.g.files.values()), [
-            "00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images/2026/10 - October/Curletts In/"
+            "00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images/2026/10 - October/LUMO_19702/Curletts In/"
             "LUMO_19702_Curletts-In_2026-10-13_1432_Day_Score80_v1.jpg"])
         # the receiver re-scored the uploaded photo higher than the new one: keep it
         self.run_with([item(85, "e2", current_event_id="e1", current_score=88)])
@@ -112,7 +112,7 @@ class Uploads(unittest.TestCase):
         self.assertEqual(sent["current"], {"CURLETTS-IN|LUMO_19702|art:a.jpg": "e1"})
         self.assertEqual(self.g.deleted, ["id1"])
         (path,) = self.g.files.values()
-        self.assertTrue(path.endswith("2026/10 - October/Curletts In/LUMO_19702_Curletts-In_2026-10-14_0905_Day_Score90_v1.jpg"))
+        self.assertTrue(path.endswith("2026/10 - October/LUMO_19702/Curletts In/LUMO_19702_Curletts-In_2026-10-14_0905_Day_Score90_v1.jpg"))
         # the same photo coming back as best: nothing to do
         self.run_with([item(90, "e3", current_event_id="e3", current_score=90)])
         self.assertEqual(len(self.g.files), 1)

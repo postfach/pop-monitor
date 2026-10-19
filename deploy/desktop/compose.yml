@@ -90,6 +90,12 @@ services:
       POP_ROOT: ${POP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images}
       POP_DAY_AT: ${POP_DAY_AT:-20:00}          # today's daytime photos
       POP_NIGHT_AT: ${POP_NIGHT_AT:-08:00}      # last night's photos
+      # nightly backup of the whole PoP Monitor (no photos) into SharePoint: README "Backup, restore ..."
+      BACKUP_TO_SHAREPOINT: ${BACKUP_TO_SHAREPOINT:-1}
+      BACKUP_AT: ${BACKUP_AT:-02:40}
+      BACKUP_LIBRARY: ${BACKUP_LIBRARY:-IT}
+      BACKUP_ROOT: ${BACKUP_ROOT:-PoP Monitor/Backups}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
     expose:
       - "8091"                  # status and "Sync now", reachable only by the receiver
     volumes:

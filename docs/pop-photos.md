@@ -6,12 +6,19 @@ thousands of camera shots:
 
 ```
 Sales / 00_Sales (NEW FOLDER) / Booked Campaigns / PoP Images /
-  2026 / 10 - October / Curletts In /
+  2026 / 10 - October / LUMO_19391 - HBO Max / Curletts In /
     LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg
     LUMO_19391_HBO.Max_Curletts-In_2026-10-13_2215_Night_Score81_v1.jpg
+  2026 / 10 - October / LUMO_19023 - Pals / Curletts In /
     LUMO_19023_Pals_Curletts-In_2026-10-13_1105_Day_Score92_v1.jpg
     LUMO_19023_Pals_Curletts-In_2026-10-13_1611_Day_Score90_v2.jpg      (second execution)
 ```
+
+Folders: the year and month the campaign was first seen at the site, then the campaign
+(its ID and advertiser, else its name; fixed once chosen), then the site. Photos put up
+before the campaign folders (in `<year>/<MM - Month>/<site>/`) are moved into them on the
+first run after the update: the same files, so links to them still work. Old site folders
+are removed once empty (one that holds anything else is left alone).
 
 File name: campaign ID, advertiser (spaces as periods, from the Doohly campaign; from an imported Vault
 pull only for screens not in Doohly; left out if there is none), site (its Vault screen name), date and time the photo was

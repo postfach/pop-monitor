@@ -91,6 +91,9 @@ int  config_find_camera(const gateway_cfg *g, const char *site_id);
 int  config_active_count(const gateway_cfg *g);
 /* File holding a site's creative library (keyed by site ID). */
 void config_library_path(const gateway_cfg *g, const char *site_id, char *out, size_t n);
+/* A restore staged in <state>/restore-staged/ (by the receiver's Restore): put in place
+ * before anything is loaded; what it replaces is kept in <state>/before-restore/. */
+int  config_apply_staged_restore(const char *state_dir);
 void config_free(gateway_cfg *g);
 /* A camera object's region: "roi" (4 corners, required), "roi_shape"
  * ("standard", "curve", "fold"), "roi_curve" (curve: 2 handles per edge,

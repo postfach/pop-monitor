@@ -124,5 +124,5 @@ int main(int argc, char **argv)
     curl_global_cleanup();
     free(app.status);
     config_free(&cfg);
-    return 0;
+    return app.exit_code;
 }

@@ -20,8 +20,11 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <ctype.h>
 
 #define MAX_BODY 65536
+#define RESTORE_MAX (64 * 1024 * 1024)   /* POST /api/restore: the state files of every site */
 
 static app_ctx *A;
 static pthread_t thr;
@@ -122,7 +125,7 @@ static void send_all(int fd, const void *buf, size_t n)
 static void respond(int fd, int code, const char *ctype, const void *body, size_t n)
 {
     const char *reason = code == 200 ? "OK" : code == 201 ? "Created" : code == 400 ? "Bad Request"
-                       : code == 401 ? "Unauthorized" : code == 404 ? "Not Found" : code == 409 ? "Conflict"
+                       : code == 202 ? "Accepted" : code == 401 ? "Unauthorized" : code == 404 ? "Not Found" : code == 409 ? "Conflict"
                        : code == 502 ? "Bad Gateway" : "Error";
     char h[256];
     int hl = snprintf(h, sizeof h,
@@ -596,6 +599,120 @@ static void handle_expectations(int fd, int idx, const char *body)
     respond_json(fd, 200, ok);
 }
 
+/* ---------------------------------------------------------------- backup and restore
+ * The gateway's state, for the receiver's Backup: the sites (cameras.json, with the live
+ * regions), each site's learned creatives and its photo history. Restore stages the
+ * same files and restarts; they are put in place before anything loads
+ * (config_apply_staged_restore), so nothing running writes over them. */
+static void add_dir_files(cJSON *files, const char *sub)
+{
+    char dir[700], p[1000];
+    snprintf(dir, sizeof dir, "%s/%s", A->cfg->state_dir, sub);
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        size_t L = strlen(e->d_name);
+        if (e->d_name[0] == '.' || L < 6 || strcmp(e->d_name + L - 5, ".json")) continue;
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        size_t len;
+        char *txt = util_read_file(p, &len);
+        if (!txt) continue;
+        char key[400];
+        snprintf(key, sizeof key, "%s/%s", sub, e->d_name);
+        cJSON_AddItemToObject(files, key, cJSON_CreateString(txt));
+        free(txt);
+    }
+    if (d) closedir(d);
+}
+
+static void handle_backup(int fd)
+{
+    pthread_mutex_lock(&A->cams_mu);
+    for (int i = 0; i < A->cfg->n_cameras; i++)
+        if (A->cfg->cameras[i].active) sync_roi_to_json(i);
+    save_all();
+    pthread_mutex_unlock(&A->cams_mu);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "format", "pop-gateway/state");
+    cJSON_AddNumberToObject(j, "version", 1);
+    cJSON_AddStringToObject(j, "gateway_id", A->cfg->gateway_id);
+    cJSON_AddStringToObject(j, "app_version", PC_VERSION);
+    cJSON *files = cJSON_AddObjectToObject(j, "files");
+    size_t len;
+    char *txt = util_read_file(A->cfg->cameras_file, &len);
+    if (txt) { cJSON_AddItemToObject(files, "cameras.json", cJSON_CreateString(txt)); free(txt); }
+    add_dir_files(files, "creatives");
+    add_dir_files(files, "photos");
+    respond_json(fd, 200, j);
+}
+
+static int restore_name_ok(const char *k)
+{
+    if (!strcmp(k, "cameras.json")) return 1;
+    const char *rest = !strncmp(k, "creatives/", 10) ? k + 10 : !strncmp(k, "photos/", 7) ? k + 7 : NULL;
+    if (!rest || !*rest) return 0;
+    size_t L = strlen(rest);
+    if (L < 6 || L > 120 || strcmp(rest + L - 5, ".json")) return 0;
+    for (size_t i = 0; i < L - 5; i++)
+        if (!isalnum((unsigned char)rest[i]) && rest[i] != '-' && rest[i] != '_') return 0;
+    return 1;
+}
+
+static void handle_restore(int fd, const char *body)
+{
+    cJSON *in = cJSON_Parse(body);
+    const cJSON *files = cJSON_GetObjectItemCaseSensitive(in, "files");
+    const cJSON *fmt = cJSON_GetObjectItemCaseSensitive(in, "format");
+    if (!cJSON_IsObject(files) || !cJSON_IsString(fmt) || strcmp(fmt->valuestring, "pop-gateway/state")) {
+        cJSON_Delete(in);
+        respond_error(fd, 400, "expected a gateway state from a backup");
+        return;
+    }
+    const cJSON *f;
+    cJSON_ArrayForEach(f, files) {
+        if (!restore_name_ok(f->string) || !cJSON_IsString(f)) {
+            cJSON_Delete(in);
+            respond_error(fd, 400, "unexpected file in the backup");
+            return;
+        }
+    }
+    const cJSON *cams = cJSON_GetObjectItemCaseSensitive(files, "cameras.json");
+    cJSON *chk = cams ? cJSON_Parse(cams->valuestring) : NULL;
+    int ok = cJSON_IsArray(chk);
+    cJSON_Delete(chk);
+    if (!ok) {
+        cJSON_Delete(in);
+        respond_error(fd, 400, "the backup has no sites (cameras.json)");
+        return;
+    }
+    char staged[700], p[1000];
+    snprintf(staged, sizeof staged, "%s/restore-staged", A->cfg->state_dir);
+    snprintf(p, sizeof p, "%s/creatives", staged);
+    util_mkdir_p(p);
+    snprintf(p, sizeof p, "%s/photos", staged);
+    util_mkdir_p(p);
+    int n = 0;
+    cJSON_ArrayForEach(f, files) {
+        snprintf(p, sizeof p, "%s/%s", staged, f->string);
+        if (util_write_file_atomic(p, f->valuestring, strlen(f->valuestring)) != 0) {
+            cJSON_Delete(in);
+            respond_error(fd, 500, "cannot write the restore");
+            return;
+        }
+        n++;
+    }
+    cJSON_Delete(in);
+    snprintf(p, sizeof p, "%s/READY", staged);
+    util_write_file_atomic(p, "1", 1);
+    LOGW("control", "restore staged (%d file(s)): restarting to apply it", n);
+    cJSON *ok_j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(ok_j, "staged", 1);
+    cJSON_AddNumberToObject(ok_j, "files", n);
+    respond_json(fd, 202, ok_j);
+    A->exit_code = 3;          /* the service manager starts it again, and it is applied first */
+    A->running = 0;
+}
+
 /* Setup mode on or off: {"setup": true|false}. No restart: only alerts and the
  * receiver's counting depend on it. */
 static void handle_set_setup(int fd, int idx, const char *body)
@@ -724,13 +841,6 @@ static void handle(int fd)
         if (!strncasecmp(l, "Content-Length:", 15)) clen = strtoul(l + 15, NULL, 10);
         else if (!strncasecmp(l, "Authorization:", 14)) auth = l + 14;
     }
-    while (have < clen && have < MAX_BODY) {
-        ssize_t r = recv(fd, body + have, MAX_BODY - have, 0);
-        if (r <= 0) break;
-        have += (size_t)r;
-    }
-    body[have < MAX_BODY ? have : MAX_BODY] = 0;
-
     char want[300];
     snprintf(want, sizeof want, "Bearer %s", A->cfg->api_key);
     while (auth && *auth == ' ') auth++;
@@ -739,6 +849,31 @@ static void handle(int fd)
         respond_error(fd, 401, "missing or wrong API key");
         free(buf);
         return;
+    }
+    char *big = NULL;            /* a restore is larger than any other request */
+    if (clen > MAX_BODY && !strcmp(method, "POST") && !strncmp(path, "/api/restore", 12)) {
+        if (clen > RESTORE_MAX || !(big = malloc(clen + 1))) {
+            respond_error(fd, 400, "restore too large");
+            free(buf);
+            return;
+        }
+        memcpy(big, body, have);
+        struct timeval tv2 = {60, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof tv2);
+        while (have < clen) {
+            ssize_t r = recv(fd, big + have, clen - have, 0);
+            if (r <= 0) break;
+            have += (size_t)r;
+        }
+        big[have] = 0;
+        body = big;
+    } else {
+        while (have < clen && have < MAX_BODY) {
+            ssize_t r = recv(fd, body + have, MAX_BODY - have, 0);
+            if (r <= 0) break;
+            have += (size_t)r;
+        }
+        body[have < MAX_BODY ? have : MAX_BODY] = 0;
     }
 
     char *q = strchr(path, '?');
@@ -750,6 +885,11 @@ static void handle(int fd)
         else respond_error(fd, 404, "unknown endpoint");
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/settings")) {
         handle_settings(fd);
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/backup")) {
+        handle_backup(fd);
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/api/restore")) {
+        if (big && have < clen) respond_error(fd, 400, "the restore didn't arrive complete");
+        else handle_restore(fd, body);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/health")) {
         cJSON *h = gateway_health_json();
         cJSON_AddStringToObject(h, "gateway_id", A->cfg->gateway_id);
@@ -785,6 +925,7 @@ static void handle(int fd)
     } else {
         respond_error(fd, 404, "unknown endpoint");
     }
+    free(big);
     free(buf);
 }
 

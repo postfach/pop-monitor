@@ -280,6 +280,25 @@ class Store:
             self.version += 1
         return len(rows)
 
+    def check_photos(self):
+        """Clear the photo flags of records whose photos aren't on disk (after a restore on
+        another machine: the backup has the records, not the photos). Returns how many."""
+        rows = self.db().execute("SELECT event_id, has_roi, has_frame FROM records WHERE has_roi=1 OR has_frame=1").fetchall()
+        fix = []
+        for e, r, f in rows:
+            r2 = int(bool(r) and os.path.exists(os.path.join(self.images, f"{e}.roi.jpg")))
+            f2 = int(bool(f) and os.path.exists(os.path.join(self.images, f"{e}.frame.jpg")))
+            if (r2, f2) != (r, f):
+                fix.append((r2, f2, e))
+        if fix:
+            with self.wlock:
+                db = self.db()
+                db.execute("BEGIN")
+                db.executemany("UPDATE records SET has_roi=?, has_frame=? WHERE event_id=?", fix)
+                db.execute("COMMIT")
+                self.version += 1
+        return len(fix)
+
     # ---------------------------------------------------------------- setup periods
     def setup_periods(self):
         """{site_id: [(start, end or None, region_at or None)]}, oldest first."""

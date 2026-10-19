@@ -39,6 +39,7 @@ import io
 from datetime import datetime, timezone
 
 import store
+import backup as bk
 from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1121,10 +1122,27 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 ul.w{margin:6px 0 0;padding-left:18px} ul.w li{color:var(--warn)} ul.w li.bad{color:var(--bad)}
 .wrap{overflow-x:auto} table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top;white-space:nowrap}
 td.wr{white-space:normal}
+.btn{border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 11px;border-radius:8px;font:inherit;text-decoration:none;cursor:pointer;display:inline-block}
+.btn.danger{border-color:var(--bad);color:var(--bad)} input.cf{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);width:120px}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings">Bookings</a><a href="/health" class="on">Health</a></nav>
 <h1>Gateway health</h1><p class="muted" id="sub" style="margin:2px 0 0">Loading&hellip;</p>
 <div id="gws"></div>
+<div class="gw" id="bk"><div class="top"><h2>Backup and restore</h2></div>
+  <p class="muted" style="margin:6px 0 10px">A backup is one file with everything but the photos: the sites and their regions,
+    camera logins, learned creatives, links and settings, every play and alert record, and which PoP photos are in SharePoint.
+    The photos (the last few days; the best are in SharePoint) and the artwork (synced again) aren't in it. Keep it safe: it has the camera logins.
+    To move to another machine: set it up with the same <code>.env</code> and <code>config.json</code>, then restore a backup here.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <a class="btn" id="dl" href="/backup">Download a backup</a>
+    <button class="btn" id="spnow">Back up to SharePoint now</button>
+    <label class="btn" style="cursor:pointer">Restore from a file&hellip;<input type="file" id="rf" accept=".gz,.tgz,application/gzip" hidden></label>
+    <span id="bkmsg" class="muted"></span>
+  </div>
+  <div id="bknight" class="muted" style="margin-top:10px;font-size:13px"></div>
+  <div class="wrap"><table id="bklist" style="margin-top:6px"></table></div>
+  <div id="rprev" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px"></div>
+</div>
 </main><script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const age = s => s == null ? '—' : s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? (s / 3600).toFixed(1) + ' h' : (s / 86400).toFixed(1) + ' days';
@@ -1173,6 +1191,73 @@ async function load() {
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
 let $sub; load(); setInterval(load, 15000);
+
+// ---- backup and restore
+const $b = id => document.getElementById(id);
+const when = iso => iso ? new Date(iso).toLocaleString(undefined, {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
+async function loadBackups() {
+  const r = await fetch('/backup/list').then(r => r.json()).catch(e => ({error: String(e)}));
+  const st = r.status || {};
+  $b('bknight').innerHTML = r.configured === false ? 'Nightly backups to SharePoint need the SharePoint app set up (creatives-sync).' :
+    (st.enabled === false ? 'Nightly backups to SharePoint are off (BACKUP_TO_SHAREPOINT).' :
+     `Every night at ${esc(st.at || '?')} a backup goes to SharePoint (${esc(st.where || '')}); the newest ${st.keep || '?'} are kept. ` +
+     (st.last ? `Last: <span class="${st.ok === false ? 'bad' : 'ok'}">${esc(when(st.last))}</span>${st.size ? ' (' + gb(st.size) + ')' : ''}` : 'None yet.') +
+     (st.ok === false ? ` <span class="bad">Last try failed: ${esc(st.error)}</span>` : '') + (st.running ? ' <span class="warn">Running now&hellip;</span>' : '')) +
+    (r.error ? ` <span class="bad">${esc(r.error)}</span>` : '');
+  const items = r.items || [];
+  $b('bklist').innerHTML = items.length ? '<thead><tr><th>Backup in SharePoint</th><th>Size</th><th></th></tr></thead><tbody>' + items.map(i =>
+    `<tr><td>${i.url ? `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>` : esc(i.name)}</td><td>${gb(i.size)}</td>
+     <td><button class="btn" data-sp="${esc(i.id)}">Restore&hellip;</button></td></tr>`).join('') + '</tbody>' : '';
+}
+function preview(p) {
+  const m = p.manifest || {}, el = $b('rprev');
+  el.hidden = false;
+  el.innerHTML = `<b>Backup from ${esc(when(m.created_at))}</b> <span class="muted">(${esc(m.host || '?')}, ${gb(p.size)})</span>
+    <div style="margin:6px 0">${(m.sites || []).length} site(s): ${esc((m.sites || []).map(s => s.name || s.id).join(', ')) || 'none'}<br>
+    ${(m.plays || 0).toLocaleString()} play record(s), ${(m.alerts || 0).toLocaleString()} alert(s), learned creatives for ${m.learned_sites || 0} site(s)${p.creatives_sync ? ', the PoP photos in SharePoint' : ''}.
+    ${(m.warnings || []).length ? '<br><span class="warn">' + esc(m.warnings.join('; ')) + '</span>' : ''}</div>
+    <p class="bad" style="margin:6px 0">Restoring replaces this machine's sites, settings and records with the backup's (what they replace is kept
+      in a before-restore folder). The gateway, receiver and artwork sync restart; this page comes back in about half a minute.</p>
+    Type <b>RESTORE</b> to confirm: <input class="cf" id="rcf" autocomplete="off"> <button class="btn danger" id="rgo">Restore now</button>
+    <button class="btn" id="rno">Cancel</button> <span id="rmsg" class="muted"></span>`;
+  $b('rno').onclick = () => { el.hidden = true; el.innerHTML = ''; };
+  $b('rgo').onclick = async () => {
+    if ($b('rcf').value !== 'RESTORE') { $b('rmsg').textContent = 'Type RESTORE first.'; return; }
+    $b('rgo').disabled = true; $b('rmsg').textContent = 'Restoring…';
+    const r = await fetch('/restore/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: p.token, confirm: 'RESTORE'})});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $b('rmsg').innerHTML = '<span class="bad">' + esc(j.error || r.status) + '</span>'; $b('rgo').disabled = false; return; }
+    $b('rmsg').innerHTML = '<span class="ok">Restored. Restarting…</span>' + ((j.warnings || []).length ? ' <span class="warn">' + esc(j.warnings.join('; ')) + '</span>' : '');
+    setTimeout(function wait() { fetch('/healthz').then(r => r.ok ? location.reload() : setTimeout(wait, 2000)).catch(() => setTimeout(wait, 2000)); }, 4000);
+  };
+}
+$b('rf').onchange = () => {
+  const f = $b('rf').files[0]; if (!f) return;
+  $b('bkmsg').textContent = `Uploading ${f.name}…`;
+  const x = new XMLHttpRequest();
+  x.open('POST', '/restore/upload');
+  x.upload.onprogress = e => { if (e.lengthComputable) $b('bkmsg').textContent = `Uploading ${f.name}: ${Math.round(e.loaded / e.total * 100)}%`; };
+  x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {}
+    if (x.status !== 200) { $b('bkmsg').innerHTML = '<span class="bad">' + esc(j.error || x.status) + '</span>'; return; }
+    $b('bkmsg').textContent = ''; preview(j); };
+  x.onerror = () => { $b('bkmsg').innerHTML = '<span class="bad">upload failed</span>'; };
+  x.send(f); $b('rf').value = '';
+};
+$b('bklist').addEventListener('click', async e => {
+  const b = e.target.closest('[data-sp]'); if (!b) return;
+  b.disabled = true; $b('bkmsg').textContent = 'Fetching the backup from SharePoint…';
+  const r = await fetch('/restore/sharepoint?id=' + encodeURIComponent(b.dataset.sp), {method: 'POST'});
+  const j = await r.json().catch(() => ({})); b.disabled = false;
+  if (!r.ok) { $b('bkmsg').innerHTML = '<span class="bad">' + esc(j.error || r.status) + '</span>'; return; }
+  $b('bkmsg').textContent = ''; preview(j);
+});
+$b('spnow').onclick = async () => {
+  const r = await fetch('/backup/sharepoint', {method: 'POST'}); const j = await r.json().catch(() => ({}));
+  $b('bkmsg').innerHTML = r.ok ? 'Backing up to SharePoint: it shows below when done.' : '<span class="bad">' + esc(j.error || r.status) + '</span>';
+  setTimeout(loadBackups, 3000);
+};
+$b('dl').onclick = () => { $b('bkmsg').textContent = 'Making the backup: the download starts in a minute or so.'; };
+loadBackups(); setInterval(loadBackups, 60000);
 </script></body></html>'''
 
 
@@ -3631,6 +3716,96 @@ def set_live(sid, live, force=False):
     return 200, setup_status(cam)
 
 
+# ---------------------------------------------------------------- backup and restore
+# One file with everything but the photos: the receiver's database and settings, the
+# gateway's sites and learned creatives, and what creatives-sync has put in SharePoint
+# (tools/backup.py). Restoring stages each part; the three services restart and put it in
+# place before they load anything. creatives-sync also keeps one in SharePoint nightly.
+BACKUP_LOCK = threading.Lock()
+
+
+def _gateway_get(path, timeout=60):
+    url = os.environ.get("GATEWAY_URL", "http://gateway:8090").rstrip("/") + path
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {ARGS.api_key}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _backup_dir(sub):
+    d = os.path.join(ARGS.out, sub)
+    os.makedirs(d, exist_ok=True)
+    for n in os.listdir(d):                           # leftovers of an earlier one
+        p = os.path.join(d, n)
+        if time.time() - os.path.getmtime(p) > 6 * 3600:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return d
+
+
+def make_backup():
+    """Build a backup; returns (file path, manifest). Raises if the gateway can't be reached
+    (a backup without the sites would be no use)."""
+    try:
+        gw = _gateway_get("/api/backup")
+    except Exception as e:
+        raise RuntimeError(f"cannot reach the gateway for its sites ({e})")
+    warnings = []
+    sy = None
+    if sync_url():
+        code, sy = sync_call("GET", "/backup", timeout=30)
+        if code != 200:
+            warnings.append(f"creatives-sync's state is not in it: {sy.get('error') or code}")
+            sy = None
+    name = f"pop-monitor-backup-{datetime.now(LOCAL_TZ):%Y-%m-%d_%H%M}.tar.gz"
+    dest = os.path.join(_backup_dir("backup-tmp"), name)
+    with BACKUP_LOCK:
+        manifest = bk.build(ARGS.out, dest, gw, sy, {"warnings": warnings, "gateway_id": gw.get("gateway_id")})
+    return dest, manifest
+
+
+def restore_preview(path):
+    manifest, gw, sy = bk.read(path)
+    return {"token": os.path.basename(path).rsplit(".tar.gz", 1)[0], "manifest": manifest,
+            "gateway": bool(gw), "creatives_sync": bool(sy), "size": os.path.getsize(path)}
+
+
+def restore_apply(token):
+    """Restore the uploaded (or fetched) backup `token`. Returns (code, reply); on success
+    the receiver restarts shortly after replying."""
+    if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
+        return 400, {"error": "unknown backup"}
+    path = os.path.join(ARGS.out, "restore-incoming", token + ".tar.gz")
+    if not os.path.exists(path):
+        return 404, {"error": "that backup is no longer here: upload it again"}
+    try:
+        manifest, gw, sy = bk.read(path)
+        bk.stage_receiver(path, ARGS.out)
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    warnings = []
+    if gw:
+        code, r = gateway_call("/api/restore", gw, timeout=120)
+        if code not in (200, 202):
+            bk.unstage(ARGS.out)
+            return 502, {"error": f"the gateway refused the restore: {r.get('error') or code}. Nothing was changed."}
+    else:
+        warnings.append("the backup has no gateway part: the gateway's sites were left as they are")
+    if sy and sync_url():
+        code, r = sync_call("POST", "/restore", timeout=60, data=json.dumps(sy).encode())
+        if code not in (200, 202):
+            warnings.append(f"creatives-sync didn't take its part ({r.get('error') or code}): it will re-upload PoP photos")
+    bk.mark_ready(ARGS.out)
+    print(f"restore of a backup from {manifest.get('created_at')} ({manifest.get('host')}) staged: restarting", flush=True)
+
+    def restart():
+        time.sleep(1.5)
+        os._exit(3)                                   # the container restarts; the restore goes in first
+    threading.Thread(target=restart, daemon=True).start()
+    return 202, {"restarting": True, "warnings": warnings, "manifest": manifest}
+
+
 def missing_artwork():
     """The bookings on monitored screens with no artwork (or only some) from the last
     artwork sync: what should be there and where, for the Bookings page."""
@@ -4273,6 +4448,35 @@ class H(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             return self.proxy("GET")
+        if path == "/backup":                     # Health page download, or creatives-sync's nightly one
+            if not hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {ARGS.api_key}") \
+                    and not self.authorised():
+                return
+            try:
+                dest, manifest = make_backup()
+            except Exception as e:
+                return self.reply(502, {"error": str(e)})
+            try:
+                size = os.path.getsize(dest)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(dest)}"')
+                self.send_header("X-Backup-Manifest", json.dumps({k: manifest.get(k) for k in ("created_at", "plays", "warnings")}))
+                self.end_headers()
+                with open(dest, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile, 1 << 20)
+            finally:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+            return
+        if path == "/backup/list":                # Health page: the nightly backups in SharePoint
+            if not self.authorised():
+                return
+            code, body = sync_call("GET", "/backups", timeout=30)
+            return self.reply(code if code != 404 else 200, body if code != 404 else {"items": [], "configured": False})
         if path == "/sites/setup":                # region page: setting the site up, and the go-live checks
             sid = (urllib.parse.parse_qs(query).get("site") or [""])[0]
             cams = gateway_cameras()
@@ -4480,6 +4684,55 @@ class H(BaseHTTPRequestHandler):
                         os.replace(tmp, os.path.join(ARGS.out, "creative-links.json"))
             print(f"creatives reset for site {sid}" + (f"; deleted {deleted} record(s) and its links" if history else ""), flush=True)
             return self.reply(200, {"reset": True, "history": history, "deleted": deleted})
+        if self.path in ("/restore/upload", "/restore/sharepoint") or self.path.startswith("/restore/sharepoint?"):
+            if not self.authorised():                 # Health page: a backup to restore, checked and previewed
+                return
+            dest = os.path.join(_backup_dir("restore-incoming"), uuid.uuid4().hex + ".tar.gz")
+            try:
+                if self.path == "/restore/upload":
+                    left = int(self.headers.get("Content-Length") or 0)
+                    if left <= 0:
+                        return self.reply(400, {"error": "no file"})
+                    with open(dest, "wb") as f:
+                        while left > 0:
+                            chunk = self.rfile.read(min(left, 1 << 20))
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            left -= len(chunk)
+                    if left:
+                        raise ValueError("the upload didn't arrive complete")
+                else:
+                    item = (urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "").get("id") or [""])[0]
+                    if not re.fullmatch(r"[A-Za-z0-9!._-]{6,200}", item):
+                        return self.reply(400, {"error": "which backup?"})
+                    req = urllib.request.Request(f"{sync_url()}/backups/{urllib.parse.quote(item)}",
+                                                 headers={"Authorization": f"Bearer {ARGS.api_key}"})
+                    with urllib.request.urlopen(req, timeout=900) as r, open(dest, "wb") as f:
+                        shutil.copyfileobj(r, f, 1 << 20)
+                return self.reply(200, restore_preview(dest))
+            except (ValueError, OSError, urllib.error.URLError) as e:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                return self.reply(400, {"error": str(e)})
+        if self.path == "/backup/sharepoint":         # Health page: back up to SharePoint now
+            if not self.authorised():
+                return
+            code, body = sync_call("POST", "/backup/run", timeout=10)
+            return self.reply(code, body)
+        if self.path == "/restore/apply":             # Health page: restore it (everything restarts)
+            if not self.authorised():
+                return
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))
+            except ValueError:
+                body = {}
+            if body.get("confirm") != "RESTORE":
+                return self.reply(400, {"error": "type RESTORE to confirm"})
+            code, reply = restore_apply(body.get("token"))
+            return self.reply(code, reply)
         if self.path == "/sites/setup":            # region page: go live, or back into setup
             if not self.authorised():
                 return
@@ -4612,8 +4865,13 @@ def main():
     if not ARGS.api_key:
         ap.error("--api-key or POP_API_KEY is required")
     os.makedirs(ARGS.out, exist_ok=True)
+    restored = bk.apply_staged(ARGS.out, log=lambda m: print(m, flush=True))   # a restore waiting to go in
     global STORE
     STORE = store.Store(ARGS.out, log=lambda m: print(m, flush=True))
+    if restored:
+        n = STORE.check_photos()
+        if n:
+            print(f"restore: {n} record(s) have no photos on this machine (they stay, without photos)", flush=True)
     for hb in STORE.last_heartbeats(500):                                   # last known state per gateway
         try:
             t = datetime.fromisoformat(hb.get("sent_at", "").replace("Z", "+00:00")).timestamp()

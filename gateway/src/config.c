@@ -2,6 +2,9 @@
 #include "util.h"
 
 #include <cjson/cJSON.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -456,6 +459,7 @@ int config_load(const char *path, gateway_cfg *g, char *err, size_t n)
     char *slash = strrchr(d, '/');
     if (slash && slash != d) *slash = 0; else snprintf(d, sizeof d, ".");
     snprintf(g->state_dir, sizeof g->state_dir, "%s", d);
+    config_apply_staged_restore(g->state_dir);
     if (!*g->cameras_file) snprintf(g->cameras_file, sizeof g->cameras_file, "%s/cameras.json", d);
 
     const cJSON *defs = cJSON_GetObjectItemCaseSensitive(root, "defaults");
@@ -571,4 +575,58 @@ pc_profile config_active_profile(const camera_cfg *c, int64_t ms)
         if (util_in_time_range(range, ms)) return c->dayparts[i].profile;
     }
     return c->profile;
+}
+
+/* ---------------------------------------------------------------- restore */
+
+static void rm_tree(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) { remove(path); return; }
+    struct dirent *e;
+    char p[1200];
+    while ((e = readdir(dir))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+        rm_tree(p);
+    }
+    closedir(dir);
+    rmdir(path);
+}
+
+int config_apply_staged_restore(const char *state_dir)
+{
+    char staged[700], ready[760], before[700], from[1200], to[1200];
+    snprintf(staged, sizeof staged, "%s/restore-staged", state_dir);
+    snprintf(ready, sizeof ready, "%s/READY", staged);
+    struct stat sb;
+    if (stat(ready, &sb) != 0) {
+        if (stat(staged, &sb) == 0) rm_tree(staged);        /* half-written: ignore it */
+        return 0;
+    }
+    snprintf(before, sizeof before, "%s/before-restore", state_dir);
+    rm_tree(before);
+    util_mkdir_p(before);
+    /* what was there goes to before-restore/ (the sites, learned creatives, photo history) */
+    static const char *parts[] = {"cameras.json", "creatives", "photos", NULL};
+    for (int i = 0; parts[i]; i++) {
+        snprintf(from, sizeof from, "%s/%s", state_dir, parts[i]);
+        snprintf(to, sizeof to, "%s/%s", before, parts[i]);
+        rename(from, to);
+    }
+    remove(ready);
+    int n = 0;
+    DIR *dir = opendir(staged);
+    struct dirent *e;
+    while (dir && (e = readdir(dir))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(from, sizeof from, "%s/%s", staged, e->d_name);
+        snprintf(to, sizeof to, "%s/%s", state_dir, e->d_name);
+        rm_tree(to);
+        if (rename(from, to) == 0) n++;
+    }
+    if (dir) closedir(dir);
+    rm_tree(staged);
+    LOGI("config", "restored the gateway's state from a backup (%d item(s)); the previous state is in %s", n, before);
+    return n;
 }

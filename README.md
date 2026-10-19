@@ -331,7 +331,8 @@ night, and a player-offline alert. Details: `docs/doohly.md`.
 
 At 8 pm (daytime photos) and 8 am (night photos) creatives-sync puts the clearest PoP
 photo of each campaign, site and artwork version into SharePoint under
-`Booked Campaigns/PoP Images/<year>/<MM - Month>/<site>/`, named like
+`Booked Campaigns/PoP Images/<year>/<MM - Month>/<campaign>/<site>/` (e.g.
+`2026/10 - October/LUMO_17107 - ACT Party/Albany Expressway In/`), named like
 `LUMO_19391_HBO.Max_Curletts-In_2026-10-13_1828_Day_Score98_v1.jpg`. Photos are scored for glare,
 sunstrike, rain, haze, blur, anything in front of the screen and how clearly the creative
 shows (`tools/popscore.py`); a later run replaces a photo only with a higher-scoring one.
@@ -403,6 +404,48 @@ you're happy.
   defaults. Tick "Update sites that already exist" to bulk-edit: only filled cells change.
   Each new site starts with the full frame as its region, so set the region next (the results
   list links to each one).
+
+## Backup, restore and moving to another machine
+
+The **Health** page has **Download a backup**, **Back up to SharePoint now** and **Restore
+from a file**, and lists the nightly backups in SharePoint, each with **Restore**.
+
+A backup is one `.tar.gz` with everything but the photos (`tools/backup.py`):
+
+| Part | What |
+|---|---|
+| receiver | every play and alert record (a consistent copy of the live database), creative links and merges, artwork matches, rotations, setup periods, site resets, an uploaded Vault pull |
+| gateway | the sites (camera logins, regions, rotations, setup state), each site's learned creatives, its photo history |
+| creatives-sync | which PoP photos are in SharePoint (without it every photo would go up again), the screen sizes from the MIs |
+
+Not in it: the last few days of photos (the best are in SharePoint) and the artwork library
+(synced again from SharePoint after a restore), nor the `.env` secrets and `config.json`.
+It does hold the camera logins, so keep backups somewhere only the right people can open.
+
+Every night at `BACKUP_AT` (02:40) creatives-sync puts one in SharePoint, in
+`BACKUP_LIBRARY` / `BACKUP_ROOT` (`IT` / `PoP Monitor/Backups`), keeping the newest
+`BACKUP_KEEP` (14). A failure is posted to Teams once (and the recovery). `BACKUP_TO_SHAREPOINT=0`
+turns it off.
+
+**Restore** shows what the backup holds (when and where it was made, its sites, how many
+records) and asks you to type RESTORE. Each service stages its part, restarts, and puts it
+in place before loading anything; what it replaced is kept (`before-restore/` in each
+service's volume), so a restore can be undone by hand. Records whose photos aren't on the
+machine are kept, without photos.
+
+**Moving to another machine.** Containers make this simple, as nothing is tied to the
+machine except the three volumes:
+
+1. Copy the `deploy/desktop` folder (with `.env` and `config.json`) to the new machine,
+   check it can reach the cameras, and `docker compose up -d --build` there.
+2. On the old machine, **Download a backup** (or use last night's from SharePoint), then
+   stop it (`docker compose down`), so two gateways don't watch the same cameras.
+3. On the new machine, **Restore** that backup on the Health page.
+
+The artwork re-syncs within minutes and photos start again from the next play. (Copying
+the Docker volumes themselves, `pop-queue`, `pop-received` and `pop-creatives`, with
+`docker run --rm -v <volume>:/v -v $PWD:/b alpine tar czf /b/<volume>.tgz -C /v .` and back,
+also works and keeps the photos, but needs both machines stopped and is much larger.)
 
 ## Gateway health
 
