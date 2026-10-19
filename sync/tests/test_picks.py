@@ -58,6 +58,9 @@ class Picks(unittest.TestCase):
             def tree(self, fo):
                 return [dict(x) for x in files]
 
+            advertiser_folder = cs.Library.advertiser_folder
+            folder_choices = cs.Library.folder_choices
+
             def month_folder(self, today):
                 return None
 

@@ -1585,6 +1585,11 @@ async function openMissing() {
           ${want.length ? `<div style="font-size:13px;margin-top:4px">Doohly plays (not in SharePoint):</div><ul>${want.map(n => `<li><code class="f">${esc(n)}</code></li>`).join('')}</ul>` :
             `<div style="font-size:13px;margin-top:4px">Should be: the campaign's artwork for this screen, ${esc(sz(m))}. Name the file with the screen's name (e.g. <i>${esc(m.screen)}</i>), or make it exactly that size, or name it in the Material Instructions.</div>`}
           <div style="font-size:13px">Goes ${where}</div>
+          ${m.folder_guessed ? `<div class="muted" style="font-size:12px">No folder has its number; this one was found by the advertiser's name: <code class="f">${esc(m.folder_guessed)}</code> (only files named as Doohly plays them are used from it).</div>` : ''}
+          ${m.folder_linked ? `<div class="muted" style="font-size:12px">Folder set by hand: <code class="f">${esc(m.folder_linked)}</code> <button type="button" class="link" data-unfolder="${i}">undo</button></div>` : ''}
+          ${(m.folder_choices || []).length && r.can_upload ? `<div class="mfold" style="margin-top:6px;font-size:13px">${m.folder_guessed ? 'Not the right folder? Pick' : 'Its folder is under another number or name? Pick'} it:
+            <select data-i="${i}" style="max-width:100%"><option value="">Choose a folder&hellip;</option>${m.folder_choices.map(f => `<option value="${esc(f.id)}">${esc(f.path)}</option>`).join('')}</select>
+            <button type="button" class="btn" data-folder="${i}">Use this folder</button> <span class="fstat muted" style="font-size:12px"></span></div>` : ''}
           ${(m.folder_files || []).length && r.can_upload ? `<div class="mpick" style="margin-top:6px;font-size:13px">Or match against a file already in the campaign folder (it isn't renamed):
             <select data-i="${i}" style="max-width:100%"><option value="">Choose a file&hellip;</option>${m.folder_files.map(f => `<option value="${esc(f.name)}">${esc((f.path ? f.path + '/' : '') + f.name)}${f.size ? ` (${f.size[0]}×${f.size[1]})` : ''}</option>`).join('')}</select>
             <button type="button" class="btn" data-pick="${i}">Use this file</button></div>` : ''}
@@ -1612,6 +1617,20 @@ document.getElementById('misslist').addEventListener('click', async e => {   // 
   if (!r.ok) { if (out) { out.className = 'mstat bad'; out.textContent = 'Not saved: ' + (j.error || r.status); } return; }
   if (out) { out.className = 'mstat ok'; out.textContent = `${sel.value} will be matched against for ${m.site_name || m.screen}. The artwork sync for this screen is running; this list and the page update when it finishes.`; }
   missWatch = true; loadSync();
+});
+document.getElementById('misslist').addEventListener('click', async e => {   // a campaign's folder, by hand
+  const b = e.target.closest('button[data-folder],button[data-unfolder]'); if (!b) return;
+  const box = b.closest('.msite'), m = missing[+(b.dataset.folder ?? b.dataset.unfolder)];
+  const sel = box.querySelector('.mfold select'), id = b.dataset.folder !== undefined ? (sel && sel.value) : '';
+  if (b.dataset.folder !== undefined && !id) { sel.focus(); return; }
+  b.disabled = true;
+  const r = await fetch('/bookings/artwork-folder', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({campaign_id: m.campaign_id, folder_id: id})});
+  const j = await r.json().catch(() => ({}));
+  b.disabled = false;
+  const st = box.querySelector('.fstat') || box.querySelector('.mstat');
+  if (st) { st.className = r.ok ? 'fstat ok' : 'fstat bad'; st.textContent = r.ok ? (id ? `Using ${j.folder.path} for ${m.campaign_id}. ` : 'Undone. ') + 'The artwork sync is running; this list updates when it finishes.' : 'Not saved: ' + (j.error || r.status); }
+  if (r.ok) { missWatch = true; loadSync(); }
 });
 document.getElementById('out').addEventListener('click', async e => {    // undo a file chosen by hand
   const b = e.target.closest('button[data-unpick]'); if (!b) return;
@@ -4860,6 +4879,12 @@ class H(BaseHTTPRequestHandler):
                 return
             code, body = sync_call("POST", f"/pop/run?phase={m.group(1)}", timeout=10)
             return self.reply(code if code >= 400 else 202, body)
+        if self.path == "/bookings/artwork-folder":   # a campaign's folder under another number, or undo that
+            if not self.authorised():
+                return
+            data = self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536))
+            code, body = sync_call("POST", "/artwork/folder", timeout=15, data=data)
+            return self.reply(code, body)
         if self.path == "/bookings/artwork-pick":   # match a booking against a file in its folder, or undo that
             if not self.authorised():
                 return

@@ -162,6 +162,9 @@ class SyncRun(unittest.TestCase):
             def search_campaign(self, cid):
                 return []
 
+            advertiser_folder = cs.Library.advertiser_folder
+            folder_choices = cs.Library.folder_choices
+
             def month_folder(self, today):
                 return {"id": "M10", "_path": "2026/10. October", "webUrl": "u"}
 

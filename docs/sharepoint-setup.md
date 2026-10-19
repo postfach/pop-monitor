@@ -120,6 +120,21 @@ A first run for three screens takes about 120 Graph calls and a few seconds; lat
 about 70 calls and download nothing unless artwork changed. Graph's limits are far above
 this.
 
+## A campaign folder under another number
+
+Campaign folders are found by the LUMO number of the booking (in Vault or Doohly). Sometimes
+the artwork is kept in a folder with another booking's number, e.g. Chemist Warehouse's
+October booking LUMO_19974 in `LUMO_16034 Chemist Warehouse`. Then:
+
+* if exactly one folder in the newest month that has any names the advertiser, it is used, but
+  only for files named as Doohly plays them (subfolders included), not the Material
+  Instructions or the screen's size, as the folder is only a guess;
+* otherwise, or if that guess is wrong, **Bookings without artwork** offers this month's and
+  last month's campaign folders (the advertiser's first): pick one and **Use this folder**. A
+  folder set by hand is used like the campaign's own (all the usual rules), for every screen
+  the campaign is booked on, and is kept in `campaign-folders.json` (backed up). **undo** in
+  the same place stops using it.
+
 ## Artwork under another name
 
 When a booking's artwork is in its campaign folder but under a name the sync can't tie to the

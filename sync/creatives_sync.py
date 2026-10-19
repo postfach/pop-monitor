@@ -255,6 +255,7 @@ class Library:
         years = {str(today.year), str(today.year - 1)} | ({str(today.year + 1)} if today.month >= 11 else set())
         cutoff = (today.replace(day=1) - timedelta(days=31 * MONTHS_BACK))
         index = {}
+        self.month_folders = []        # every campaign folder of those months, numbered or not
 
         def month_key(name, year):
             m = re.match(r"\s*(\d{1,2})\s*\.", name)
@@ -268,6 +269,7 @@ class Library:
             for c in self.children(folder["id"]):
                 if "folder" not in c or SKIP.search(c["name"]):
                     continue
+                self.month_folders.append(dict(c, _month=mk, _path=f"{year}/{folder['name']}/{c['name']}"))
                 for cid in set(re.findall(r"(?i)LUMO[\s_-]*(\d{5})", c["name"])):
                     c = dict(c, _month=mk, _path=f"{year}/{folder['name']}/{c['name']}")
                     index.setdefault(cid, []).append(c)
@@ -288,6 +290,30 @@ class Library:
         for v in index.values():
             v.sort(key=lambda c: c["_month"], reverse=True)
         return index
+
+    def advertiser_folder(self, advertiser):
+        """The campaign folder named for an advertiser when the campaign's own number isn't
+        on any (a folder kept under an older booking's number, e.g. LUMO_16034 Chemist
+        Warehouse for LUMO_19974): the newest month's, if only one folder there names it."""
+        adv = re.sub(r"[^\w &'-]+", " ", advertiser or "").strip().lower()
+        if len(adv) < 3:
+            return None
+        hits = [f for f in getattr(self, "month_folders", []) if re.search(rf"(?<!\w){re.escape(adv)}(?!\w)", f["name"].lower())]
+        if not hits:
+            return None
+        newest = max(f["_month"] for f in hits)
+        hits = [f for f in hits if f["_month"] == newest]
+        return hits[0] if len(hits) == 1 else None
+
+    def folder_choices(self, today, advertiser=""):
+        """Campaign folders of this month and last, to pick one by hand (the advertiser's first)."""
+        last = (today.replace(day=1) - timedelta(days=1))
+        keep = {(today.year, today.month), (last.year, last.month)}
+        adv = (advertiser or "").strip().lower()
+        fs = [f for f in getattr(self, "month_folders", []) if f["_month"] in keep]
+        fs.sort(key=lambda f: (not (len(adv) >= 3 and adv in f["name"].lower()), [-x for x in f["_month"]], f["name"].lower()))
+        return [{"id": f["id"], "name": f["name"], "path": f["_path"], "url": f.get("webUrl", "")}
+                for f in fs[:FOLDER_CHOICES_MAX]]
 
     def month_folder(self, today):
         """This month's folder in Creative+MIs (e.g. 2026/10. October), or None."""
@@ -527,11 +553,14 @@ def doohly_by_screen(doc, screens, weeks):
 
 # ---------------------------------------------------------------- choosing files
 
-def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", booked_files=None, report=None):
+def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", booked_files=None, report=None,
+           doohly_only=False):
     """Files for one campaign on one screen. Returns (creatives, missing_reason).
     booked_files: the creatives Doohly has booked on this screen for this campaign
     (name, type, from, to, share, hours); when given they decide the files.
-    report: a dict that gets "not_found", the booked files with no file in SharePoint."""
+    report: a dict that gets "not_found", the booked files with no file in SharePoint.
+    doohly_only: the folder was only guessed (by the advertiser's name), so only files
+    named as Doohly plays them count, not the Material Instructions or sizes."""
     key = mi.screen_norm(screen)
     images = [f for f in files if mi.kind_of(f["name"])]
     if not images:
@@ -580,6 +609,9 @@ def choose(campaign_id, screen, size, weeks, files, mis, all_screens, cname="", 
             if not_found:
                 out[0]["note"] += f"; not in SharePoint: {', '.join(not_found[:3])}"
             return out, None
+    if doohly_only:
+        return [], ("the folder was found by the advertiser's name and has none of the files Doohly plays" if booked_files
+                    else "the folder was found by the advertiser's name and Doohly doesn't say which files play")
     got, why = _choose_mi(campaign_id, screen, size, weeks, images, mis, all_screens, key, w0, w1, in_week_folder)
     if not got and not_found:
         why = f"Doohly plays {', '.join(not_found[:3])} but no file of that name is in the SharePoint folder"
@@ -721,6 +753,38 @@ def pick_artwork(campaign_id, screen, names):
     log(f"artwork: {'picked ' + ', '.join(names) if names else 'cleared the files picked'} for {campaign_id} on {screen}")
     SYNC.request(f"artwork picked for {campaign_id}", screens=[screen])
     return 200, {"status": "saved", "picked": [p["name"] for p in picks.get(key) or []], "syncing": True}
+
+
+FOLDERS_FILE = "campaign-folders.json"      # campaign (5-digit number) -> its folder, picked by hand
+FOLDER_CHOICES_MAX = 400
+
+
+def load_folder_links():
+    return read_json(os.path.join(STATE, FOLDERS_FILE), {}) or {}
+
+
+def link_folder(campaign_id, folder_id):
+    """Use a folder for a campaign whose number isn't on any (folder_id "" undoes it), then
+    sync the screens it is booked on. Only a folder the last sync offered. Returns (code, reply)."""
+    m5 = re.search(r"\d{5}", campaign_id or "")
+    if not m5:
+        return 400, {"error": "campaign_id must have a LUMO_ number"}
+    cid5 = m5.group(0)
+    manifest = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
+    mine = [x for x in manifest.get("missing") or [] if x.get("campaign_id") == campaign_id]
+    links = load_folder_links()
+    if folder_id:
+        fo = next((f for x in mine for f in x.get("folder_choices") or [] if f.get("id") == folder_id), None)
+        if not fo:
+            return 404, {"error": "that folder wasn't offered for this campaign (sync again first?)"}
+        links[cid5] = dict(fo, campaign_id=campaign_id, at=now_iso())
+    elif links.pop(cid5, None) is None:
+        return 404, {"error": f"no folder is set by hand for {campaign_id}"}
+    atomic_json(os.path.join(STATE, FOLDERS_FILE), links)
+    log(f"artwork: {campaign_id} {'uses ' + links[cid5]['path'] if folder_id else 'no longer has a folder set by hand'}")
+    screens = sorted({x["screen"] for x in mine if x.get("screen")})
+    SYNC.request(f"folder set for {campaign_id}", screens=screens or None)
+    return 200, {"status": "saved", "folder": links.get(cid5), "syncing": True}
 
 
 def entry(cid, screen, f, via, f0, f1, rot, note, hours=None):
@@ -909,8 +973,22 @@ class Syncer:
         prev = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
 
         camp_files, camp_mis, camp_folders, camp_err = {}, {}, {}, {}
+        links = load_folder_links()
+        adv_of, guessed = {}, {}
+        for x in todo:
+            for cid, v in (dbooked.get(x) or {}).items():
+                if v.get("advertiser"):
+                    adv_of.setdefault(re.search(r"\d{5}", cid).group(0), v["advertiser"])
         for cid5 in {re.search(r"\d{5}", c).group(0) for c in all_cids}:
-            folders = index.get(cid5) or lib.search_campaign(cid5)
+            if cid5 in links:                       # set by hand on the Bookings page
+                lk = links[cid5]
+                folders = [{"id": lk["id"], "name": lk.get("name", ""), "_path": lk.get("path", ""), "webUrl": lk.get("url", "")}]
+            else:
+                folders = index.get(cid5) or lib.search_campaign(cid5)
+                if not folders:
+                    fo = lib.advertiser_folder(adv_of.get(cid5))
+                    if fo:
+                        folders, guessed[cid5] = [fo], fo["_path"]
             camp_folders[cid5] = folders
             files, mis = [], []
             try:
@@ -1023,25 +1101,35 @@ class Syncer:
                 dfiles = (dbooked.get(screen) or {}).get(cid, {}).get("files")
                 html = [f for f in dfiles or [] if f.get("type") == "html"]
                 variants, dco_why = dco_variants(cid, cid5, screen, size, info, html) if html else ([], None)
+                adv = ((dbooked.get(screen) or {}).get(cid) or {}).get("advertiser") or ""
+                choices = {} if cid5 in links or (camp_folders[cid5] and cid5 not in guessed) else \
+                    {"folder_choices": lib.folder_choices(today, adv)}
+                if cid5 in guessed:
+                    choices["folder_guessed"] = f"{ROOT}/{guessed[cid5]}"
+                if cid5 in links:
+                    choices["folder_linked"] = f"{ROOT}/{links[cid5].get('path', '')}"
                 if not camp_folders[cid5]:
                     if variants:
                         pairs_ok += 1
                         creatives += variants
                         continue
                     missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
-                                         "reason": dco_why or f"no folder for {cid} in Creative+MIs"},
-                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"])))
+                                         "reason": dco_why or f"no folder for {cid} in Creative+MIs: pick its folder below if it "
+                                                             "is under another number or name"},
+                                        **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"]),
+                                        **choices))
                     continue
                 rep_ = {}
                 got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
-                                  [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_)
+                                  [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_,
+                                  doohly_only=cid5 in guessed)
                 hand, gone = picked(cid, screen, camp_files[cid5], picks)
                 names = {c["name"] for c in got or []}
                 got = (got or []) + [c for c in hand if c["name"] not in names] + variants
                 if gone:
                     why = f"picked file(s) no longer in the folder: {', '.join(gone[:3])}" + (f"; {why}" if why else "")
-                pick_info = {"folder_files": folder_files(camp_files[cid5]),
-                             "picked": [c["name"] for c in hand]}
+                pick_info = dict({"folder_files": folder_files(camp_files[cid5]),
+                                  "picked": [c["name"] for c in hand]}, **choices)
                 if got:
                     pairs_ok += 1
                     creatives += got
@@ -1434,6 +1522,13 @@ class H(BaseHTTPRequestHandler):
                 code, body = upload_artwork(qs.get("campaign", [""])[0], qs.get("screen", [""])[0], qs.get("name", [""])[0], data)
             except Exception as e:
                 code, body = 502, {"error": str(e)}
+            return self.reply(code, body)
+        if self.path == "/artwork/folder":        # Bookings page: a campaign's folder, under another number
+            try:
+                d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536)) or b"{}")
+                code, body = link_folder(str(d["campaign_id"]), str(d.get("folder_id") or ""))
+            except (ValueError, KeyError, TypeError):
+                code, body = 400, {"error": "campaign_id and folder_id required"}
             return self.reply(code, body)
         if self.path == "/artwork/pick":          # Bookings page: match a booking against a file picked by hand
             try:
