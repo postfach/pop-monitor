@@ -119,6 +119,31 @@ class Folders(unittest.TestCase):
         self.assertEqual(cs.link_folder("LUMO_19974", "")[0], 200)
         self.assertEqual(cs.link_folder("LUMO_19974", "")[0], 404)
 
+    def test_doohly_only_booking(self):
+        """Made in Doohly with no LUMO number (the Alexandra Park landowner): no folder is looked
+        for or guessed; its folder is picked by hand, from every indexed month."""
+        path = os.path.join(cs.OUT, "doohly.json")
+        with open(path) as fh:
+            doc = json.load(fh)
+        b = doc["sites"]["C"]["bookings"][0]
+        doc["sites"]["C"]["bookings"] = [dict(b, campaign_id=None, name="Curletts IN 3",
+                                              campaign_name="Landowner", advertiser="",
+                                              creatives=[{"name": "landowner 432x864.jpg", "type": "image"}])]
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        self.month.append({"id": "OLD", "name": "Landowner artwork", "_month": (2026, 3),
+                           "_path": "2026/03. March/Landowner artwork", "webUrl": "https://sp/OLD"})
+        self.trees["OLD"] = [f("l", "landowner 432x864.jpg", 432, 864)]
+        m = self.manifest()["missing"][0]
+        self.assertEqual(m["campaign_id"], "D:Curletts IN 3")
+        self.assertIn("without a LUMO number", m["reason"])
+        self.assertNotIn("new_folder", m)                                      # nothing to name one with
+        self.assertIn("OLD", [x["id"] for x in m["folder_choices"]])           # older months offered too
+        self.assertEqual(cs.link_folder("D:Curletts IN 3", "OLD")[0], 200)
+        man = self.manifest()
+        self.assertEqual(man["missing"], [])
+        self.assertEqual([(c["campaign_id"], c["name"]) for c in man["creatives"]], [("D:Curletts IN 3", "landowner 432x864.jpg")])
+
 
 if __name__ == "__main__":
     unittest.main()

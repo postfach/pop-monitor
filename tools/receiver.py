@@ -1364,6 +1364,7 @@ function meter(c) {
   if (c.status === 'maybe' && c.source === 'doohly') return '<span class="muted" title="Non-guaranteed bonus: plays only when the loop has room, so it isn\'t counted in true coverage">bonus if room</span>';
   if (c.status === 'maybe') return '<span class="muted" title="Vault doesn\'t say which weeks of this booking are live">may be booked this week</span>';
   if (c.status === 'seen') return `<span class="muted">seen, ${one(c.delivered)} / loop</span>`;
+  if (c.status === 'not started') return `<span class="muted" title="Booked in Doohly on a schedule (some days or hours of the week) that hasn't come round yet this week">${c.starts ? 'starts ' + esc(c.starts) : 'not on yet'}</span>`;
   return `<span class="meter"><i class="${cls}" style="width:${Math.min(100, Math.round(d * 100))}%"></i></span>${c.status === 'not seen' ? '<span class="bad">not seen</span>' : pct(d)}`;
 }
 const artUrl = f => '/creatives/file?f=' + encodeURIComponent(f);
@@ -1455,8 +1456,9 @@ function site(s, rep) {
      (mopen ? few.map(row).join('') : '') : '');
   const nIds = groups.reduce((n, g) => n + g.members.length, 0);
   const tc = s.true_coverage, tcls = tc == null ? '' : tc >= 0.9 ? 'ok' : tc >= 0.75 ? 'warn' : 'bad';
-  const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < s.booked_per_loop
-       ? `of ${s.booked_linked_per_loop} linked booked slot(s); ${s.booked_per_loop - s.booked_linked_per_loop} not linked yet` : 'booked slots delivered')
+  const due = s.booked_due_per_loop ?? s.booked_per_loop;
+  const tsub = s.booked_linked_per_loop ? (s.booked_linked_per_loop < due - 0.05
+       ? `of ${one(s.booked_linked_per_loop)} linked booked slot(s) so far; ${one(due - s.booked_linked_per_loop)} not linked yet` : 'booked slots delivered')
        : 'link creatives to campaigns to measure';
   const notSeen = s.campaigns.filter(c => c.status === 'not seen').length;
   const chip = (k, v, cls) => `<span class="chip ${cls || ''}"><span class="muted">${k}</span> ${v}</span>`;
@@ -2213,6 +2215,35 @@ def _doohly_plays(b, week):
     return (b.get("plays_per_loop") or 0) * n / 7.0
 
 
+def _doohly_windows(b, week):
+    """When a Doohly booking plays in a week: [(start, end)] in unix seconds, one per day it
+    is on (its dates, days of the week and hours)."""
+    try:
+        d0 = max(datetime.fromisoformat(b["start"]).date(), week)
+        d1 = min(datetime.fromisoformat(b["end"]).date(), week + timedelta(days=6))
+    except (KeyError, TypeError, ValueError):
+        return []
+    days = b.get("days") or DOOHLY_DAYS
+
+    def hm(v, dflt):
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", (v or "").strip())
+        return int(m.group(1)) * 3600 + int(m.group(2)) * 60 if m else dflt
+    h0, h1 = hm(b.get("start_time"), 0), hm(b.get("end_time"), 86400)
+    if h1 >= 23 * 3600 + 59 * 60:
+        h1 = 86400                                    # "23:59": to the end of the day
+    out = []
+    for i in range((d1 - d0).days + 1):
+        d = d0 + timedelta(days=i)
+        if DOOHLY_DAYS[d.weekday()] not in days:
+            continue
+        t = datetime.combine(d, datetime.min.time(), LOCAL_TZ).timestamp()
+        if h1 > h0:
+            out.append((t + h0, t + h1))
+        else:                                         # overnight (e.g. 18:00-02:00)
+            out += [(t + h0, t + 86400), (t, t + h1)]
+    return out
+
+
 def doohly_booked(site, week):
     """Campaigns booked on a Doohly player in a week. The weeks are exact; a
     campaign booked only as a non-guaranteed bonus isn't certain (it plays when
@@ -2232,6 +2263,7 @@ def doohly_booked(site, week):
                                    "url": v.get("url") or b.get("url", ""), "doohly": [], "plays_per_loop": 0.0,
                                    "slot_types": [], "weeks": None, "gaps": False, "source": "doohly"})
         c["plays_per_loop"] += ppl
+        c.setdefault("windows", []).extend((a, z, b.get("plays_per_loop") or 0) for a, z in _doohly_windows(b, week))
         if b.get("purchase_type") != "Non-Guaranteed Bonus":
             c["certain"] = True              # sold or guaranteed: it should play; a non-guaranteed bonus only fills room
         c["doohly"].append({"url": b.get("url"), "name": b.get("name"), "purchase_type": b.get("purchase_type"),
@@ -2711,7 +2743,8 @@ def infer_programmatic(ds, week, crs, assigned, art, library, campaigns=None):
     taken = set(assigned.values())
     video_block = False
     for b in live:
-        cid, kinds = b.get("campaign_id"), {c.get("type") for c in b.get("creatives") or []}
+        # a booking with no LUMO number (made in Doohly only) has the ID the page gives it
+        cid, kinds = b.get("campaign_id") or f"D:{b.get('name')}", {c.get("type") for c in b.get("creatives") or []}
         if "image" in kinds and cid not in have and cid not in taken:
             return set(), (f"the artwork for {b.get('campaign_name') or cid} isn't in the library, so its plays could be "
                            "mistaken for programmatic: upload it, or link its creative to the campaign below")
@@ -3617,6 +3650,15 @@ def site_bookings(cam, week, links_all):
         c["share"] = c["slots"] / loops if loops else 0
     for c in campaigns:
         c["per_loop"] = c["plays_per_loop"]
+        # a Doohly booking on a schedule (some days or hours of the week) is due only for the
+        # time it has been on so far: none before its first day, its full rate while it is on
+        wins = c.pop("windows", None)
+        if wins and t1 > start:
+            on = sum(ppl * max(0.0, min(z, t1) - max(a, start)) for a, z, ppl in wins)
+            c["due_per_loop"] = round(on / (t1 - start), 2)
+            nxt = [a for a, z, _ in wins if a >= t1]
+            if not on and nxt:
+                c["starts"] = local_time(iso(min(nxt)), True)
     sure = [c for c in campaigns if c["certain"]]
     site_links = links_all.get(sid, {})
     art = artwork_matches(cam, start, t1) if t1 > start else {}
@@ -3655,19 +3697,23 @@ def site_bookings(cam, week, links_all):
     booked_linked = 0
     delivered = 0.0
     for c in campaigns:
-        c["delivery"] = c["delivered"] / c["plays_per_loop"] if c["plays_per_loop"] else None
+        due = c.get("due_per_loop", c["plays_per_loop"])
+        c["delivery"] = c["delivered"] / due if due else None
         if not c["linked"] and not any(x["file"] for x in c["artwork"]):
             c["status"] = "not linked"      # no creative assigned and no artwork to look for: can't tell
             continue
         if not c["certain"]:
             c["status"] = "maybe" if not c["creatives"] else "seen"
             continue
-        booked_linked += c["plays_per_loop"]
+        if not due:                          # on a schedule that hasn't started yet this week
+            c["status"] = "seen" if c["creatives"] else "not started"
+            continue
+        booked_linked += due
         c["status"] = ("not seen" if not c["creatives"] else "ok" if (c["delivery"] or 0) >= 0.9
                        else "under")
-        delivered += min(c["delivered"], c["plays_per_loop"])
+        delivered += min(c["delivered"], due)
         if loops >= 1 and c["status"] == "not seen":
-            res["warnings"].append(f"{c['name']} is booked for {c['plays_per_loop']} play(s) per loop but "
+            res["warnings"].append(f"{c['name']} is booked for {due:g} play(s) per loop so far this week but "
                                    "none of its creatives has been seen.")
     offs = {}
     for cr in crs:
@@ -3703,6 +3749,7 @@ def site_bookings(cam, week, links_all):
                programmatic_per_loop=tally["programmatic"], house_per_loop=tally["house"], unbooked_per_loop=tally["unbooked"],
                unassigned_per_loop=tally["unassigned"], blank_per_loop=blank,
                booked_linked_per_loop=booked_linked,
+               booked_due_per_loop=round(sum(c.get("due_per_loop", c["plays_per_loop"]) for c in sure), 2),
                artwork={"enabled": ART_OK, "library": len([x for x in library if x.get("file")]),
                         "videos": len([x for x in library if x.get("kind") == "video"]),
                         "missing": [x for x in ((load_creatives() or {}).get("missing") or [])

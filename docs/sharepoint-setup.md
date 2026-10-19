@@ -135,6 +135,11 @@ October booking LUMO_19974 in `LUMO_16034 Chemist Warehouse`. Then:
   the campaign is booked on, and is kept in `campaign-folders.json` (backed up). **undo** in
   the same place stops using it.
 
+A booking made in Doohly only, with no LUMO number (e.g. the Alexandra Park landowner's),
+can't be found by number or guessed: it is listed in **Bookings without artwork** with the
+campaign folders of every indexed month to pick from (`MONTHS_BACK`, 8 by default), and is
+then matched like any other booking. It has no folder of its own to upload into.
+
 ## Artwork under another name
 
 When a booking's artwork is in its campaign folder but under a name the sync can't tie to the

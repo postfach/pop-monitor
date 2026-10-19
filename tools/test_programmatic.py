@@ -62,6 +62,17 @@ class Programmatic(unittest.TestCase):
         got, why = self.run_it({"c-1": "A", "c-2": "B", "c-9": "unassigned"}, art, crs, lib=lib)   # c-2 linked to B
         self.assertEqual((got, why), ({"c-9"}, ""))
 
+    def test_doohly_only_booking_linked_by_hand(self):
+        ds = {"loop": {"programmatic": True}, "bookings": DS["bookings"][:1] + [
+            {"name": "Alexandra Park IN", "campaign_name": "Alexandra Park + Epsom Landowner",
+             "start": "2026-10-01", "end": "2026-10-31", "creatives": [{"type": "image"}]}]}
+        crs = [cr("c-1", 3.0), cr("c-2", 3.0), cr("c-9", 0.5)]
+        art = {"c-9": {"status": "none", "samples": 5}}
+        got, why = self.run_it({"c-1": "A", "c-2": "unassigned", "c-9": "unassigned"}, art, crs, ds=ds)
+        self.assertIn("Landowner", why)
+        got, why = self.run_it({"c-1": "A", "c-2": "D:Alexandra Park IN", "c-9": "unassigned"}, art, crs, ds=ds)
+        self.assertEqual((got, why), ({"c-9"}, ""))
+
 
 if __name__ == "__main__":
     unittest.main()

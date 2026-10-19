@@ -61,6 +61,14 @@ The screen sizes and loops are read a few players at a time (Doohly takes a few 
 per player), so after the first start the list fills in over about half an hour; until then
 those columns show `?`, and the form leaves the rotation blank.
 
+## Bookings on a schedule
+
+A booking set in Doohly to play only on some days of the week (or some hours) is measured
+against the time it has been on so far: before its first day this week it shows **starts …**
+instead of *not seen* and isn't counted in true coverage; while it is on, it is held to its full
+rate for those hours. *Booked* on the site's row still shows the week's average (e.g. 3 plays
+per loop Thursday to Sunday is 1.7 over the week).
+
 ## Programmatic, inferred
 
 Doohly's API doesn't report plays, so it can't say when a programmatic ad played. But the

@@ -305,12 +305,13 @@ class Library:
         hits = [f for f in hits if f["_month"] == newest]
         return hits[0] if len(hits) == 1 else None
 
-    def folder_choices(self, today, advertiser=""):
-        """Campaign folders of this month and last, to pick one by hand (the advertiser's first)."""
+    def folder_choices(self, today, advertiser="", every_month=False):
+        """Campaign folders of this month and last (every indexed month for a booking made in
+        Doohly only, which may run for months), to pick one by hand (the advertiser's first)."""
         last = (today.replace(day=1) - timedelta(days=1))
         keep = {(today.year, today.month), (last.year, last.month)}
         adv = (advertiser or "").strip().lower()
-        fs = [f for f in getattr(self, "month_folders", []) if f["_month"] in keep]
+        fs = [f for f in getattr(self, "month_folders", []) if every_month or f["_month"] in keep]
         fs.sort(key=lambda f: (not (len(adv) >= 3 and adv in f["name"].lower()), [-x for x in f["_month"]], f["name"].lower()))
         return [{"id": f["id"], "name": f["name"], "path": f["_path"], "url": f.get("webUrl", "")}
                 for f in fs[:FOLDER_CHOICES_MAX]]
@@ -532,7 +533,8 @@ def doohly_by_screen(doc, screens, weeks):
             continue
         camps = out.setdefault(screen, {})
         for b in site.get("bookings") or []:
-            cid = b.get("campaign_id")
+            # one made in Doohly only has no LUMO number: the ID the Bookings page gives it
+            cid = b.get("campaign_id") or (f"D:{b['name']}" if b.get("name") else None)
             if not cid or not b.get("start") or not b.get("end"):
                 continue
             a, z = date.fromisoformat(b["start"]), date.fromisoformat(b["end"])
@@ -755,6 +757,13 @@ def pick_artwork(campaign_id, screen, names):
     return 200, {"status": "saved", "picked": [p["name"] for p in picks.get(key) or []], "syncing": True}
 
 
+def ckey(cid):
+    """A campaign's key for its folder: its 5-digit LUMO number, or for a booking made in
+    Doohly only (no number), its whole ID ("D:<booking name>")."""
+    m = re.search(r"\d{5}", cid or "")
+    return m.group(0) if m and not (cid or "").startswith("D:") else cid
+
+
 FOLDERS_FILE = "campaign-folders.json"      # campaign (5-digit number) -> its folder, picked by hand
 FOLDER_CHOICES_MAX = 400
 
@@ -766,10 +775,9 @@ def load_folder_links():
 def link_folder(campaign_id, folder_id):
     """Use a folder for a campaign whose number isn't on any (folder_id "" undoes it), then
     sync the screens it is booked on. Only a folder the last sync offered. Returns (code, reply)."""
-    m5 = re.search(r"\d{5}", campaign_id or "")
-    if not m5:
-        return 400, {"error": "campaign_id must have a LUMO_ number"}
-    cid5 = m5.group(0)
+    if not campaign_id:
+        return 400, {"error": "campaign_id required"}
+    cid5 = ckey(campaign_id)
     manifest = read_json(os.path.join(OUT, "vault-creatives.json"), {}) or {}
     mine = [x for x in manifest.get("missing") or [] if x.get("campaign_id") == campaign_id]
     links = load_folder_links()
@@ -978,11 +986,13 @@ class Syncer:
         for x in todo:
             for cid, v in (dbooked.get(x) or {}).items():
                 if v.get("advertiser"):
-                    adv_of.setdefault(re.search(r"\d{5}", cid).group(0), v["advertiser"])
-        for cid5 in {re.search(r"\d{5}", c).group(0) for c in all_cids}:
+                    adv_of.setdefault(ckey(cid), v["advertiser"])
+        for cid5 in {ckey(c) for c in all_cids}:
             if cid5 in links:                       # set by hand on the Bookings page
                 lk = links[cid5]
                 folders = [{"id": lk["id"], "name": lk.get("name", ""), "_path": lk.get("path", ""), "webUrl": lk.get("url", "")}]
+            elif cid5.startswith("D:"):               # made in Doohly only: no number to look for
+                folders = []
             else:
                 folders = index.get(cid5) or lib.search_campaign(cid5)
                 if not folders:
@@ -1060,6 +1070,8 @@ class Syncer:
             if camp_folders.get(cid5):
                 fo = camp_folders[cid5][0]
                 return {"folder": {"id": fo["id"], "url": fo.get("webUrl", ""), "path": f"{ROOT}/{fo['_path']}"}}
+            if cid.startswith("D:"):                  # no number to name a folder with: pick one instead
+                return {}
             if month is None:
                 month = lib.month_folder(today) or {}
             if not month:
@@ -1089,7 +1101,7 @@ class Syncer:
             screen_info.append({"name": screen, "width": size[0] if size else None, "height": size[1] if size else None})
             for cid, info in sorted(booked[screen].items()):
                 pairs += 1
-                cid5 = re.search(r"\d{5}", cid).group(0)
+                cid5 = ckey(cid)
                 if cid5 in camp_err:                      # keep what the last good run had
                     kept = [c for c in prev.get("creatives", []) if c.get("campaign_id") == cid and
                             mi.screen_norm(c.get("screen")) == mi.screen_norm(screen)]
@@ -1103,7 +1115,7 @@ class Syncer:
                 variants, dco_why = dco_variants(cid, cid5, screen, size, info, html) if html else ([], None)
                 adv = ((dbooked.get(screen) or {}).get(cid) or {}).get("advertiser") or ""
                 choices = {} if cid5 in links or (camp_folders[cid5] and cid5 not in guessed) else \
-                    {"folder_choices": lib.folder_choices(today, adv)}
+                    {"folder_choices": lib.folder_choices(today, adv or info.get("name", ""), every_month=cid.startswith("D:"))}
                 if cid5 in guessed:
                     choices["folder_guessed"] = f"{ROOT}/{guessed[cid5]}"
                 if cid5 in links:
@@ -1114,8 +1126,11 @@ class Syncer:
                         creatives += variants
                         continue
                     missing.append(dict({"campaign_id": cid, "screen": screen, "name": info["name"],
-                                         "reason": dco_why or f"no folder for {cid} in Creative+MIs: pick its folder below if it "
-                                                             "is under another number or name"},
+                                         "reason": dco_why or (
+                                             f"booked in Doohly without a LUMO number, so its folder can't be found: pick it below"
+                                             if cid.startswith("D:") else
+                                             f"no folder for {cid} in Creative+MIs: pick its folder below if it "
+                                             "is under another number or name")},
                                         **details(cid, screen, size, dfiles, info), **where(cid, cid5, info["name"]),
                                         **choices))
                     continue
