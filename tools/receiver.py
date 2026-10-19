@@ -1286,13 +1286,17 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
 .btn{display:inline-block;border:1px solid var(--line);background:transparent;color:var(--fg);padding:6px 11px;border-radius:8px;cursor:pointer;font:inherit;text-decoration:none}
 .site{border:1px solid var(--line);border-radius:10px;padding:0;margin:10px 0}
-.site > summary{list-style:none;cursor:pointer;display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;padding:11px 16px}
+.site > summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:11px 16px}
+.site > summary .sl{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.site > summary .sl .muted{margin-left:8px}
 .site > summary::-webkit-details-marker{display:none}
 .site > summary::before{content:'\25B8';color:var(--muted);width:10px} .site[open] > summary::before{content:'\25BE'}
 .site[open] > summary{border-bottom:1px solid var(--line)} details.site > :not(summary){margin-left:16px;margin-right:16px}
 .site[open]{padding-bottom:12px} .site.plain{padding:11px 16px;display:flex;gap:14px;flex-wrap:wrap}
 .sname{font-weight:600;font-size:15px} .sname a{text-decoration:none}
-.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto} .site > summary .live{margin-left:auto} .site > summary .live + .chips{margin-left:0}
+.chips{display:grid;grid-template-columns:94px 112px 134px 116px 108px 80px 84px;gap:6px;align-items:center}
+.chips .cell,.chips .cell > span:not(.chip){display:flex} .chips .chip{text-decoration:none}
+@media (max-width:1100px){.site > summary{grid-template-columns:10px minmax(0,1fr)} .site > summary .chips{grid-column:2;display:flex;flex-wrap:wrap} .chips .cell:empty{display:none}}
 .chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
 .chip.warn{border-color:var(--warn);color:var(--warn)} .chip.bad{border-color:var(--bad);color:var(--bad)} .chip.ok{border-color:var(--ok);color:var(--ok)}
 .chip.warn .muted,.chip.bad .muted,.chip.ok .muted{color:inherit;opacity:.8}
@@ -1456,15 +1460,20 @@ function site(s, rep) {
        : 'link creatives to campaigns to measure';
   const notSeen = s.campaigns.filter(c => c.status === 'not seen').length;
   const chip = (k, v, cls) => `<span class="chip ${cls || ''}"><span class="muted">${k}</span> ${v}</span>`;
+  const same = (a, b) => (a || '').toLowerCase().replace(/^lumo[\s_-]*/, '').trim() === (b || '').toLowerCase().trim();
+  const day = v => { const m = /^(\d{4}-\d{2}-\d{2})/.exec(v || ''); return m ? new Date(m[1] + 'T00:00').toLocaleDateString(undefined, {day: 'numeric', month: 'short'}) : (v || ''); };
   return `<details class="site" data-site="${esc(s.site_id)}"${OPEN_SITES.has(s.site_id) ? ' open' : ''}><summary>
-     <span class="sname"><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></span>
-     <span class="muted">${esc(s.vault_screen)} · ${s.slot_count} × ${s.slot_s} s</span>
-     ${s.doohly ? `<span class="pill ${s.doohly.online ? 'ok' : 'bad'}" title="Doohly player ${esc(s.doohly.player)}, last seen ${esc(s.doohly.alive_at || '?')}; bookings read ${esc(s.doohly.bookings_at || '?')}">player ${s.doohly.online ? 'online' : 'offline'}</span>` : ''}
-     ${s.setup ? (s.setup.now ? `<a class="pill warn" href="/roi?site=${encodeURIComponent(s.site_id)}" title="Being set up since ${esc(s.setup.from)}: its plays aren't counted until it goes live on the Region page">in setup</a>`
-       : `<span class="pill live" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">Live from ${esc(s.setup.to)}</span>`) : ''}
-     <span class="chips">${chip('True coverage', pct(tc), tcls)}${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}
-       ${s.unassigned_per_loop > 0.05 ? chip('Unassigned', one(s.unassigned_per_loop) + ' / loop', 'warn') : ''}${notSeen ? chip('Not seen', notSeen + ' campaign(s)', 'bad') : ''}
-       ${s.warnings.length ? chip('', s.warnings.length + ' warning(s)', 'warn') : ''}</span></summary>
+     <span class="sl"><span class="sname"><a href="/?site=${encodeURIComponent(s.site_id)}">${esc(s.name)}</a></span>
+       <span class="muted">${same(s.name, s.vault_screen) ? '' : esc(s.vault_screen) + ' · '}${s.slot_count} × ${s.slot_s} s</span></span>
+     <span class="chips">
+       <span class="cell">${s.doohly ? `<span class="chip ${s.doohly.online ? 'ok' : 'bad'}" title="Doohly player ${esc(s.doohly.player)}, last seen ${esc(s.doohly.alive_at || '?')}; bookings read ${esc(s.doohly.bookings_at || '?')}">Player ${s.doohly.online ? 'online' : 'offline'}</span>` : ''}</span>
+       <span class="cell">${s.setup ? (s.setup.now ? `<a class="chip warn" href="/roi?site=${encodeURIComponent(s.site_id)}" title="Being set up since ${esc(s.setup.from)}: its plays aren't counted until it goes live on the Region page">In setup</a>`
+         : `<span class="chip" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">Live from ${esc(day(s.setup.to))}</span>`) : ''}</span>
+       <span class="cell">${chip('True coverage', pct(tc), tcls)}</span>
+       <span class="cell">${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}</span>
+       <span class="cell">${s.unassigned_per_loop > 0.05 ? `<span title="${one(s.unassigned_per_loop)} slot(s) per loop not assigned to a campaign, programmatic or house">${chip('Unassigned', one(s.unassigned_per_loop), 'warn')}</span>` : ''}</span>
+       <span class="cell">${notSeen ? chip('Not seen', notSeen, 'bad') : ''}</span>
+       <span class="cell">${s.warnings.length ? chip('', s.warnings.length + ' warning' + (s.warnings.length === 1 ? '' : 's'), 'warn') : ''}</span></span></summary>
      ${s.setup && s.setup.now ? `<p class="muted">Being set up since ${esc(s.setup.from)}: its plays aren't counted here (or used for PoP photos) until it goes live. <a href="/roi?site=${encodeURIComponent(s.site_id)}">Region page</a></p>` : ''}
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
