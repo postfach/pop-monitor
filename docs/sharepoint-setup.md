@@ -129,16 +129,19 @@ October booking LUMO_19974 in `LUMO_16034 Chemist Warehouse`. Then:
 * if exactly one folder in the newest month that has any names the advertiser, it is used, but
   only for files named as Doohly plays them (subfolders included), not the Material
   Instructions or the screen's size, as the folder is only a guess;
-* otherwise, or if that guess is wrong, **Bookings without artwork** offers this month's and
-  last month's campaign folders (the advertiser's first): pick one and **Use this folder**. A
-  folder set by hand is used like the campaign's own (all the usual rules), for every screen
-  the campaign is booked on, and is kept in `campaign-folders.json` (backed up). **undo** in
+* otherwise, or if that guess is wrong, **Bookings without artwork** has **Choose its
+  folder…**: it opens this year's folder in Creative+MIs, and you open folders (or go **Up**,
+  as far as Creative+MIs) until you're in the one with the artwork, then use it, as when
+  choosing where a download goes. Folders named for the advertiser or booking are also offered
+  as one-click suggestions. A folder set by hand is used like the campaign's own (all the usual
+  rules), for every screen the campaign is booked on, and is kept in `campaign-folders.json`
+  (backed up). **undo** in
   the same place stops using it.
 
 A booking made in Doohly only, with no LUMO number (e.g. the Alexandra Park landowner's),
-can't be found by number or guessed: it is listed in **Bookings without artwork** with the
-campaign folders of every indexed month to pick from (`MONTHS_BACK`, 8 by default), and is
-then matched like any other booking. It has no folder of its own to upload into.
+can't be found by number or guessed: it is listed in **Bookings without artwork**, where its
+folder is chosen the same way (suggestions come from every indexed month, `MONTHS_BACK`, 8 by
+default), and is then matched like any other booking. It has no folder of its own to upload into.
 
 ## Artwork under another name
 

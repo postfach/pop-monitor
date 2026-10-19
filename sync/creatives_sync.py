@@ -243,6 +243,28 @@ class Library:
         self.root = self.g.get(f"/drives/{self.drive}/root:/{q(self.root_path)}", **{"$select": self.ITEM_FIELDS})
         return self
 
+    def item(self, item_id):
+        """A folder of this tree by ID, with its path below the root ("" for the root), or
+        None if it isn't a folder in the tree."""
+        if item_id == self.root["id"]:
+            return dict(self.root, _path="")
+        try:
+            it = self.g.get(f"/drives/{self.drive}/items/{item_id}", **{"$select": self.ITEM_FIELDS})
+        except GraphError:
+            return None
+        if "folder" not in it:
+            return None
+        parent = urllib.parse.unquote((it.get("parentReference") or {}).get("path", "")).split("root:", 1)[-1].strip("/")
+        root = self.root_path.strip("/")
+        if parent != root and not parent.startswith(root + "/"):
+            return None
+        return dict(it, _path=(parent[len(root):].strip("/") + "/" + it["name"]).strip("/"))
+
+    def year_folder(self, today):
+        """This year's folder (where browsing starts), else the root."""
+        y = next((c for c in self.children(self.root["id"]) if "folder" in c and c["name"].strip() == str(today.year)), None)
+        return dict(y, _path=y["name"]) if y else dict(self.root, _path="")
+
     def children(self, item_id):
         if item_id not in self.children_cache:
             self.children_cache[item_id] = list(self.g.pages(
@@ -311,8 +333,10 @@ class Library:
         last = (today.replace(day=1) - timedelta(days=1))
         keep = {(today.year, today.month), (last.year, last.month)}
         adv = (advertiser or "").strip().lower()
-        fs = [f for f in getattr(self, "month_folders", []) if every_month or f["_month"] in keep]
-        fs.sort(key=lambda f: (not (len(adv) >= 3 and adv in f["name"].lower()), [-x for x in f["_month"]], f["name"].lower()))
+        words = [w for w in re.findall(r"[a-z0-9']{3,}", adv) if w not in ("lumo", "and", "the", "for")]
+        fs = [f for f in getattr(self, "month_folders", []) if (every_month or f["_month"] in keep)
+              and (adv and (adv in f["name"].lower() or any(w in f["name"].lower() for w in words)))]
+        fs.sort(key=lambda f: (adv not in f["name"].lower(), [-x for x in f["_month"]], f["name"].lower()))
         return [{"id": f["id"], "name": f["name"], "path": f["_path"], "url": f.get("webUrl", "")}
                 for f in fs[:FOLDER_CHOICES_MAX]]
 
@@ -765,7 +789,7 @@ def ckey(cid):
 
 
 FOLDERS_FILE = "campaign-folders.json"      # campaign (5-digit number) -> its folder, picked by hand
-FOLDER_CHOICES_MAX = 400
+FOLDER_CHOICES_MAX = 6          # suggested folders (named for the advertiser or booking); any can be browsed to
 
 
 def load_folder_links():
@@ -774,7 +798,7 @@ def load_folder_links():
 
 def link_folder(campaign_id, folder_id):
     """Use a folder for a campaign whose number isn't on any (folder_id "" undoes it), then
-    sync the screens it is booked on. Only a folder the last sync offered. Returns (code, reply)."""
+    sync the screens it is booked on. Any folder in Creative+MIs. Returns (code, reply)."""
     if not campaign_id:
         return 400, {"error": "campaign_id required"}
     cid5 = ckey(campaign_id)
@@ -782,10 +806,11 @@ def link_folder(campaign_id, folder_id):
     mine = [x for x in manifest.get("missing") or [] if x.get("campaign_id") == campaign_id]
     links = load_folder_links()
     if folder_id:
-        fo = next((f for x in mine for f in x.get("folder_choices") or [] if f.get("id") == folder_id), None)
-        if not fo:
-            return 404, {"error": "that folder wasn't offered for this campaign (sync again first?)"}
-        links[cid5] = dict(fo, campaign_id=campaign_id, at=now_iso())
+        it = Library(Graph()).connect().item(folder_id)
+        if not it or not it["_path"]:
+            return 404, {"error": f"that isn't a folder in {ROOT}"}
+        links[cid5] = {"id": it["id"], "name": it["name"], "path": it["_path"], "url": it.get("webUrl", ""),
+                       "campaign_id": campaign_id, "at": now_iso()}
     elif links.pop(cid5, None) is None:
         return 404, {"error": f"no folder is set by hand for {campaign_id}"}
     atomic_json(os.path.join(STATE, FOLDERS_FILE), links)
@@ -793,6 +818,23 @@ def link_folder(campaign_id, folder_id):
     screens = sorted({x["screen"] for x in mine if x.get("screen")})
     SYNC.request(f"folder set for {campaign_id}", screens=screens or None)
     return 200, {"status": "saved", "folder": links.get(cid5), "syncing": True}
+
+
+def browse(folder_id=""):
+    """One folder of Creative+MIs for choosing a campaign's folder on the Bookings page: its
+    subfolders and how many images and videos it has. Starts at this year's folder."""
+    lib = Library(Graph()).connect()
+    it = lib.item(folder_id) if folder_id else lib.year_folder(datetime.now(LOCAL).date())
+    if not it:
+        return 404, {"error": f"not a folder in {ROOT}"}
+    kids = lib.children(it["id"])
+    up = None if it["id"] == lib.root["id"] else (it.get("parentReference") or {}).get("id") or lib.root["id"]
+    return 200, {"folder": {"id": it["id"], "name": it["name"] if it["_path"] else ROOT.rsplit("/", 1)[-1],
+                            "path": it["_path"], "url": it.get("webUrl", "")},
+                 "root": ROOT, "up": up, "is_root": it["id"] == lib.root["id"],
+                 "folders": sorted(({"id": c["id"], "name": c["name"], "count": (c.get("folder") or {}).get("childCount")}
+                                    for c in kids if "folder" in c), key=lambda c: c["name"].lower()),
+                 "files": [c["name"] for c in kids if "file" in c and mi.kind_of(c["name"])][:50]}
 
 
 def entry(cid, screen, f, via, f0, f1, rot, note, hours=None):
@@ -1115,7 +1157,8 @@ class Syncer:
                 variants, dco_why = dco_variants(cid, cid5, screen, size, info, html) if html else ([], None)
                 adv = ((dbooked.get(screen) or {}).get(cid) or {}).get("advertiser") or ""
                 choices = {} if cid5 in links or (camp_folders[cid5] and cid5 not in guessed) else \
-                    {"folder_choices": lib.folder_choices(today, adv or info.get("name", ""), every_month=cid.startswith("D:"))}
+                    {"pick_folder": True,
+                     "folder_choices": lib.folder_choices(today, adv or info.get("name", ""), every_month=cid.startswith("D:"))}
                 if cid5 in guessed:
                     choices["folder_guessed"] = f"{ROOT}/{guessed[cid5]}"
                 if cid5 in links:
@@ -1461,6 +1504,15 @@ class H(BaseHTTPRequestHandler):
             st["doohly"] = DOOHLY.status() if DOOHLY else None
             st["backup"] = BACKUPS.status() if BACKUPS else None
             return self.reply(200, st)
+        if self.path.split("?", 1)[0] == "/artwork/browse":   # Bookings page: choosing a campaign's folder
+            if not configured():
+                return self.reply(409, {"error": "SharePoint access is not set up"})
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            try:
+                code, body = browse(qs.get("id", [""])[0])
+            except GraphError as e:
+                code, body = 502, {"error": str(e)}
+            return self.reply(code, body)
         if self.path == "/backup":                 # the receiver's backup: this service's part
             return self.reply(200, backups.state(STATE))
         if self.path == "/backups":                # the Health page: the backups in SharePoint

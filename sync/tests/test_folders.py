@@ -65,6 +65,10 @@ class Folders(unittest.TestCase):
             def search_campaign(self, cid):
                 return []
 
+            def item(self, iid):
+                f = next((x for x in test.month if x["id"] == iid), None)
+                return dict(f, _path=f["_path"]) if f else None
+
             def tree(self, fo):
                 return [dict(x) for x in test.trees.get(fo["id"], [])]
 
@@ -143,6 +147,68 @@ class Folders(unittest.TestCase):
         man = self.manifest()
         self.assertEqual(man["missing"], [])
         self.assertEqual([(c["campaign_id"], c["name"]) for c in man["creatives"]], [("D:Curletts IN 3", "landowner 432x864.jpg")])
+
+
+class Browse(unittest.TestCase):
+    """Choosing a folder like a download location: starts at this year's folder, goes up as
+    far as Creative+MIs and no further, and only folders inside it can be used."""
+
+    def setUp(self):
+        root = cs.ROOT.strip("/")
+        year = str(datetime.now(cs.LOCAL).date().year)
+        P = lambda rel: {"path": "/drives/d0/root:/" + (root + "/" + rel).strip("/")}    # noqa: E731
+        self.items = {
+            "ROOT": {"id": "ROOT", "name": root.rsplit("/", 1)[-1], "folder": {"childCount": 2}, "webUrl": "u"},
+            "Y": {"id": "Y", "name": year, "folder": {"childCount": 1}, "parentReference": dict(P(""), id="ROOT")},
+            "M": {"id": "M", "name": "10. October", "folder": {"childCount": 1}, "parentReference": dict(P(year), id="Y")},
+            "C": {"id": "C", "name": "LUMO_16034 Chemist Warehouse", "folder": {"childCount": 2},
+                  "parentReference": dict(P(f"{year}/10. October"), id="M"), "webUrl": "https://sp/C"},
+            "OUT": {"id": "OUT", "name": "Elsewhere", "folder": {}, "parentReference": {"path": "/drives/d0/root:/Other", "id": "X"}},
+            "F": {"id": "F", "name": "a.jpg", "file": {}, "parentReference": dict(P(year), id="Y")}}
+        kids = {"ROOT": ["Y", "OUT"], "Y": ["M"], "M": ["C"], "C": ["F"]}
+        items = self.items
+
+        class G:
+            calls = 0
+
+            def get(self, url, **kw):
+                if ":/" in url and "/root:" in url:
+                    return dict(items["ROOT"])
+                iid = url.rsplit("/", 1)[1]
+                if iid not in items:
+                    raise cs.GraphError("itemNotFound")
+                return dict(items[iid])
+
+            def pages(self, url, **kw):
+                return [dict(items[k]) for k in kids.get(url.split("/items/")[1].split("/")[0], [])]
+        saved = {k: getattr(cs, k) for k in ("Graph", "Library", "OUT", "STATE", "SYNC")}
+        self.addCleanup(lambda: [setattr(cs, k, v) for k, v in saved.items()])
+        cs.Graph, cs.Library = G, saved["Library"]
+        os.environ["SP_DRIVE_ID"] = "d0"
+        self.addCleanup(lambda: os.environ.pop("SP_DRIVE_ID", None))
+        out = tempfile.mkdtemp()
+        cs.OUT, cs.STATE = out, os.path.join(out, ".sync")
+        os.makedirs(cs.STATE)
+
+        class Sync:
+            def request(self, reason, screens=None):
+                pass
+        cs.SYNC = Sync()
+
+    def test_browse_and_choose(self):
+        code, b = cs.browse()
+        self.assertEqual((code, b["folder"]["id"], b["up"], [f["name"] for f in b["folders"]]), (200, "Y", "ROOT", ["10. October"]))
+        code, b = cs.browse("ROOT")
+        self.assertTrue(b["is_root"])
+        self.assertIsNone(b["up"])                                   # no further up than Creative+MIs
+        code, b = cs.browse("C")
+        self.assertEqual((b["folder"]["path"].split("/", 1)[1], b["up"], b["files"]), ("10. October/LUMO_16034 Chemist Warehouse", "M", ["a.jpg"]))
+        self.assertEqual(cs.browse("OUT")[0], 404)                  # outside Creative+MIs
+        self.assertEqual(cs.browse("F")[0], 404)                    # a file
+        self.assertEqual(cs.link_folder("D:Alexandra Park IN", "OUT")[0], 404)
+        self.assertEqual(cs.link_folder("D:Alexandra Park IN", "ROOT")[0], 404)
+        code, res = cs.link_folder("D:Alexandra Park IN", "C")
+        self.assertEqual((code, res["folder"]["path"].split("/", 1)[1]), (200, "10. October/LUMO_16034 Chemist Warehouse"))
 
 
 if __name__ == "__main__":

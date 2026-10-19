@@ -1327,6 +1327,8 @@ dialog#missdlg::backdrop{background:rgba(0,0,0,.5)}
 .mcamp h3{margin:0 0 2px;font-size:15px} .msite{border-top:1px solid var(--line);margin-top:8px;padding-top:8px}
 .msite ul{margin:4px 0;padding-left:18px} .msite li{margin:2px 0} .mup{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}
 .mstat{font-size:12px} code.f{font-size:12px;word-break:break-all}
+.frow{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;border-radius:6px;padding:7px 9px;color:inherit;font:inherit;cursor:pointer}
+.frow:hover{background:var(--panel,rgba(127,127,127,.12))} .ficon{font-size:15px}
 </style></head><body><main>
 <nav><a href="/">Review</a><a href="/sites">Sites</a><a href="/bookings" class="on">Bookings</a><a href="/health">Health</a></nav>
 <h1>Bookings vs Delivery</h1>
@@ -1343,6 +1345,12 @@ dialog#missdlg::backdrop{background:rgba(0,0,0,.5)}
  <details id="poprecent" style="margin-top:4px" hidden></details></div></div>
 <dialog id="missdlg"><div class="top"><h2 style="margin:0">Bookings without artwork</h2><button class="btn" id="missclose">Close</button></div>
 <p class="muted" id="misssub" style="margin:4px 0 10px"></p><div id="misslist"></div></dialog>
+<dialog id="fdlg" style="width:min(640px,94vw)"><div class="top"><h2 style="margin:0">Choose the campaign's folder</h2></div>
+<p class="muted" id="fsub" style="margin:4px 0 8px"></p>
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button type="button" class="btn" id="fup" title="Up one folder">&uarr; Up</button>
+<code class="f" id="fpath" style="flex:1"></code></div>
+<div id="flist" style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px"></div>
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button type="button" class="btn" id="fcancel">Cancel</button><button type="button" class="btn primary" id="fuse">Use this folder</button></div></dialog>
 <details class="note muted"><summary>How this is worked out</summary>
 <p>Vault lists, for each booked campaign, the screens it books with its weeks and plays per loop. For each site linked to a Vault screen, this page adds up that week's bookings and compares them with what the gateway saw.</p>
 <p><b>Per loop</b> figures are slots held per loop of the site's rotation. A creative on screen for two slots back to back counts as two; a longer run than that creative usually holds (a missed change, hold-over or freeze) only counts its usual length.</p>
@@ -1584,11 +1592,12 @@ async function openMissing() {
   document.getElementById('misslist').innerHTML = Object.values(by).map(list => {
     const m0 = list[0][0];
     return `<div class="mcamp"><h3>${esc(m0.campaign_name || m0.campaign_id)}</h3>
-      <div class="muted">${esc([m0.advertiser, m0.campaign_id].filter(Boolean).join(' · '))}</div>` +
+      <div class="muted">${esc([m0.advertiser, m0.campaign_id.startsWith('D:') ? 'booked in Doohly without a LUMO number' : m0.campaign_id].filter(Boolean).join(' · '))}</div>` +
       list.map(([m, i]) => {
         const want = (m.not_found && m.not_found.length ? m.not_found : m.partial ? [] : m.expected) || [];
         const where = m.folder ? `in <a href="${esc(m.folder.url)}" target="_blank" rel="noopener"><code class="f">${esc(m.folder.path)}</code></a>`
           : m.new_folder ? `in a new campaign folder, made when you upload: <code class="f">${esc(m.new_folder.path)}</code>`
+          : m.campaign_id.startsWith('D:') ? '<span class="muted">nowhere until its folder is chosen below (with no LUMO number it gets no folder of its own)</span>'
           : '<span class="bad">nowhere yet: the campaign has no folder and this month\'s folder wasn\'t found to make one in</span>';
         const up = (m.folder || m.new_folder) && r.can_upload;
         return `<div class="msite"><b>${esc(m.site_name || m.screen)}</b>
@@ -1601,9 +1610,10 @@ async function openMissing() {
           <div style="font-size:13px">Goes ${where}</div>
           ${m.folder_guessed ? `<div class="muted" style="font-size:12px">No folder has its number; this one was found by the advertiser's name: <code class="f">${esc(m.folder_guessed)}</code> (only files named as Doohly plays them are used from it).</div>` : ''}
           ${m.folder_linked ? `<div class="muted" style="font-size:12px">Folder set by hand: <code class="f">${esc(m.folder_linked)}</code> <button type="button" class="link" data-unfolder="${i}">undo</button></div>` : ''}
-          ${(m.folder_choices || []).length && r.can_upload ? `<div class="mfold" style="margin-top:6px;font-size:13px">${m.folder_guessed ? 'Not the right folder? Pick' : 'Its folder is under another number or name? Pick'} it:
-            <select data-i="${i}" style="max-width:100%"><option value="">Choose a folder&hellip;</option>${m.folder_choices.map(f => `<option value="${esc(f.id)}">${esc(f.path)}</option>`).join('')}</select>
-            <button type="button" class="btn" data-folder="${i}">Use this folder</button> <span class="fstat muted" style="font-size:12px"></span></div>` : ''}
+          ${m.pick_folder && r.can_upload ? `<div class="mfold" style="margin-top:6px;font-size:13px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${m.folder_guessed ? 'Not the right folder?' : m.campaign_id.startsWith('D:') ? 'Where is its artwork?' : 'Its folder is under another number or name?'}
+            <button type="button" class="btn" data-browse="${i}">Choose its folder&hellip;</button>
+            ${(m.folder_choices || []).length ? '<span class="muted">or one that looks right:</span>' : ''}${(m.folder_choices || []).map(f => `<button type="button" class="btn" data-folder="${i}" data-id="${esc(f.id)}" title="Use ${esc(f.path)}">${esc(f.name)}</button>`).join('')}
+            <span class="fstat muted" style="font-size:12px"></span></div>` : ''}
           ${(m.folder_files || []).length && r.can_upload ? `<div class="mpick" style="margin-top:6px;font-size:13px">Or match against a file already in the campaign folder (it isn't renamed):
             <select data-i="${i}" style="max-width:100%"><option value="">Choose a file&hellip;</option>${m.folder_files.map(f => `<option value="${esc(f.name)}">${esc((f.path ? f.path + '/' : '') + f.name)}${f.size ? ` (${f.size[0]}×${f.size[1]})` : ''}</option>`).join('')}</select>
             <button type="button" class="btn" data-pick="${i}">Use this file</button></div>` : ''}
@@ -1635,9 +1645,12 @@ document.getElementById('misslist').addEventListener('click', async e => {   // 
 document.getElementById('misslist').addEventListener('click', async e => {   // a campaign's folder, by hand
   const b = e.target.closest('button[data-folder],button[data-unfolder]'); if (!b) return;
   const box = b.closest('.msite'), m = missing[+(b.dataset.folder ?? b.dataset.unfolder)];
-  const sel = box.querySelector('.mfold select'), id = b.dataset.folder !== undefined ? (sel && sel.value) : '';
-  if (b.dataset.folder !== undefined && !id) { sel.focus(); return; }
-  b.disabled = true;
+  const id = b.dataset.folder !== undefined ? b.dataset.id : '';
+  if (b.dataset.folder !== undefined && !id) return;
+  await useFolder(m, id, box, b);
+});
+async function useFolder(m, id, box, b) {
+  if (b) b.disabled = true;
   const r = await fetch('/bookings/artwork-folder', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({campaign_id: m.campaign_id, folder_id: id})});
   const j = await r.json().catch(() => ({}));
@@ -1645,7 +1658,38 @@ document.getElementById('misslist').addEventListener('click', async e => {   // 
   const st = box.querySelector('.fstat') || box.querySelector('.mstat');
   if (st) { st.className = r.ok ? 'fstat ok' : 'fstat bad'; st.textContent = r.ok ? (id ? `Using ${j.folder.path} for ${m.campaign_id}. ` : 'Undone. ') + 'The artwork sync is running; this list updates when it finishes.' : 'Not saved: ' + (j.error || r.status); }
   if (r.ok) { missWatch = true; loadSync(); }
+  return r.ok;
+}
+// ---- choosing a campaign's folder, like choosing where a download goes
+let fpick = null;                         // {m, box, cur}
+async function fopen(id) {
+  const list = document.getElementById('flist'), path = document.getElementById('fpath');
+  list.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  const r = await fetch('/bookings/artwork-browse' + (id ? '?id=' + encodeURIComponent(id) : '')).then(r => r.json()).catch(e => ({error: String(e)}));
+  if (r.error) { list.innerHTML = `<p class="bad">${esc(r.error)}</p>`; return; }
+  fpick.cur = r;
+  path.textContent = r.root + (r.folder.path ? '/' + r.folder.path : '');
+  document.getElementById('fup').disabled = !r.up;
+  document.getElementById('fuse').disabled = r.is_root;
+  document.getElementById('fuse').textContent = r.is_root ? 'Use this folder' : `Use "${r.folder.name}"`;
+  list.innerHTML = (r.folders.length ? r.folders.map(f => `<button type="button" class="frow" data-open="${esc(f.id)}"><span class="ficon">&#128193;</span> ${esc(f.name)}${f.count != null ? ` <span class="muted">${f.count}</span>` : ''}</button>`).join('') : '<p class="muted">No folders in here.</p>') +
+    (r.files.length ? `<p class="muted" style="margin:8px 0 0;font-size:12px">${r.files.length} image(s) or video(s) here: ${r.files.slice(0, 6).map(esc).join(', ')}${r.files.length > 6 ? '&hellip;' : ''}</p>` : '');
+}
+document.getElementById('misslist').addEventListener('click', e => {
+  const b = e.target.closest('button[data-browse]'); if (!b) return;
+  fpick = {m: missing[+b.dataset.browse], box: b.closest('.msite'), cur: null};
+  document.getElementById('fsub').textContent = `For ${fpick.m.campaign_name || fpick.m.name || fpick.m.campaign_id}: open folders until you're in the one with its artwork, then use it.`;
+  document.getElementById('fdlg').showModal();
+  fopen('');
 });
+document.getElementById('flist').addEventListener('click', e => { const b = e.target.closest('[data-open]'); if (b) fopen(b.dataset.open); });
+document.getElementById('fup').onclick = () => fpick && fpick.cur && fpick.cur.up && fopen(fpick.cur.up);
+document.getElementById('fcancel').onclick = () => document.getElementById('fdlg').close();
+document.getElementById('fuse').onclick = async () => {
+  if (!fpick || !fpick.cur || fpick.cur.is_root) return;
+  if (await useFolder(fpick.m, fpick.cur.folder.id, fpick.box, document.getElementById('fuse'))) document.getElementById('fdlg').close();
+  document.getElementById('fuse').disabled = false;
+};
 document.getElementById('out').addEventListener('click', async e => {    // undo a file chosen by hand
   const b = e.target.closest('button[data-unpick]'); if (!b) return;
   b.disabled = true;
@@ -4835,6 +4879,12 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, doohly_players())
         if path == "/sites/rotation":
             return self.reply(200, rotation_info())
+        if path == "/bookings/artwork-browse":     # choosing a campaign's folder in SharePoint
+            if not self.authorised():
+                return
+            fid = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("id") or [""])[0]
+            code, body = sync_call("GET", "/artwork/browse" + ("?id=" + urllib.parse.quote(fid, safe="") if fid else ""), timeout=30)
+            return self.reply(code, body)
         if path == "/bookings/missing":           # Bookings page: bookings without artwork
             return self.reply(200, missing_artwork())
         if path == "/bookings/sync":              # artwork sync status for the Bookings page
