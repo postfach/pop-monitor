@@ -6,8 +6,9 @@ push to main ──► GitHub Actions: tests, builds the images whose code chang
                  versions to the `deploy` branch
                         │
                         ▼
-Portainer stack follows the `deploy` branch, checks every 5 minutes,
-and redeploys: only the containers whose image changed restart
+the stack's `updater` sees the new release within 5 minutes and calls the stack's
+Portainer webhook: Portainer pulls the branch and the new images, and only the
+containers whose image changed restart
 ```
 
 A failed test stops the run before anything is published, so the server keeps running
@@ -45,23 +46,24 @@ the Bookings page restarts the receiver only; the gateway keeps watching the cam
    * Repository reference: `refs/heads/deploy`
    * Compose path: `compose.yml`
    * Authentication: only once the repository is private (your user name and the token).
-   * **GitOps updates** on, mechanism **Polling**, interval `5m`. (*Re-pull image* and
-     *Force redeployment* aren't needed: every new version is a new commit.)
-     On a stack that already exists, this is under **Stacks › pop-monitor › Edit stack
-     settings** (or the stack's **Editor** tab in some Portainer versions). Without it the
-     stack only updates when you click **Pull and redeploy**.
+   * **Create a Webhook** on, then **Copy link** (Portainer Community Edition has no
+     polling: the stack's `updater` checks GitHub every 5 minutes and calls this link when
+     a new release is out).
    * **Environment variables**: *Load variables from .env file* with your current
      `.env`, plus `POP_VOLUME_PREFIX` if step 2 showed another prefix than `pop-monitor`,
-     and `POP_HOME` if not `/opt/pop-monitor`. All the variables are in
-     `deploy/server/stack.env.example`.
+     and `POP_HOME` if not `/opt/pop-monitor`, and **`PORTAINER_WEBHOOK_URL`** with the link
+     you copied. All the variables are in `deploy/server/stack.env.example`.
 7. **Deploy the stack**. Check the Health page: same gateway, sites and history. Then the
    old stack can be removed (again keeping the volumes).
 
 ## Day to day
 
 * Changes go to `main` (Claude commits and pushes them when they are tested). The server
-  is on them about 10–15 minutes later: watch **Actions** on GitHub for the build, and the
-  stack's **Git** info in Portainer for the deploy.
+  is on them about 10–15 minutes later: watch **Actions** on GitHub for the build, the
+  stack's commit in Portainer, and the `updater` container's log ("asked Portainer to
+  redeploy"). **Pull and redeploy** does it at once.
+* Once the repository is private, give the updater a token that can read it:
+  `GITHUB_UPDATE_TOKEN` in the stack's environment variables.
 * Change a setting or secret: **Stacks › pop-monitor › Environment variables › Update the
   stack**. Change `config.json`: edit it in `/opt/pop-monitor`, then restart the gateway.
 * Go back to an earlier version: on GitHub, revert the latest commit on the `deploy`

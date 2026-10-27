@@ -22,7 +22,7 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
   receiver:
-    image: ghcr.io/postfach/pop-receiver:src-bcd80ffe3f33
+    image: ghcr.io/postfach/pop-receiver:src-430e60f3f0a8
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Pacific/Auckland}
@@ -47,6 +47,23 @@ services:
       - pop-received:/data
       - pop-creatives:/creatives:ro
       - ${POP_HOME:-/opt/pop-monitor}/bookings:/bookings:ro   # a Vault pull (vault-bookings.json), if one is used
+
+  updater:                      # redeploys this stack when a new release is out (Portainer CE has no polling)
+    image: ghcr.io/postfach/pop-receiver:src-430e60f3f0a8
+    entrypoint: ["python3", "/app/updater.py"]
+    restart: unless-stopped
+    tmpfs: [/data]                # the image's data folder: nothing kept, no stray volume
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      DEPLOYED_COMMIT: a5c3d08b44a6fe49d4dc6d8593ea8a3a4f9827b0        # written by the release workflow
+      PORTAINER_WEBHOOK_URL: ${PORTAINER_WEBHOOK_URL:-}  # Stacks > pop-monitor > Edit stack settings > webhook
+      GITHUB_REPO: ${GITHUB_REPO:-postfach/pop-monitor}
+      GITHUB_TOKEN: ${GITHUB_UPDATE_TOKEN:-}             # only once the repository is private
+      UPDATE_EVERY_MIN: ${UPDATE_EVERY_MIN:-5}
+    healthcheck: { disable: true }
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "2" }
 
   creatives-sync:               # booked artwork from SharePoint for the Bookings page
     image: ghcr.io/postfach/pop-creatives-sync:src-b60efc060c7f
