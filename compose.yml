@@ -2,7 +2,7 @@
 # The Portainer stack follows this branch; see deploy/server/README.md.
 services:
   gateway:
-    image: ghcr.io/postfach/pop-gateway:src-a2dbc22e1f31
+    image: ghcr.io/postfach/pop-gateway:src-6656934dfe8c
     restart: unless-stopped
     depends_on: [receiver]
     environment:
@@ -22,7 +22,7 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
   receiver:
-    image: ghcr.io/postfach/pop-receiver:src-74ad49a11608
+    image: ghcr.io/postfach/pop-receiver:src-bcd80ffe3f33
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Pacific/Auckland}

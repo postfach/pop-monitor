@@ -47,6 +47,9 @@ the Bookings page restarts the receiver only; the gateway keeps watching the cam
    * Authentication: only once the repository is private (your user name and the token).
    * **GitOps updates** on, mechanism **Polling**, interval `5m`. (*Re-pull image* and
      *Force redeployment* aren't needed: every new version is a new commit.)
+     On a stack that already exists, this is under **Stacks › pop-monitor › Edit stack
+     settings** (or the stack's **Editor** tab in some Portainer versions). Without it the
+     stack only updates when you click **Pull and redeploy**.
    * **Environment variables**: *Load variables from .env file* with your current
      `.env`, plus `POP_VOLUME_PREFIX` if step 2 showed another prefix than `pop-monitor`,
      and `POP_HOME` if not `/opt/pop-monitor`. All the variables are in
