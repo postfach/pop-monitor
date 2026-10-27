@@ -54,6 +54,11 @@ Or as a container: `docker build -f gateway/Dockerfile -t pop-gateway .`
 
 ## Run with Docker / Portainer (recommended for the trial)
 
+**On the server, use `deploy/server`:** a Portainer stack that follows the `deploy` branch,
+which GitHub Actions keeps pointed at tested images, so the server updates itself within
+minutes of a push to `main`. Setup and day-to-day use: [`deploy/server/README.md`](deploy/server/README.md).
+The rest of this section is the older way (images built on the Docker host by hand).
+
 `deploy/docker-compose.yml` is a three-container stack:
 
 * **gateway**: the PoP monitor itself.
@@ -491,6 +496,9 @@ machine except the three volumes:
 2. On the old machine, **Download a backup** (or use last night's from SharePoint), then
    stop it (`docker compose down`), so two gateways don't watch the same cameras.
 3. On the new machine, **Restore** that backup on the Health page.
+4. If you gave the new gateway another `gateway_id` in `config.json`, the old one shows as
+   offline on the Health page (the backup has its heartbeats): **Remove this gateway** on its
+   card takes it off the page and out of the offline warnings. Its PoP records and sites stay.
 
 The artwork re-syncs within minutes and photos start again from the next play. (Copying
 the Docker volumes themselves, `pop-queue`, `pop-received` and `pop-creatives`, with

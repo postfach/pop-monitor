@@ -1,0 +1,93 @@
+# Every push to main: test, build the images whose code changed, publish them to GitHub's
+# container registry, and point the `deploy` branch at them. The server's Portainer stack
+# follows the `deploy` branch, so it updates itself within a few minutes (deploy/server/README.md).
+# A failing test stops the run: nothing is published and the server keeps what it has.
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild_all: { description: "Build every image, even unchanged ones", type: boolean, default: false }
+concurrency: { group: release, cancel-in-progress: false }
+permissions: { contents: write, packages: write }
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Receiver tests
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
+          pip install -q "numpy>=1.26" "pillow>=10"
+          for t in tools/test_*.py; do echo "== $t"; python3 "$t"; done
+
+      - name: Work out which images changed
+        id: plan
+        run: |
+          git fetch -q origin deploy || true
+          python3 deploy/server/release.py plan --owner "${{ github.repository_owner }}" \
+            ${{ inputs.rebuild_all && '--force' || '' }} | tee -a "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - name: Gateway (its unit tests run in the build)
+        if: steps.plan.outputs.gateway == 'build'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gateway/Dockerfile
+          push: true
+          tags: ${{ steps.plan.outputs.gateway_image }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+
+      - name: Receiver
+        if: steps.plan.outputs.receiver == 'build'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/receiver.Dockerfile
+          push: true
+          tags: ${{ steps.plan.outputs.receiver_image }}
+          cache-from: type=gha,scope=receiver
+          cache-to: type=gha,mode=max,scope=receiver
+
+      - name: Creatives-sync (its unit tests run in the build)
+        if: steps.plan.outputs.creatives_sync == 'build'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sync/Dockerfile
+          push: true
+          tags: ${{ steps.plan.outputs.creatives_sync_image }}
+          cache-from: type=gha,scope=creatives-sync
+          cache-to: type=gha,mode=max,scope=creatives-sync
+
+      - name: Point the deploy branch at the new images
+        run: |
+          MSG=$(git log -1 --format=%s)
+          python3 deploy/server/release.py render --owner "${{ github.repository_owner }}" --out "$RUNNER_TEMP/deploy"
+          cp deploy/server/README.md "$RUNNER_TEMP/deploy/README.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify origin/deploy >/dev/null; then
+            git worktree add -q "$RUNNER_TEMP/branch" origin/deploy
+            git -C "$RUNNER_TEMP/branch" checkout -q -B deploy
+          else
+            git worktree add -q --detach "$RUNNER_TEMP/branch"
+            git -C "$RUNNER_TEMP/branch" checkout -q --orphan deploy
+            git -C "$RUNNER_TEMP/branch" rm -rq --cached . && git -C "$RUNNER_TEMP/branch" clean -fdxq
+          fi
+          cp "$RUNNER_TEMP/deploy/"* "$RUNNER_TEMP/branch/"
+          cd "$RUNNER_TEMP/branch"
+          git add compose.yml versions.json README.md
+          if git diff --cached --quiet; then echo "The server is already on these images."; exit 0; fi
+          git commit -q -m "Deploy ${GITHUB_SHA::7}: $MSG" \
+            -m "$(cat versions.json)"
+          git push -q origin deploy
+          echo "deploy branch now at $(git rev-parse --short HEAD)"
