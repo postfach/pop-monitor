@@ -3129,8 +3129,12 @@ def forget_art(site_id):
 
 def _spread(ps, n):
     """Up to n plays spread evenly over the list (day and night, old and new)."""
+    if n <= 0:
+        return []
     if len(ps) <= n:
         return ps
+    if n == 1:                       # one more to fill a sample: the middle one
+        return [ps[len(ps) // 2]]
     return [ps[round(i * (len(ps) - 1) / (n - 1))] for i in range(n)]
 
 
