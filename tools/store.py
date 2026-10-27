@@ -235,6 +235,15 @@ class Store:
                 pass
         return out
 
+    def system_series(self, gateway_id, since):
+        """A gateway's CPU and memory figures since `since`, oldest first:
+        [(t, machine CPU %, gateway memory bytes, gateway uptime s)]."""
+        rows = self.db().execute(
+            "SELECT t, json_extract(json, '$.health.host.cpu_pct'), json_extract(json, '$.health.process.rss_bytes'), "
+            "json_extract(json, '$.health.uptime_s') FROM heartbeats WHERE t>=? AND json_extract(json, '$.gateway_id')=? "
+            "ORDER BY t", (since, gateway_id)).fetchall()
+        return [tuple(r) for r in rows]
+
     def forget_gateway(self, gateway_id):
         """Delete a gateway's heartbeats (one that was renamed or retired). Its PoP records stay."""
         with self.wlock:

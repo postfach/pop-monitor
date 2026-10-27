@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
 
 static pthread_t up_thr, hb_thr;
 static app_ctx *A;
@@ -39,6 +40,113 @@ static void add_time(cJSON *o, const char *k, int64_t ms)
     char ts[64];
     util_iso8601(ms, ts, sizeof ts);
     cJSON_AddStringToObject(o, k, ts);
+}
+
+/* ---- CPU and memory: the gateway process and the machine (from /proc) ---- */
+
+typedef struct {
+    int64_t wall_ms;
+    unsigned long long proc_ticks;            /* this process: user + system   */
+    unsigned long long host_busy, host_total; /* the machine: all CPUs          */
+} cpu_sample;
+
+static int read_proc_ticks(unsigned long long *ticks)
+{
+    char buf[1024];
+    FILE *f = fopen("/proc/self/stat", "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char *p = strrchr(buf, ')');              /* the name can hold spaces: fields follow ")" */
+    if (!p) return -1;
+    unsigned long long ut = 0, st = 0;
+    /* after ")": state(3) ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime(14) stime(15) */
+    if (sscanf(p + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) != 2) return -1;
+    *ticks = ut + st;
+    return 0;
+}
+
+static int read_host_ticks(unsigned long long *busy, unsigned long long *total)
+{
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return -1;
+    unsigned long long v[10] = {0};
+    int n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9]);
+    fclose(f);
+    if (n < 4) return -1;
+    unsigned long long t = 0;
+    for (int i = 0; i < 8 && i < n; i++) t += v[i];     /* guest time is already in user */
+    *total = t;
+    *busy = t - v[3] - (n > 4 ? v[4] : 0);              /* minus idle and iowait */
+    return 0;
+}
+
+static long long meminfo_kb(const char *key)
+{
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[256];
+    long long v = -1;
+    size_t kl = strlen(key);
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, key, kl) && line[kl] == ':') { v = strtoll(line + kl + 1, NULL, 10); break; }
+    fclose(f);
+    return v;
+}
+
+static long long rss_kb(void)
+{
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    long long v = -1;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "VmRSS:", 6)) { v = strtoll(line + 6, NULL, 10); break; }
+    fclose(f);
+    return v;
+}
+
+/* CPU use since the last heartbeat (at least 5 s apart; until then, the last figures). */
+static void add_system(cJSON *j)
+{
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    static cpu_sample prev;
+    static double proc_pct = -1, host_pct = -1;
+    cpu_sample cur = {util_mono_ms(), 0, 0, 0};
+    int ok_p = read_proc_ticks(&cur.proc_ticks) == 0;
+    int ok_h = read_host_ticks(&cur.host_busy, &cur.host_total) == 0;
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    long hz = sysconf(_SC_CLK_TCK);
+    if (cpus < 1) cpus = 1;
+    if (hz < 1) hz = 100;
+    pthread_mutex_lock(&mu);
+    if (prev.wall_ms && cur.wall_ms - prev.wall_ms >= 5000) {
+        double secs = (cur.wall_ms - prev.wall_ms) / 1000.0;
+        if (ok_p && cur.proc_ticks >= prev.proc_ticks)    /* share of the whole machine, like the host figure */
+            proc_pct = 100.0 * (double)(cur.proc_ticks - prev.proc_ticks) / hz / secs / cpus;
+        if (ok_h && cur.host_total > prev.host_total)
+            host_pct = 100.0 * (double)(cur.host_busy - prev.host_busy) / (double)(cur.host_total - prev.host_total);
+        prev = cur;
+    } else if (!prev.wall_ms) {
+        prev = cur;
+    }
+    double pp = proc_pct, hp = host_pct;
+    pthread_mutex_unlock(&mu);
+
+    cJSON *p = cJSON_AddObjectToObject(j, "process");
+    if (pp >= 0) cJSON_AddNumberToObject(p, "cpu_pct", round(pp * 10) / 10);
+    long long rss = rss_kb();
+    if (rss >= 0) cJSON_AddNumberToObject(p, "rss_bytes", (double)rss * 1024);
+    cJSON *m = cJSON_AddObjectToObject(j, "host");
+    cJSON_AddNumberToObject(m, "cpus", (double)cpus);
+    if (hp >= 0) cJSON_AddNumberToObject(m, "cpu_pct", round(hp * 10) / 10);
+    double la[3];
+    if (getloadavg(la, 3) == 3) cJSON_AddNumberToObject(m, "load1", round(la[0] * 100) / 100);
+    long long tot = meminfo_kb("MemTotal"), avail = meminfo_kb("MemAvailable");
+    if (tot > 0) cJSON_AddNumberToObject(m, "mem_total_bytes", (double)tot * 1024);
+    if (avail >= 0) cJSON_AddNumberToObject(m, "mem_available_bytes", (double)avail * 1024);
 }
 
 cJSON *gateway_health_json(void)
@@ -89,6 +197,7 @@ cJSON *gateway_health_json(void)
     pthread_mutex_unlock(&A->cams_mu);
     cJSON_AddNumberToObject(j, "cameras", ncam);
     cJSON_AddNumberToObject(j, "cameras_connected", nconn);
+    add_system(j);
     return j;
 }
 

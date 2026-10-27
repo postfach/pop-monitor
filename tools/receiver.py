@@ -1183,6 +1183,9 @@ function gateway(g) {
       ${tile('Uploaded', u.sent ?? '—', g.uploads_last_ok ? 'last ' + esc(g.uploads_last_ok) : 'since start')}
       ${tile('Upload problems', (u.retries || 0) + (u.rejected || 0), u.fail_streak ? esc(u.last_error) : (g.uploads_last_fail ? 'last ' + esc(g.uploads_last_fail) : 'none'), u.fail_streak ? 'bad' : '')}
       ${tile('Disk free', gb(d.free_bytes), d.total_bytes ? 'of ' + gb(d.total_bytes) : '', dcls)}
+      ${h.host ? tile('Machine CPU', h.host.cpu_pct != null ? Math.round(h.host.cpu_pct) + '%' : '—', `${h.host.cpus} core${h.host.cpus === 1 ? '' : 's'}` + (h.host.load1 != null ? ` · load ${h.host.load1}` : ''), h.host.cpu_pct >= 85 ? 'warn' : '') : ''}
+      ${h.host && h.host.mem_total_bytes ? tile('Machine memory', gb(h.host.mem_available_bytes) + ' free', 'of ' + gb(h.host.mem_total_bytes), h.host.mem_available_bytes < 0.1 * h.host.mem_total_bytes ? 'bad' : '') : ''}
+      ${h.process ? tile('Gateway', h.process.cpu_pct != null ? Math.round(h.process.cpu_pct) + '% CPU' : '—', h.process.rss_bytes ? gb(h.process.rss_bytes) + ' memory' : '') : ''}
       ${tile('Clock', h.ntp_synced === false ? 'not synced' : h.ntp_synced ? 'NTP synced' : '—', '', h.ntp_synced === false ? 'warn' : '')}
     </div>
     <div class="wrap"><table><thead><tr><th>Site</th><th>Video</th><th>Video uptime</th><th>Reconnects</th><th>FPS</th><th>Coverage</th><th>Problems</th></tr></thead>
@@ -2093,6 +2096,41 @@ def storage_data():
     return d
 
 
+CPU_BUSY_PCT = float(os.environ.get("POP_CPU_WARN_PCT", "85"))    # the machine's CPU, over 15 minutes
+MEM_LOW_PCT = 10                    # the machine's memory available
+LEAK_GROWTH = 1.25                  # the gateway's memory up this much over a day (and by 100 MB)...
+
+
+def system_warnings(gid, h, now):
+    """CPU and memory warnings for a gateway: the machine busy for the last 15 minutes,
+    short of memory, or the gateway's own memory growing steadily over a day (a leak)."""
+    out = []
+    try:
+        series = STORE.system_series(gid, now - 26 * 3600)
+    except Exception:
+        series = []
+    recent = [c for t, c, _, _ in series if t >= now - 900 and c is not None]
+    if len(recent) >= 5 and sum(recent) / len(recent) >= CPU_BUSY_PCT:
+        out.append(f"the machine's CPU has averaged {sum(recent) / len(recent):.0f}% for 15 minutes: "
+                   "video may be analysed late or frames dropped (fewer FPS)")
+    m = h.get("host") or {}
+    if m.get("mem_total_bytes") and m.get("mem_available_bytes") is not None and \
+            m["mem_available_bytes"] < MEM_LOW_PCT / 100 * m["mem_total_bytes"]:
+        out.append(f"the machine is low on memory: {m['mem_available_bytes'] / (1 << 30):.1f} GB free of "
+                   f"{m['mem_total_bytes'] / (1 << 30):.1f} GB")
+    rss = (h.get("process") or {}).get("rss_bytes")
+    up = h.get("uptime_s") or 0
+    if rss and up >= 26 * 3600:
+        # the same gateway run a day ago, once warmed up (2 h after its start)
+        old = [r for t, _, r, u in series if r and u and u >= 7200 and now - 26 * 3600 <= t <= now - 22 * 3600]
+        if old:
+            base = min(old)
+            if rss > LEAK_GROWTH * base and rss - base > 100 * (1 << 20):
+                out.append(f"the gateway's memory grew from {base / (1 << 20):.0f} MB to {rss / (1 << 20):.0f} MB "
+                           "over the last day: if it keeps growing, restart the gateway and report it")
+    return out
+
+
 def health_data():
     """Latest heartbeat per gateway, with derived warnings, for the Health page."""
     now = time.time()
@@ -2119,6 +2157,8 @@ def health_data():
             warn.append(f"low disk: {d['free_bytes'] / (1 << 30):.1f} GB free")
         if h and h.get("ntp_synced") is False:
             warn.append("clock not NTP-synced: PoP times may be off")
+        if h.get("host") and not g["quiet"]:
+            warn += system_warnings(gid, h, now)
         cams = []
         for c in sorted(hb.get("cameras", []), key=site_order):
             cw = []
