@@ -22,11 +22,10 @@ the Bookings page restarts the receiver only; the gateway keeps watching the cam
   (the workflow pushes the `deploy` branch and publishes the images).
 * Push to `main` (or **Actions › release › Run workflow**). The first run builds all
   three images (10–15 minutes) and creates the `deploy` branch.
-* While the repository is public, its images are public too and the server needs no
-  login. **Before making the repository private**, make a token the server can read
-  with: **Settings (your profile) › Developer settings › Personal access tokens ›
-  Tokens (classic)**, scopes `read:packages` and `repo`, no expiry or a long one (note
-  it in the calendar). Then do step 2's *private* parts, then make the repo private.
+* The images are private on GitHub (even while the repository is public), so the server
+  needs a login to fetch them: **your profile › Settings › Developer settings › Personal
+  access tokens › Tokens (classic) › Generate new token**, scope `read:packages` (add
+  `repo` too if the repository will be private), a long expiry (note it in the calendar).
 
 ### 2. Portainer (on the server)
 
@@ -37,15 +36,15 @@ the Bookings page restarts the receiver only; the gateway keeps watching the cam
    set `POP_HOME`):
    * `config.json` (the gateway's settings, the same file as now),
    * `bookings/` and `recordings/` (can be empty).
-4. *Private repository only:* **Registries › Add registry › Custom registry**: URL
-   `ghcr.io`, authentication on, your GitHub user name and the token.
+4. **Registries › Add registry › Custom registry**: name `GitHub`, URL `ghcr.io`,
+   authentication on, your GitHub user name and the token from step 1.
 5. Stop the old stack: **Stacks › (old stack) › Stop** (don't remove its volumes).
 6. **Stacks › Add stack › Repository**:
    * Name: `pop-monitor`
    * Repository URL: `https://github.com/postfach/pop-monitor`
    * Repository reference: `refs/heads/deploy`
    * Compose path: `compose.yml`
-   * *Private repository only:* Authentication on, your user name and the token.
+   * Authentication: only once the repository is private (your user name and the token).
    * **GitOps updates** on, mechanism **Polling**, interval `5m`. (*Re-pull image* and
      *Force redeployment* aren't needed: every new version is a new commit.)
    * **Environment variables**: *Load variables from .env file* with your current

@@ -1,5 +1,5 @@
 {
- "source_commit": "bf7ee60666d67f52f38d0c60a8d4b3a0229a78b1",
+ "source_commit": "c9892a4e0e8b6fa8ccbf2be3553c9b6608f6d51a",
  "images": {
   "gateway": "ghcr.io/postfach/pop-gateway:src-a2dbc22e1f31",
   "receiver": "ghcr.io/postfach/pop-receiver:src-f7f184e33e34",
