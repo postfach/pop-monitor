@@ -235,6 +235,14 @@ class Store:
                 pass
         return out
 
+    def forget_gateway(self, gateway_id):
+        """Delete a gateway's heartbeats (one that was renamed or retired). Its PoP records stay."""
+        with self.wlock:
+            n = self.db().execute("DELETE FROM heartbeats WHERE json_extract(json, '$.gateway_id')=?",
+                                  (gateway_id,)).rowcount
+            self.version += 1
+        return n
+
     def counts(self):
         db = self.db()
         n = db.execute("SELECT COUNT(*), SUM(has_roi OR has_frame), MIN(t) FROM records").fetchone()

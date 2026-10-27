@@ -1187,6 +1187,8 @@ function gateway(g) {
     </div>
     <div class="wrap"><table><thead><tr><th>Site</th><th>Video</th><th>Video uptime</th><th>Reconnects</th><th>FPS</th><th>Coverage</th><th>Problems</th></tr></thead>
     <tbody>${cams || '<tr><td colspan="7" class="muted">No sites</td></tr>'}</tbody></table></div>
+    ${g.online ? '' : `<p style="margin:10px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button type="button" class="btn danger" data-forget="${esc(g.gateway_id)}">Remove this gateway</button>
+      <span class="muted" style="font-size:12px">If it was renamed, retired or replaced (e.g. moved to another machine): takes it off this page and the offline warnings. Its PoP records and sites stay. If it sends a heartbeat again it comes back.</span></p>`}
     <p class="muted" style="font-size:12px;margin:8px 0 0">${g.online ? '' : 'The gateway is offline, so these are its last reported figures. '}Video uptime and reconnects count from when each camera last started. Figures come from the gateway's heartbeat every ${h.heartbeat_s || '?'} s.</p></div>`;
 }
 async function load() {
@@ -1204,6 +1206,15 @@ async function load() {
   } catch (e) { document.getElementById('sub').innerHTML = '<span class="bad">' + esc(e.message || e) + '</span>'; }
 }
 let $sub; load(); setInterval(load, 15000);
+document.getElementById('gws').addEventListener('click', async e => {     // remove an offline gateway (asks once)
+  const b = e.target.closest('button[data-forget]'); if (!b) return;
+  if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = `Remove ${b.dataset.forget}? Click again`; return; }
+  b.disabled = true;
+  const r = await fetch('/health/forget', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({gateway_id: b.dataset.forget})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { b.disabled = false; b.textContent = 'Not removed: ' + (j.error || r.status); return; }
+  load();
+});
 
 // ---- backup and restore
 const $b = id => document.getElementById(id);
@@ -2025,6 +2036,21 @@ def watchdog():
         for gid, last in fire:
             gateway_alert(gid, "raised", last, f"no heartbeat for {fmt_age(now - last)}: the gateway, its network "
                           f"or its connection to this server is down. PoP records are kept on the gateway until it reconnects.")
+
+
+def forget_gateway(gid):
+    """Take a gateway that is offline (renamed, retired, or its machine replaced) off the
+    Health page and the offline warnings. Returns (code, reply)."""
+    with GW_LOCK:
+        g = GATEWAYS.get(gid)
+        if not g:
+            return 404, {"error": f"no gateway {gid}"}
+        if time.time() - (g["at"] or 0) <= quiet_after(g):
+            return 409, {"error": f"{gid} is online: only an offline gateway can be removed"}
+        GATEWAYS.pop(gid)
+    n = STORE.forget_gateway(gid)
+    print(f"health: removed gateway {gid} ({n} heartbeat(s) deleted; its PoP records stay)", flush=True)
+    return 200, {"removed": gid, "heartbeats": n}
 
 
 def offline_gateways():
@@ -4993,6 +5019,15 @@ class H(BaseHTTPRequestHandler):
                 return
             data = self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536))
             code, body = sync_call("POST", "/artwork/folder", timeout=15, data=data)
+            return self.reply(code, body)
+        if self.path == "/health/forget":         # Health page: remove an offline gateway
+            if not self.authorised():
+                return
+            try:
+                gid = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)))["gateway_id"]
+            except (ValueError, KeyError, TypeError):
+                return self.reply(400, {"error": "gateway_id required"})
+            code, body = forget_gateway(str(gid))
             return self.reply(code, body)
         if self.path == "/bookings/artwork-pick":   # match a booking against a file in its folder, or undo that
             if not self.authorised():
