@@ -22,7 +22,7 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
   receiver:
-    image: ghcr.io/postfach/pop-receiver:src-f7f184e33e34
+    image: ghcr.io/postfach/pop-receiver:src-1ec0f9ac2234
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Pacific/Auckland}
