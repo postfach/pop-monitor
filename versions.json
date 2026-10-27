@@ -1,0 +1,8 @@
+{
+ "source_commit": "bf7ee60666d67f52f38d0c60a8d4b3a0229a78b1",
+ "images": {
+  "gateway": "ghcr.io/postfach/pop-gateway:src-a2dbc22e1f31",
+  "receiver": "ghcr.io/postfach/pop-receiver:src-f7f184e33e34",
+  "creatives-sync": "ghcr.io/postfach/pop-creatives-sync:src-b60efc060c7f"
+ }
+}

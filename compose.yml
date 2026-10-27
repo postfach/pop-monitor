@@ -1,0 +1,99 @@
+# Made by the release workflow from deploy/server/compose.yml on main: do not edit here.
+# The Portainer stack follows this branch; see deploy/server/README.md.
+services:
+  gateway:
+    image: ghcr.io/postfach/pop-gateway:src-a2dbc22e1f31
+    restart: unless-stopped
+    depends_on: [receiver]
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+      POP_CAMERA_PASSWORD: ${POP_CAMERA_PASSWORD:?set POP_CAMERA_PASSWORD in .env}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+    expose:
+      - "8090"                  # live-settings API, reachable only by the receiver
+    volumes:
+      - ${POP_HOME:-/opt/pop-monitor}/config.json:/etc/pop-gateway/config.json:ro
+      - ${POP_HOME:-/opt/pop-monitor}/recordings:/recordings
+      - pop-queue:/var/lib/pop-gateway
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  receiver:
+    image: ghcr.io/postfach/pop-receiver:src-f7f184e33e34
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}     # gateway-offline alerts come from here
+      POP_SLACK_WEBHOOK: ${POP_SLACK_WEBHOOK:-}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
+      POP_HMAC_KEY: ${POP_HMAC_KEY:-}
+      GATEWAY_URL: http://gateway:8090
+      BOOKINGS_FILE: /bookings/vault-bookings.json
+      CREATIVES_DIR: /creatives,/bookings/creatives   # artwork library: creatives-sync's, or a hand-made pull (newest wins)
+      SYNC_URL: http://creatives-sync:8091
+      POP_IMAGE_DAYS: ${POP_IMAGE_DAYS:-3}            # PoP photos kept this many days (the best go to SharePoint)
+      POP_ALERT_IMAGE_DAYS: ${POP_ALERT_IMAGE_DAYS:-30}
+      POP_RECORD_DAYS: ${POP_RECORD_DAYS:-90}         # details of every play (small)
+      POP_DEFAULT_COORDS: ${POP_DEFAULT_COORDS:--36.85,174.76}   # sunrise/sunset for day vs night PoP photos
+      POP_SITE_COORDS: ${POP_SITE_COORDS:-}     # optional per site: SITE_ID=lat,lon;SITE_ID=lat,lon
+      REVIEW_USER: ${REVIEW_USER:-}
+      REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
+    ports:
+      - "${POP_REVIEW_PORT:-8080}:8080"
+    volumes:
+      - pop-received:/data
+      - pop-creatives:/creatives:ro
+      - ${POP_HOME:-/opt/pop-monitor}/bookings:/bookings:ro   # a Vault pull (vault-bookings.json), if one is used
+
+  creatives-sync:               # booked artwork from SharePoint for the Bookings page
+    image: ghcr.io/postfach/pop-creatives-sync:src-b60efc060c7f
+    restart: unless-stopped
+    depends_on: [receiver]
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      POP_API_KEY: ${POP_API_KEY:?set POP_API_KEY in .env}
+      POP_TEAMS_WEBHOOK: ${POP_TEAMS_WEBHOOK:-}
+      POP_SLACK_WEBHOOK: ${POP_SLACK_WEBHOOK:-}
+      RECEIVER_URL: http://receiver:8080
+      AZ_TENANT_ID: ${AZ_TENANT_ID:-}           # from deploy/sharepoint/setup-sharepoint-app.ps1
+      AZ_CLIENT_ID: ${AZ_CLIENT_ID:-}
+      AZ_CLIENT_SECRET: ${AZ_CLIENT_SECRET:-}
+      AZ_SECRET_EXPIRES: ${AZ_SECRET_EXPIRES:-}   # warns 30 days before the secret runs out
+      SP_SITE: ${SP_SITE:-lumodigital.sharepoint.com:/sites/LUMO}
+      SP_LIBRARY: ${SP_LIBRARY:-Sales}
+      SP_ROOT: ${SP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/Creative+MIs}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-240}
+      SYNC_SCREENS: ${SYNC_SCREENS:-}           # blank = the Vault screens of the monitored sites
+      # best day and night PoP photo per campaign into SharePoint (needs write access: docs/sharepoint-setup.md)
+      DOOHLY_API_TOKEN: ${DOOHLY_API_TOKEN:-}   # bookings, slots and players from Doohly (read only): docs/doohly.md
+      DOOHLY_DEVICES: ${DOOHLY_DEVICES:-}       # optional: SITE_ID=Doohly player name;... when the names differ
+      POP_UPLOAD: ${POP_UPLOAD:-1}
+      POP_ROOT: ${POP_ROOT:-00_Sales (NEW FOLDER)/Booked Campaigns/PoP Images}
+      POP_DAY_AT: ${POP_DAY_AT:-20:00}          # today's daytime photos
+      POP_NIGHT_AT: ${POP_NIGHT_AT:-08:00}      # last night's photos
+      # nightly backup of the whole PoP Monitor (no photos) into SharePoint: README "Backup, restore ..."
+      BACKUP_TO_SHAREPOINT: ${BACKUP_TO_SHAREPOINT:-1}
+      BACKUP_AT: ${BACKUP_AT:-02:40}
+      BACKUP_LIBRARY: ${BACKUP_LIBRARY:-IT}
+      BACKUP_ROOT: ${BACKUP_ROOT:-PoP Monitor/Backups}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    expose:
+      - "8091"                  # status and "Sync now", reachable only by the receiver
+    volumes:
+      - pop-creatives:/creatives
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+# Named so a stack redeployed from Git (or renamed) keeps the same data: set POP_VOLUME_PREFIX
+# to the old stack's name if its volumes are called something else (Portainer > Volumes).
+volumes:
+  pop-queue:
+    name: ${POP_VOLUME_PREFIX:-pop-monitor}_pop-queue
+  pop-received:
+    name: ${POP_VOLUME_PREFIX:-pop-monitor}_pop-received
+  pop-creatives:
+    name: ${POP_VOLUME_PREFIX:-pop-monitor}_pop-creatives
