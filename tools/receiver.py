@@ -1305,7 +1305,7 @@ nav{display:flex;gap:16px;margin-bottom:14px} nav a{color:var(--muted);text-deco
 .site[open] > summary{border-bottom:1px solid var(--line)} details.site > :not(summary){margin-left:16px;margin-right:16px}
 .site[open]{padding-bottom:12px} .site.plain{padding:11px 16px;display:flex;gap:14px;flex-wrap:wrap}
 .sname{font-weight:600;font-size:15px} .sname a{text-decoration:none}
-.chips{display:grid;grid-template-columns:94px 112px 134px 116px 108px 80px 84px;gap:6px;align-items:center}
+.chips{display:grid;grid-template-columns:94px 112px 134px 94px 108px 80px 84px;gap:6px;align-items:center}
 .chips .cell,.chips .cell > span:not(.chip){display:flex} .chips .chip{text-decoration:none}
 @media (max-width:1100px){.site > summary{grid-template-columns:10px minmax(0,1fr)} .site > summary .chips{grid-column:2;display:flex;flex-wrap:wrap} .chips .cell:empty{display:none}}
 .chip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;white-space:nowrap}
@@ -1491,7 +1491,7 @@ function site(s, rep) {
        <span class="cell">${s.setup ? (s.setup.now ? `<a class="chip warn" href="/roi?site=${encodeURIComponent(s.site_id)}" title="Being set up since ${esc(s.setup.from)}: its plays aren't counted until it goes live on the Region page">In setup</a>`
          : `<span class="chip" title="Was being set up ${esc(s.setup.from)} to ${esc(s.setup.to)}: plays in that time aren't counted">Live from ${esc(day(s.setup.to))}</span>`) : ''}</span>
        <span class="cell">${chip('True coverage', pct(tc), tcls)}</span>
-       <span class="cell">${chip('Booked', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}</span>
+       <span class="cell"><span title="${one(s.booked_per_loop ?? 0)} of ${s.slot_count} slots per loop booked this week">${chip('Booked', s.slot_count ? pct((s.booked_per_loop || 0) / s.slot_count) : '—', (s.booked_per_loop || 0) > s.slot_count ? 'warn' : '')}</span></span>
        <span class="cell">${s.unassigned_per_loop > 0.05 ? `<span title="${one(s.unassigned_per_loop)} slot(s) per loop not assigned to a campaign, programmatic or house">${chip('Unassigned', one(s.unassigned_per_loop), 'warn')}</span>` : ''}</span>
        <span class="cell">${notSeen ? chip('Not seen', notSeen, 'bad') : ''}</span>
        <span class="cell">${s.warnings.length ? chip('', s.warnings.length + ' warning' + (s.warnings.length === 1 ? '' : 's'), 'warn') : ''}</span></span></summary>
@@ -1499,7 +1499,7 @@ function site(s, rep) {
      ${s.warnings.length ? '<ul class="w">' + s.warnings.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>' : ''}
      <div class="tiles">
        ${tile('True coverage', pct(tc), tsub, tcls)}
-       ${tile('Booked per loop', `${s.booked_per_loop ?? 0} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} ${s.doohly ? 'bonus if room' : 'maybe'}` : '') + (s.unsold_per_loop ? `, ${s.unsold_per_loop} unsold` : ''))}
+       ${tile('Booked per loop', `${one(s.booked_per_loop ?? 0)} / ${s.slot_count}`, `${s.campaigns.filter(c => c.certain).length} campaign(s)` + (s.campaigns.some(c => !c.certain) ? ` + ${s.campaigns.filter(c => !c.certain).length} ${s.doohly ? 'bonus if room' : 'maybe'}` : '') + (s.unsold_per_loop ? `, ${one(s.unsold_per_loop)} unsold` : ''))}
        ${tile('Programmatic', one(s.programmatic_per_loop), 'slots per loop' + (s.programmatic_room != null ? ` · ${one(s.programmatic_room)} unbooked in Doohly` : '') +
          (s.programmatic_inference && s.programmatic_inference.on ? ` · ${s.programmatic_inference.creatives.length} creative(s) inferred` :
           s.programmatic_inference && s.programmatic_inference.why_not ? ` · <span title="${esc(s.programmatic_inference.why_not)}" style="text-decoration:underline dotted">not inferred</span>` : ''))}
@@ -3805,7 +3805,7 @@ def site_bookings(cam, week, links_all):
         seen_p = tally["programmatic"]
         if abs(seen_p - room) > max(1.0, 0.25 * room) and not why_not:
             res["warnings"].append(f"Programmatic is taking {seen_p:.1f} slot(s) per loop, but Doohly leaves {room:.1f} "
-                                   f"unbooked ({N} slots, {dbooked:g} booked)" +
+                                   f"unbooked ({N} slots, {round(dbooked, 1):g} booked)" +
                                    (": some programmatic may still be unassigned" if seen_p < room else
                                     ": something marked programmatic may belong to a booking") + ".")
         res["programmatic_room"] = round(room, 1)
@@ -3813,16 +3813,16 @@ def site_bookings(cam, week, links_all):
         res["warnings"].append(f"{tally['unassigned']:.1f} slot(s) per loop show creatives not assigned yet: "
                                "mark them as a campaign, programmatic or house below.")
     if booked > N:
-        res["warnings"].append(f"{'Doohly' if res.get('doohly') else 'Vault'} has {booked} plays per loop booked but the site's rotation has {N} slots: "
+        res["warnings"].append(f"{'Doohly' if res.get('doohly') else 'Vault'} has {round(booked, 1):g} plays per loop booked but the site's rotation has {N} slots: "
                                "check the slot count, or the screen runs a longer loop.")
     blank = sum(c["share"] for c in crs if c["blank"])
     elapsed = max(0.0, t1 - start)
     res["groups"] = group_creatives(sid, crs)
     res.update(campaigns=campaigns, creatives=sorted(crs, key=lambda c: -c["share"]),
-               booked_per_loop=booked, unsold_per_loop=max(0, N - booked),
+               booked_per_loop=round(booked, 2), unsold_per_loop=round(max(0, N - booked), 2),
                programmatic_per_loop=tally["programmatic"], house_per_loop=tally["house"], unbooked_per_loop=tally["unbooked"],
                unassigned_per_loop=tally["unassigned"], blank_per_loop=blank,
-               booked_linked_per_loop=booked_linked,
+               booked_linked_per_loop=round(booked_linked, 2),
                booked_due_per_loop=round(sum(c.get("due_per_loop", c["plays_per_loop"]) for c in sure), 2),
                artwork={"enabled": ART_OK, "library": len([x for x in library if x.get("file")]),
                         "videos": len([x for x in library if x.get("kind") == "video"]),
