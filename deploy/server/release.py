@@ -29,7 +29,7 @@ SERVICES = {
                 "inputs": ["CMakeLists.txt", "core", "gateway", "tools/popreplay.c"]},
     "receiver": {"dockerfile": "deploy/receiver.Dockerfile",
                  "inputs": ["deploy/receiver.Dockerfile", "tools/receiver.py", "tools/popscore.py",
-                            "tools/store.py", "tools/backup.py", "tools/static"]},
+                            "tools/store.py", "tools/backup.py", "tools/updater.py", "tools/static"]},
     "creatives-sync": {"dockerfile": "sync/Dockerfile", "inputs": ["sync"]},
 }
 TEMPLATE = "deploy/server/compose.yml"
@@ -73,16 +73,22 @@ def plan(owner, branch, force=False):
     return out
 
 
-def render(template, images):
+def render(template, images, commit=""):
     """The compose file with each ${POP_<SERVICE>_IMAGE:-...} replaced by its exact image."""
     def sub(m):
         s = m.group(1).lower().replace("_", "-")
         if s not in images:
             raise SystemExit(f"{TEMPLATE}: no image for {m.group(0)}")
         return images[s]
-    txt, n = re.subn(r"\$\{POP_([A-Z_]+)_IMAGE:-[^}]*\}", sub, template)
-    if n != len(images):
-        raise SystemExit(f"{TEMPLATE}: expected {len(images)} image lines, found {n}")
+    seen = set()
+
+    def sub_seen(m):
+        seen.add(m.group(1))
+        return sub(m)
+    txt = re.sub(r"\$\{POP_([A-Z_]+)_IMAGE:-[^}]*\}", sub_seen, template)
+    if len(seen) != len(images):
+        raise SystemExit(f"{TEMPLATE}: expected an image line for each of {sorted(images)}, found {sorted(seen)}")
+    txt = txt.replace("${POP_DEPLOYED_COMMIT:-}", commit or "")
     txt = re.sub(r"\A(?:#[^\n]*\n)+", "", txt)              # the template's own header
     return ("# Made by the release workflow from deploy/server/compose.yml on main: do not edit here.\n"
             "# The Portainer stack follows this branch; see deploy/server/README.md.\n" + txt)
@@ -106,7 +112,7 @@ def main():
         return
     images = {s: v["image"] for s, v in p.items()}
     with open(TEMPLATE, encoding="utf-8") as f:
-        compose = render(f.read(), images)
+        compose = render(f.read(), images, git("rev-parse", "HEAD"))
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "compose.yml"), "w", encoding="utf-8") as f:
         f.write(compose)

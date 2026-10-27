@@ -53,6 +53,23 @@ services:
       - pop-creatives:/creatives:ro
       - ${POP_HOME:-/opt/pop-monitor}/bookings:/bookings:ro   # a Vault pull (vault-bookings.json), if one is used
 
+  updater:                      # redeploys this stack when a new release is out (Portainer CE has no polling)
+    image: ${POP_RECEIVER_IMAGE:-ghcr.io/postfach/pop-receiver:latest}
+    entrypoint: ["python3", "/app/updater.py"]
+    restart: unless-stopped
+    tmpfs: [/data]                # the image's data folder: nothing kept, no stray volume
+    environment:
+      TZ: ${TZ:-Pacific/Auckland}
+      DEPLOYED_COMMIT: ${POP_DEPLOYED_COMMIT:-}        # written by the release workflow
+      PORTAINER_WEBHOOK_URL: ${PORTAINER_WEBHOOK_URL:-}  # Stacks > pop-monitor > Edit stack settings > webhook
+      GITHUB_REPO: ${GITHUB_REPO:-postfach/pop-monitor}
+      GITHUB_TOKEN: ${GITHUB_UPDATE_TOKEN:-}             # only once the repository is private
+      UPDATE_EVERY_MIN: ${UPDATE_EVERY_MIN:-5}
+    healthcheck: { disable: true }
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "2" }
+
   creatives-sync:               # booked artwork from SharePoint for the Bookings page
     image: ${POP_CREATIVES_SYNC_IMAGE:-ghcr.io/postfach/pop-creatives-sync:latest}
     restart: unless-stopped
