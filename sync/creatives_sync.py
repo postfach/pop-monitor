@@ -1133,10 +1133,32 @@ class Syncer:
                  "to": max((f["to"] for f in files if f.get("to")), default=None)}
             if html:
                 d["dco"] = html
+                if camp_files.get(ckey(cid)):
+                    have = {mi.name_norm(f["name"]) for f in camp_files[ckey(cid)] if mi.kind_of(f["name"]) == "image"}
+                    d["dco_missing"] = [h for h in html if mi.name_norm(zip_stem(h)) not in have]
             if not d["from"] and info.get("weeks"):
                 d["from"] = min(info["weeks"]).isoformat()
                 d["to"] = (max(info["weeks"]) + timedelta(days=6)).isoformat()
             return d
+        def from_zips(cid, screen, files, html):
+            """Pictures uploaded for a DCO booking's HTML zips (named as the zip: ..._V1.png
+            for ..._V1.zip). Returns (entries, zips with none)."""
+            out, none = [], []
+            for h in sorted({h["name"] for h in html if h.get("name")}):
+                want = mi.name_norm(zip_stem(h))
+                fs = [f for f in files if mi.kind_of(f["name"]) == "image" and mi.name_norm(f["name"]) == want]
+                if not fs:
+                    none.append(h)
+                    continue
+                f = max(fs, key=lambda f: f.get("modified") or "")
+                b = next(x for x in html if x.get("name") == h)
+                e = entry(cid, screen, f, "dco", date.fromisoformat(b["from"]) if b.get("from") else None,
+                          date.fromisoformat(b["to"]) if b.get("to") else None, None,
+                          f"DCO: the picture in {h} (Doohly)")
+                e.update(dco=True, variant=zip_stem(h))
+                out.append(e)
+            return out, none
+
         for screen in todo:
             sp = specs.get(mi.screen_norm(screen))
             size = (sp[0], sp[1]) if sp else None
@@ -1178,12 +1200,20 @@ class Syncer:
                                         **choices))
                     continue
                 rep_ = {}
-                got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
-                                  [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_,
-                                  doohly_only=cid5 in guessed)
+                zipped, zip_none = from_zips(cid, screen, camp_files[cid5], html) if html else ([], [])
+                if zipped and all(f.get("type") == "html" for f in dfiles or []):
+                    got, why = [], None                 # the zips' pictures are the artwork: nothing else to choose
+                else:
+                    got, why = choose(cid, screen, size, sorted(info["weeks"]), camp_files[cid5], camp_mis[cid5],
+                                      [screen] + spec_names, info["name"], booked_files=dfiles, report=rep_,
+                                      doohly_only=cid5 in guessed)
                 hand, gone = picked(cid, screen, camp_files[cid5], picks)
                 names = {c["name"] for c in got or []}
-                got = (got or []) + [c for c in hand if c["name"] not in names] + variants
+                got = (got or []) + [c for c in hand if c["name"] not in names]
+                names = {c["name"] for c in got}
+                got += [c for c in zipped if c["name"] not in names] + variants
+                if zipped and zip_none and not variants:     # some zips' pictures are there, not all
+                    rep_["not_found"] = (rep_.get("not_found") or []) + zip_none
                 if gone:
                     why = f"picked file(s) no longer in the folder: {', '.join(gone[:3])}" + (f"; {why}" if why else "")
                 pick_info = dict({"folder_files": folder_files(camp_files[cid5]),
@@ -1409,6 +1439,80 @@ UPLOAD_MAX = int(ENV("ARTWORK_UPLOAD_MAX_MB", "300")) * 1024 * 1024
 UPLOAD_LOCK = threading.Lock()
 
 
+# ---------------------------------------------------------------- DCO zips
+# A DCO booking plays an HTML zip in Doohly (SC_doohly_28358_Afterpay_..._Static_Anzac_V1.zip).
+# A static one holds the picture it shows: uploading the zip on the Bookings page puts that
+# picture in the campaign folder named after the zip (..._V1.png), and the sync matches it
+# to the booking as that variant.
+ZIP_MAX_FILES = 2000
+ZIP_MAX_PICTURE = 60 * 1024 * 1024
+
+
+def zip_stem(name):
+    n = os.path.basename(str(name or ""))
+    return n[:-4] if n.lower().endswith(".zip") else n
+
+
+def picture_size(data):
+    """(width, height) of a PNG, JPEG or GIF from its header, or None."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+    if data[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            mk = data[i + 1]
+            if mk in (0xD8, 0x01) or 0xD0 <= mk <= 0xD7 or mk == 0xFF:
+                i += 1 if mk == 0xFF else 2
+                continue
+            ln = int.from_bytes(data[i + 2:i + 4], "big")
+            if mk in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+            i += 2 + ln
+    return None
+
+
+def zip_picture(data, size=None):
+    """The picture a static HTML zip shows: of its images, the one at the screen's size,
+    else the same shape, else the largest. Returns (extension, bytes, member, (w, h));
+    ValueError when it isn't a zip or holds no picture (a live ad: render it instead)."""
+    import io
+    import zipfile
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise ValueError("that isn't a zip file")
+    infos = [i for i in z.infolist() if not i.is_dir()]
+    if len(infos) > ZIP_MAX_FILES:
+        raise ValueError("the zip has too many files")
+    found = []
+    for i in infos:
+        base = os.path.basename(i.filename)
+        ext = os.path.splitext(base)[1].lower()
+        if base.startswith(".") or "__MACOSX" in i.filename or ext not in (".jpg", ".jpeg", ".png", ".gif"):
+            continue
+        if i.file_size > ZIP_MAX_PICTURE:
+            continue
+        raw = z.read(i)
+        wh = picture_size(raw)
+        if wh and wh[0] >= 50 and wh[1] >= 50:            # not icons or spacers
+            found.append((".jpg" if ext == ".jpeg" else ext, raw, i.filename, wh))
+    if not found:
+        raise ValueError("the zip has no picture in it (a live or animated ad): upload a render "
+                         "or screenshot of it instead")
+
+    def rank(c):
+        w, h = c[3]
+        exact = bool(size) and (w, h) == tuple(size)
+        shape = bool(size) and bool(mi.same_size((w, h), size))
+        return (exact, shape, w * h)
+    return max(found, key=rank)
+
+
 def upload_artwork(campaign_id, screen, name, data):
     """Put a missing booking's artwork in its campaign folder in SharePoint (a new
     folder in this month's when it has none), then sync. Only for a booking the last
@@ -1422,12 +1526,22 @@ def upload_artwork(campaign_id, screen, name, data):
     name = os.path.basename(str(name or "").replace("\\", "/")).strip()
     if not name or re.search(r'[\\/:*?"<>|#%]', name) or name.startswith("."):
         return 400, {"error": "that file name can't be used in SharePoint"}
-    if not mi.kind_of(name):
-        return 400, {"error": "only images (" + ", ".join(mi.IMAGE_EXT) + ") and videos (" + ", ".join(mi.VIDEO_EXT) + ")"}
     if not data:
         return 400, {"error": "the file is empty"}
     if len(data) > UPLOAD_MAX:
         return 413, {"error": f"files up to {UPLOAD_MAX // 1048576} MB"}
+    from_zip = None
+    if name.lower().endswith(".zip"):           # a DCO booking's HTML zip from Doohly: the picture in it
+        if name not in (m.get("dco") or []):
+            return 400, {"error": f"{name} isn't one of the HTML zips Doohly plays for this booking"}
+        try:
+            ext, data, from_zip, wh = zip_picture(data, m.get("size"))
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        name = zip_stem(name) + ext
+    if not mi.kind_of(name):
+        return 400, {"error": "only images (" + ", ".join(mi.IMAGE_EXT) + "), videos (" + ", ".join(mi.VIDEO_EXT) +
+                     ") or, for a DCO booking, the HTML zip Doohly plays"}
     with UPLOAD_LOCK:
         g = Graph()
         lib = Library(g).connect()
@@ -1467,9 +1581,13 @@ def upload_artwork(campaign_id, screen, name, data):
             if "nameAlreadyExists" in str(e) or " 409 " in str(e):
                 return 409, {"error": f"{name} is already in {path}: pick another name, or check why it isn't used"}
             raise
-    log(f"artwork: uploaded {path}/{name} for {campaign_id} on {screen} ({len(data)} bytes)")
+    log(f"artwork: uploaded {path}/{name} for {campaign_id} on {screen} ({len(data)} bytes)" +
+        (f", the picture {from_zip} from its HTML zip" if from_zip else ""))
     SYNC.request(f"artwork uploaded for {campaign_id}")
-    return 201, {"status": "uploaded", "path": f"{path}/{name}", "url": item.get("webUrl"), "syncing": True}
+    res = {"status": "uploaded", "path": f"{path}/{name}", "url": item.get("webUrl"), "syncing": True}
+    if from_zip:
+        res.update(from_zip=from_zip, size=list(wh))
+    return 201, res
 
 
 class H(BaseHTTPRequestHandler):

@@ -179,6 +179,13 @@ creative names the variant it looked like. The variants of one campaign never co
 each other in the match margin, only other campaigns do. If nothing is found, the campaign is
 in the *without artwork* list with the reason; a render uploaded there also works.
 
+A **static** DCO (one picture in an HTML zip, e.g. *SC_doohly_28358_Afterpay_…_Static_Anzac_V1.zip*)
+needs no renders: download the zip from Doohly and upload it with its button in the *without
+artwork* list. The picture in it (the one at the screen's size, else the same shape, else the
+largest) goes into the campaign folder under the zip's name (*…_V1.jpg*) and is matched as that
+variant from then on. A zip with no picture (a live or animated ad) is refused: upload a render
+or screenshot with the same button instead, and it is named after the zip the same way.
+
 LUMO Labs is walked (this year's folders, plus last year's in January and February, down to
 the campaign folders' files: about 150 Graph calls) at most every 12 hours, and again as soon
 as a DCO campaign isn't in it. The app's access to the LUMO site covers the IT library, so no
