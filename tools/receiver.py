@@ -1717,7 +1717,9 @@ document.getElementById('misslist').addEventListener('change', async e => {
   const inp = e.target.closest('input[type=file]'); if (!inp || !inp.files.length) return;
   const m = missing[+inp.dataset.i], f = inp.files[0], stat = inp.closest('.msite').querySelector('.mstat');
   const name = inp.dataset.name || f.name;
-  const ext = s => (s.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  // .jpeg and .jpg (or .tiff and .tif) are the same kind of file: it is uploaded under Doohly's name anyway
+  const ext = s => ({'.jpeg': '.jpg', '.jpe': '.jpg', '.tiff': '.tif', '.mpeg': '.mpg'})[(s.match(/\.[^.]+$/) || [''])[0].toLowerCase()]
+                   || (s.match(/\.[^.]+$/) || [''])[0].toLowerCase();
   if (inp.dataset.name && ext(f.name) !== ext(name)) {
     stat.className = 'mstat bad'; stat.textContent = `Doohly plays a ${ext(name)} file; that one is ${ext(f.name) || 'of an unknown type'}.`; inp.value = ''; return;
   }
