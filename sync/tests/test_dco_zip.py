@@ -50,6 +50,13 @@ class Picture(unittest.TestCase):
         ext, data, member, wh = cs.zip_picture(z, [500, 500])
         self.assertEqual(member, "img/big.jpg")                                       # else the largest
 
+    def test_video_wins(self):
+        """An animated ad (SCTI on Anzac): index.html and the video it plays."""
+        z = zipped({"index.html": b'<video src="1792362489969.mp4" autoplay>', "1792362489969.mp4": b"\0" * 500,
+                    "other.mp4": b"\0" * 900, "poster.png": png(1764, 468)})
+        ext, data, member, wh = cs.zip_picture(z, [1764, 468])
+        self.assertEqual((ext, member, wh, len(data)), (".mp4", "1792362489969.mp4", None, 500))
+
     def test_no_picture(self):
         with self.assertRaisesRegex(ValueError, "no picture"):
             cs.zip_picture(zipped({"index.html": b"<html>", "a.js": b"x"}), [1764, 468])
@@ -82,6 +89,11 @@ class Upload(unittest.TestCase):
         code, res = cs.upload_artwork("LUMO_19035", "Anzac", V2, zipped({"index.html": b"<html>"}))
         self.assertEqual(code, 400)
         self.assertIn("render or screenshot", res["error"])
+
+    def test_video_zip(self):
+        code, res = cs.upload_artwork("LUMO_19035", "Anzac", V2, zipped({"index.html": b"<video src='a.mp4'>", "a.mp4": b"\0" * 64}))
+        self.assertEqual((code, res["kind"], res["size"]), (201, "video", None), res)
+        self.assertTrue(res["path"].endswith("_V2.mp4"))
 
 
 def f(iid, name, w=None, h=None):
@@ -169,10 +181,10 @@ class Sync(unittest.TestCase):
         m = man["missing"][0]
         self.assertTrue(m["partial"])
         self.assertEqual((m["not_found"], m["dco_missing"]), ([V2], [V2]))
-        self.files.append(f("v2", V2[:-4] + ".png", 1764, 468))
+        self.files.append(f("v2", V2[:-4] + ".mp4"))                              # an animated one
         man = self.manifest()
         self.assertEqual(man["missing"], [])
-        self.assertEqual(len(man["creatives"]), 2)
+        self.assertEqual(sorted((c["kind"], c["variant"]) for c in man["creatives"]), [("image", V1[:-4]), ("video", V2[:-4])])
 
 
 if __name__ == "__main__":

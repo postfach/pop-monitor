@@ -1619,7 +1619,7 @@ async function openMissing() {
           <span class="pill ${m.partial ? '' : 'warn'}">${m.partial ? 'some missing' : 'no artwork'}</span>
           <span class="muted">${esc([dates(m), 'screen ' + sz(m)].filter(Boolean).join(' · '))}</span>
           <div class="muted" style="font-size:12px">${esc(m.reason || '')}</div>
-          ${m.dco && m.dco.length ? `<div style="font-size:13px;margin-top:4px"><span class="pill">DCO</span> Doohly plays ${m.dco.map(n => `<code class="f">${esc(n)}</code>`).join(', ')} (HTML). Its renders are looked for in LUMO Labs (a folder with the campaign's LUMO_ number or MI in it, or named for the advertiser, with a subfolder named for the screen). For a static one, download the zip from Doohly and upload it here: the picture in it goes into the campaign folder under the zip's name and is matched from then on. A live or animated one: upload a render or screenshot with the zip's button instead.</div>` : ''}
+          ${m.dco && m.dco.length ? `<div style="font-size:13px;margin-top:4px"><span class="pill">DCO</span> Doohly plays ${m.dco.map(n => `<code class="f">${esc(n)}</code>`).join(', ')} (HTML). Its renders are looked for in LUMO Labs (a folder with the campaign's LUMO_ number or MI in it, or named for the advertiser, with a subfolder named for the screen). Or download the zip from Doohly and upload it here: the video in it (an animated ad) or the picture (a static one) goes into the campaign folder under the zip's name and is matched from then on. A live ad with neither: upload a render or screenshot with the zip's button instead.</div>` : ''}
           ${want.length ? `<div style="font-size:13px;margin-top:4px">Doohly plays (not in SharePoint):</div><ul>${want.map(n => `<li><code class="f">${esc(n)}</code></li>`).join('')}</ul>` :
             `<div style="font-size:13px;margin-top:4px">Should be: the campaign's artwork for this screen, ${esc(sz(m))}. Name the file with the screen's name (e.g. <i>${esc(m.screen)}</i>), or make it exactly that size, or name it in the Material Instructions.</div>`}
           <div style="font-size:13px">Goes ${where}</div>
@@ -1633,7 +1633,7 @@ async function openMissing() {
             <select data-i="${i}" style="max-width:100%"><option value="">Choose a file&hellip;</option>${m.folder_files.map(f => `<option value="${esc(f.name)}">${esc((f.path ? f.path + '/' : '') + f.name)}${f.size ? ` (${f.size[0]}×${f.size[1]})` : ''}</option>`).join('')}</select>
             <button type="button" class="btn" data-pick="${i}">Use this file</button></div>` : ''}
           ${up ? `<div class="mup">` +
-            zips.map(n => `<label class="btn" style="cursor:pointer" title="The zip from Doohly, or a picture of it">Upload ${esc(n)}<input type="file" hidden data-i="${i}" data-name="${esc(n)}" data-zip="1" accept=".zip,application/zip,image/*"></label>`).join('') +
+            zips.map(n => `<label class="btn" style="cursor:pointer" title="The zip from Doohly, or a picture of it">Upload ${esc(n)}<input type="file" hidden data-i="${i}" data-name="${esc(n)}" data-zip="1" accept=".zip,application/zip,image/*,video/*"></label>`).join('') +
             want.map(n => `<label class="btn" style="cursor:pointer">Upload as ${esc(n)}<input type="file" hidden data-i="${i}" data-name="${esc(n)}" accept="image/*,video/*"></label>`).join('') +
             `<label class="btn" style="cursor:pointer">${want.length ? 'Upload another file' : 'Upload artwork'}<input type="file" hidden data-i="${i}" accept="image/*,video/*"></label>
              <span class="mstat muted"></span></div>` : ''}
@@ -1723,7 +1723,7 @@ document.getElementById('misslist').addEventListener('change', async e => {
   const ext = s => ({'.jpeg': '.jpg', '.jpe': '.jpg', '.tiff': '.tif', '.mpeg': '.mpg'})[(s.match(/\.[^.]+$/) || [''])[0].toLowerCase()]
                    || (s.match(/\.[^.]+$/) || [''])[0].toLowerCase();
   if (inp.dataset.zip && ext(f.name) !== '.zip') {      // a picture of the DCO zip: named as the zip
-    if (!/^\.(jpg|png|gif)$/.test(ext(f.name))) { stat.className = 'mstat bad'; stat.textContent = 'Upload the zip from Doohly, or a .jpg or .png of it.'; inp.value = ''; return; }
+    if (!/^\.(jpg|png|mp4|mov|m4v|webm|avi|mpg)$/.test(ext(f.name))) { stat.className = 'mstat bad'; stat.textContent = 'Upload the zip from Doohly, or a picture or video of it.'; inp.value = ''; return; }
     name = name.replace(/\.zip$/i, '') + ext(f.name);
   } else if (inp.dataset.name && ext(f.name) !== ext(name)) {
     stat.className = 'mstat bad'; stat.textContent = `Doohly plays a ${ext(name)} file; that one is ${ext(f.name) || 'of an unknown type'}.`; inp.value = ''; return;
@@ -1736,7 +1736,7 @@ document.getElementById('misslist').addEventListener('change', async e => {
   inp.value = '';
   if (!r.ok) { stat.className = 'mstat bad'; stat.textContent = 'Not uploaded: ' + (j.error || r.status); return; }
   stat.className = 'mstat ok';
-  stat.innerHTML = (j.from_zip ? `The picture in the zip (${esc(j.from_zip)}, ${j.size[0]}×${j.size[1]}) was uploaded` : 'Uploaded') +
+  stat.innerHTML = (j.from_zip ? `The ${j.kind === 'video' ? 'video' : 'picture'} in the zip (${esc(j.from_zip)}${j.size ? `, ${j.size[0]}×${j.size[1]}` : ''}) was uploaded` : 'Uploaded') +
     ` to <a href="${esc(j.url || '#')}" target="_blank" rel="noopener">${esc(j.path)}</a>. The artwork sync is running; this list and the page update when it finishes.`;
   missWatch = true; loadSync();
 });

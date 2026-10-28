@@ -1134,7 +1134,7 @@ class Syncer:
             if html:
                 d["dco"] = html
                 if camp_files.get(ckey(cid)):
-                    have = {mi.name_norm(f["name"]) for f in camp_files[ckey(cid)] if mi.kind_of(f["name"]) == "image"}
+                    have = {mi.name_norm(f["name"]) for f in camp_files[ckey(cid)] if mi.kind_of(f["name"])}
                     d["dco_missing"] = [h for h in html if mi.name_norm(zip_stem(h)) not in have]
             if not d["from"] and info.get("weeks"):
                 d["from"] = min(info["weeks"]).isoformat()
@@ -1146,15 +1146,15 @@ class Syncer:
             out, none = [], []
             for h in sorted({h["name"] for h in html if h.get("name")}):
                 want = mi.name_norm(zip_stem(h))
-                fs = [f for f in files if mi.kind_of(f["name"]) == "image" and mi.name_norm(f["name"]) == want]
+                fs = [f for f in files if mi.kind_of(f["name"]) and mi.name_norm(f["name"]) == want]
                 if not fs:
                     none.append(h)
                     continue
-                f = max(fs, key=lambda f: f.get("modified") or "")
+                f = max(fs, key=lambda f: (mi.kind_of(f["name"]) == "image", f.get("modified") or ""))
                 b = next(x for x in html if x.get("name") == h)
                 e = entry(cid, screen, f, "dco", date.fromisoformat(b["from"]) if b.get("from") else None,
                           date.fromisoformat(b["to"]) if b.get("to") else None, None,
-                          f"DCO: the picture in {h} (Doohly)")
+                          f"DCO: the {'video' if mi.kind_of(f['name']) == 'video' else 'picture'} in {h} (Doohly)")
                 e.update(dco=True, variant=zip_stem(h))
                 out.append(e)
             return out, none
@@ -1477,9 +1477,10 @@ def picture_size(data):
 
 
 def zip_picture(data, size=None):
-    """The picture a static HTML zip shows: of its images, the one at the screen's size,
-    else the same shape, else the largest. Returns (extension, bytes, member, (w, h));
-    ValueError when it isn't a zip or holds no picture (a live ad: render it instead)."""
+    """The artwork a DCO's HTML zip shows: its video when it has one (an animated ad: the
+    one its HTML plays, else the largest), else its picture at the screen's size, else the
+    same shape, else the largest. Returns (extension, bytes, member, (w, h) or None);
+    ValueError when it isn't a zip or holds neither (a live ad: render it instead)."""
     import io
     import zipfile
     try:
@@ -1489,28 +1490,35 @@ def zip_picture(data, size=None):
     infos = [i for i in z.infolist() if not i.is_dir()]
     if len(infos) > ZIP_MAX_FILES:
         raise ValueError("the zip has too many files")
-    found = []
+    html = " ".join(z.read(i).decode("utf-8", "replace") for i in infos
+                    if i.filename.lower().endswith((".html", ".htm", ".js")) and i.file_size < 2 << 20)
+    pictures, videos = [], []
     for i in infos:
         base = os.path.basename(i.filename)
         ext = os.path.splitext(base)[1].lower()
-        if base.startswith(".") or "__MACOSX" in i.filename or ext not in (".jpg", ".jpeg", ".png", ".gif"):
+        if base.startswith(".") or "__MACOSX" in i.filename or i.file_size > UPLOAD_MAX:
             continue
-        if i.file_size > ZIP_MAX_PICTURE:
-            continue
-        raw = z.read(i)
-        wh = picture_size(raw)
-        if wh and wh[0] >= 50 and wh[1] >= 50:            # not icons or spacers
-            found.append((".jpg" if ext == ".jpeg" else ext, raw, i.filename, wh))
-    if not found:
-        raise ValueError("the zip has no picture in it (a live or animated ad): upload a render "
+        if ext in mi.VIDEO_EXT:
+            videos.append(i)
+        elif ext in mi.IMAGE_EXT and i.file_size <= ZIP_MAX_PICTURE:
+            raw = z.read(i)
+            wh = picture_size(raw)
+            if wh and wh[0] >= 50 and wh[1] >= 50:            # not icons or spacers
+                pictures.append((".jpg" if ext == ".jpeg" else ext, raw, i.filename, wh))
+    if videos:
+        v = max(videos, key=lambda i: (os.path.basename(i.filename) in html, i.file_size))
+        ext = os.path.splitext(v.filename)[1].lower()
+        return (".mpg" if ext == ".mpeg" else ext), z.read(v), v.filename, None
+    if not pictures:
+        raise ValueError("the zip has no picture or video in it (a live ad): upload a render "
                          "or screenshot of it instead")
 
     def rank(c):
         w, h = c[3]
         exact = bool(size) and (w, h) == tuple(size)
         shape = bool(size) and bool(mi.same_size((w, h), size))
-        return (exact, shape, w * h)
-    return max(found, key=rank)
+        return (exact, shape, os.path.basename(c[2]) in html, w * h)
+    return max(pictures, key=rank)
 
 
 def upload_artwork(campaign_id, screen, name, data):
@@ -1582,11 +1590,11 @@ def upload_artwork(campaign_id, screen, name, data):
                 return 409, {"error": f"{name} is already in {path}: pick another name, or check why it isn't used"}
             raise
     log(f"artwork: uploaded {path}/{name} for {campaign_id} on {screen} ({len(data)} bytes)" +
-        (f", the picture {from_zip} from its HTML zip" if from_zip else ""))
+        (f", {from_zip} from its HTML zip" if from_zip else ""))
     SYNC.request(f"artwork uploaded for {campaign_id}")
     res = {"status": "uploaded", "path": f"{path}/{name}", "url": item.get("webUrl"), "syncing": True}
     if from_zip:
-        res.update(from_zip=from_zip, size=list(wh))
+        res.update(from_zip=from_zip, size=list(wh) if wh else None, kind=mi.kind_of(name))
     return 201, res
 
 
