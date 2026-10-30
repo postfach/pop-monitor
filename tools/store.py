@@ -24,6 +24,10 @@ import zlib
 from datetime import datetime
 
 IMAGE_DAYS = float(os.environ.get("POP_IMAGE_DAYS", "3"))
+# Full camera frames are only needed to upload the best photos: once both the day and
+# the night best-photo runs have covered a time (and this long has passed for the
+# upload to finish), the frames from before it are removed except the best ones.
+FRAME_GRACE_S = float(os.environ.get("POP_FRAME_GRACE_MIN", "120")) * 60
 ALERT_IMAGE_DAYS = float(os.environ.get("POP_ALERT_IMAGE_DAYS", "30"))
 RECORD_DAYS = float(os.environ.get("POP_RECORD_DAYS", "90"))
 HEARTBEAT_DAYS = float(os.environ.get("POP_HEARTBEAT_DAYS", "7"))
@@ -37,7 +41,7 @@ CREATE TABLE IF NOT EXISTS records (
   creative TEXT,
   blank    INTEGER NOT NULL DEFAULT 0,
   video    INTEGER NOT NULL DEFAULT 0,
-  usable   INTEGER NOT NULL DEFAULT 1,
+  usable   INTEGER NOT NULL DEFAULT 1,   -- 1 usable, 0 not, 2 not but only for being washed out (blown out)
   has_roi  INTEGER NOT NULL DEFAULT 0,   -- the photos are on disk (cleared when removed)
   has_frame INTEGER NOT NULL DEFAULT 0,
   name     TEXT,
@@ -51,6 +55,9 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 -- records kept with their photos whatever their age: the best photos uploaded to
 -- SharePoint, so each can be scored again against new ones (tag: who pinned it)
 CREATE TABLE IF NOT EXISTS pins (event_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (event_id, tag));
+-- a site being set up (its region still being placed): its plays in [start, end) aren't
+-- counted; end NULL = still in setup; region_at = the region's last change in the period
+CREATE TABLE IF NOT EXISTS setup (site_id TEXT NOT NULL, start REAL NOT NULL, end REAL, region_at REAL);
 """
 
 
@@ -72,6 +79,22 @@ def _dec(v):
     return json.loads(v)
 
 
+def _flags(r, roi, frame):
+    """Mark a record whose photo (screen crop) or full camera frame is no longer on disk."""
+    if not roi and "roi_sha256" in r:
+        r["_images_removed"] = True
+    if not frame and "frame_sha256" in r:
+        r["_frame_removed"] = True
+    return r
+
+
+def _usable(q):
+    """1 usable, 0 not, 2 not usable only because the board was blown out (washed out)."""
+    if q.get("usable", True) is not False:
+        return 1
+    return 2 if "blown out" in str(q.get("reason") or "") else 0
+
+
 def _name(r):
     return r.get("site_name") or r.get("camera") or ""
 
@@ -84,21 +107,42 @@ class Store:
         self.log = log
         self.local = threading.local()
         self.wlock = threading.Lock()
+        self.clock = threading.Lock()    # guards conns
+        self.conns = {}                  # thread ident -> (thread, its connection)
         self.version = 0                 # bumped on every write: callers cache against it
         os.makedirs(self.images, exist_ok=True)
         db = self.db()
         db.executescript(SCHEMA)
         if migrate:
             self.migrate()
+            self.tag_washed()
+            self.index_creatives()
 
     def db(self):
+        """This thread's connection. Every web request runs in a thread of its own, and a
+        finished thread's connection isn't reliably closed by Python (it kept its files open,
+        until after a day the receiver couldn't open the database any more), so a new
+        connection first closes those of threads that have finished."""
         c = getattr(self.local, "c", None)
         if c is None:
-            c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA synchronous=NORMAL")
+            with self.clock:
+                for ident, (th, old) in list(self.conns.items()):
+                    if not th.is_alive():
+                        del self.conns[ident]
+                        try:
+                            old.close()
+                        except sqlite3.Error:
+                            pass
+                c = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("PRAGMA synchronous=NORMAL")
+                self.conns[threading.get_ident()] = (threading.current_thread(), c)
             self.local.c = c
         return c
+
+    def open_connections(self):
+        with self.clock:
+            return len(self.conns)
 
     # ---------------------------------------------------------------- writing
     @staticmethod
@@ -107,7 +151,7 @@ class Store:
         t = _ts(r.get("play_started_at")) if typ == "creative_change" else _ts(r.get("at") or r.get("since"))
         return (r.get("event_id"), typ, r.get("site_id") or "", t, r.get("local_creative_id"),
                 int(bool(r.get("is_blank"))), int(bool(r.get("video_creative"))),
-                int((r.get("quality") or {}).get("usable", True) is not False),
+                _usable(r.get("quality") or {}),
                 int("roi_sha256" in r), int("frame_sha256" in r), _name(r), _enc(r))
 
     def add(self, r):
@@ -128,17 +172,18 @@ class Store:
     # ---------------------------------------------------------------- reading
     def plays(self, site_id, t0, t1):
         """A site's PoP plays with t0 <= start < t1, oldest first, as tuples
-        (t, creative, blank, video, event_id, has_roi, usable)."""
+        (t, creative, blank, video, event_id, has_roi, usable, washed out): washed out =
+        not usable only because much of the board was blown out (still good for matching)."""
         rows = self.db().execute(
             "SELECT t, creative, blank, video, event_id, has_roi, usable FROM records "
             "WHERE site_id=? AND type='creative_change' AND t>=? AND t<? ORDER BY t", (site_id, t0, t1)).fetchall()
-        return [(t, c, bool(b), bool(v), e, bool(h), bool(u)) for t, c, b, v, e, h, u in rows]
+        return [(t, c, bool(b), bool(v), e, bool(h), u == 1, u == 2) for t, c, b, v, e, h, u in rows]
 
     def last_plays(self, site_id, n):
         rows = self.db().execute(
             "SELECT t, creative, blank, video, event_id, has_roi, usable FROM records "
             "WHERE site_id=? AND type='creative_change' ORDER BY t DESC LIMIT ?", (site_id, n)).fetchall()
-        return [(t, c, bool(b), bool(v), e, bool(h), bool(u)) for t, c, b, v, e, h, u in reversed(rows)]
+        return [(t, c, bool(b), bool(v), e, bool(h), u == 1, u == 2) for t, c, b, v, e, h, u in reversed(rows)]
 
     def play(self, event_id):
         r = self.db().execute("SELECT t, creative, blank, video, event_id, has_roi, usable, site_id FROM records "
@@ -164,10 +209,7 @@ class Store:
                                      (n,)).fetchall()
         out = []
         for j, roi, frame in reversed(rows):
-            r = _dec(j)
-            if not roi and "roi_sha256" in r or not frame and "frame_sha256" in r:
-                r["_images_removed"] = True
-            out.append(r)
+            out.append(_flags(_dec(j), roi, frame))
         return out
 
     def newest_per_site(self, kind="creative_change", photo=False):
@@ -184,9 +226,7 @@ class Store:
             "WHERE type=? GROUP BY site_id) m ON r.site_id=m.site_id AND r.t=m.mt WHERE r.type=?", (kind, kind)).fetchall()
         out = {}
         for j, roi, frame in rows:
-            r = _dec(j)
-            if not roi and "roi_sha256" in r:
-                r["_images_removed"] = True
+            r = _flags(_dec(j), roi, frame)
             out.setdefault(r.get("site_id"), r)             # the one with a photo first
         return list(out.values())
 
@@ -213,6 +253,23 @@ class Store:
             except ValueError:
                 pass
         return out
+
+    def system_series(self, gateway_id, since):
+        """A gateway's CPU and memory figures since `since`, oldest first:
+        [(t, machine CPU %, gateway memory bytes, gateway uptime s)]."""
+        rows = self.db().execute(
+            "SELECT t, json_extract(json, '$.health.host.cpu_pct'), json_extract(json, '$.health.process.rss_bytes'), "
+            "json_extract(json, '$.health.uptime_s') FROM heartbeats WHERE t>=? AND json_extract(json, '$.gateway_id')=? "
+            "ORDER BY t", (since, gateway_id)).fetchall()
+        return [tuple(r) for r in rows]
+
+    def forget_gateway(self, gateway_id):
+        """Delete a gateway's heartbeats (one that was renamed or retired). Its PoP records stay."""
+        with self.wlock:
+            n = self.db().execute("DELETE FROM heartbeats WHERE json_extract(json, '$.gateway_id')=?",
+                                  (gateway_id,)).rowcount
+            self.version += 1
+        return n
 
     def counts(self):
         db = self.db()
@@ -254,9 +311,107 @@ class Store:
                     r["site_name"] = r["camera"] = name
                 db.execute("UPDATE records SET site_id=?, name=COALESCE(?, name), json=? WHERE event_id=?",
                            (new, name, _enc(r), e))
+            db.execute("UPDATE setup SET site_id=? WHERE site_id=?", (new, old))
+            db.execute("COMMIT")
+            self._setup_ver = (getattr(self, "_setup_ver", 0) or 0) + 1
+            self.version += 1
+        return len(rows)
+
+    def index_creatives(self):
+        """An index by creative ID, so one creative's plays are found without reading every
+        record of its site (made once, at the first start with it; a big database takes a minute)."""
+        db = self.db()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='records_site_creative'").fetchone():
+            return
+        self.log("store: indexing plays by creative ID (once; may take a minute on a big database)")
+        t = time.time()
+        with self.wlock:
+            db.execute("CREATE INDEX IF NOT EXISTS records_site_creative ON records (site_id, type, creative, t)")
+        self.log(f"store: indexed in {time.time() - t:.0f} s")
+
+    def creative_summary(self, site_id, creative, photo_days=7):
+        """(plays, last play time, event ID of its newest play with a photo in the last
+        photo_days) of one creative ID."""
+        n, last = self.db().execute("SELECT COUNT(*), MAX(t) FROM records WHERE site_id=? AND type='creative_change' "
+                                    "AND creative=?", (site_id, creative)).fetchone()
+        ph = self.db().execute("SELECT event_id FROM records WHERE site_id=? AND type='creative_change' AND creative=? "
+                               "AND t>? AND has_roi=1 AND blank=0 ORDER BY t DESC LIMIT 1",
+                               (site_id, creative, time.time() - photo_days * 86400)).fetchone()
+        return n or 0, last, ph[0] if ph else None
+
+    def relabel(self, event_ids, creative):
+        """Give plays another creative ID (a wrong merge undone); the ID they were
+        reported as is kept in the record as merged_as."""
+        if not event_ids:
+            return 0
+        q = ",".join("?" * len(event_ids))
+        rows = self.db().execute(f"SELECT event_id, creative, json FROM records WHERE event_id IN ({q})",
+                                 tuple(event_ids)).fetchall()
+        with self.wlock:
+            db = self.db()
+            db.execute("BEGIN")
+            for e, was, j in rows:
+                r = _dec(j)
+                r.setdefault("merged_as", was)
+                r["local_creative_id"] = creative
+                db.execute("UPDATE records SET creative=?, json=? WHERE event_id=?", (creative, _enc(r), e))
             db.execute("COMMIT")
             self.version += 1
         return len(rows)
+
+    def check_photos(self):
+        """Clear the photo flags of records whose photos aren't on disk (after a restore on
+        another machine: the backup has the records, not the photos). Returns how many."""
+        rows = self.db().execute("SELECT event_id, has_roi, has_frame FROM records WHERE has_roi=1 OR has_frame=1").fetchall()
+        fix = []
+        for e, r, f in rows:
+            r2 = int(bool(r) and os.path.exists(os.path.join(self.images, f"{e}.roi.jpg")))
+            f2 = int(bool(f) and os.path.exists(os.path.join(self.images, f"{e}.frame.jpg")))
+            if (r2, f2) != (r, f):
+                fix.append((r2, f2, e))
+        if fix:
+            with self.wlock:
+                db = self.db()
+                db.execute("BEGIN")
+                db.executemany("UPDATE records SET has_roi=?, has_frame=? WHERE event_id=?", fix)
+                db.execute("COMMIT")
+                self.version += 1
+        return len(fix)
+
+    # ---------------------------------------------------------------- setup periods
+    def setup_periods(self):
+        """{site_id: [(start, end or None, region_at or None)]}, oldest first."""
+        # cached briefly: the report worker process writes nothing but must see changes soon
+        key, now = getattr(self, "_setup_ver", 0), time.time()
+        c = getattr(self, "_setup_cache", None)
+        if not c or c[0] != key or now - c[1] > 2:
+            out = {}
+            for sid, a, b, r in self.db().execute("SELECT site_id, start, end, region_at FROM setup ORDER BY start"):
+                out.setdefault(sid, []).append((a, b, r))
+            self._setup_cache = c = (key, now, out)
+        return c[2]
+
+    def _setup_write(self, sql, args):
+        with self.wlock:
+            n = self.db().execute(sql, args).rowcount
+            self._setup_ver = (getattr(self, "_setup_ver", 0) or 0) + 1
+            self.version += 1
+        return n
+
+    def setup_start(self, site_id, t):
+        """Into setup from t (nothing if it already is). True if it started now."""
+        if any(b is None for _, b, _ in self.setup_periods().get(site_id, [])):
+            return False
+        self._setup_write("INSERT INTO setup (site_id, start) VALUES (?, ?)", (site_id, t))
+        return True
+
+    def setup_end(self, site_id, t):
+        """Live from t. True if the site was in setup."""
+        return self._setup_write("UPDATE setup SET end=? WHERE site_id=? AND end IS NULL", (t, site_id)) > 0
+
+    def setup_region(self, site_id, t):
+        """The region changed at t (only noted while the site is in setup)."""
+        return self._setup_write("UPDATE setup SET region_at=? WHERE site_id=? AND end IS NULL", (t, site_id)) > 0
 
     # ---------------------------------------------------------------- pins
     def set_pins(self, tag, event_ids):
@@ -273,6 +428,53 @@ class Store:
 
     def pinned(self):
         return {e for (e,) in self.db().execute("SELECT DISTINCT event_id FROM pins")}
+
+    # ---------------------------------------------------------------- best-photo runs
+    def note_run(self, phase, until, now=None):
+        """A best-photo run for this phase has looked at the photos up to `until`."""
+        with self.wlock:
+            self.db().execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
+                              (f"run_{phase}", json.dumps({"until": until, "at": now or time.time()})))
+
+    def frames_done_before(self, now=None):
+        """Photos taken before this time have been through a day and a night best-photo
+        run long enough ago that their full frames are no longer needed (None if not yet)."""
+        now = now or time.time()
+        done = []
+        for ph in ("day", "night"):
+            row = self.db().execute("SELECT v FROM meta WHERE k=?", (f"run_{ph}",)).fetchone()
+            if not row:
+                return None
+            v = json.loads(row[0])
+            if now - v["at"] < FRAME_GRACE_S:
+                return None
+            done.append(v["until"])
+        return min(done)
+
+    def remove_spent_frames(self, now=None):
+        """Remove the full frames that no best-photo run can still pick (kept: pinned)."""
+        cut = self.frames_done_before(now)
+        if cut is None:
+            return 0
+        n = 0
+        while True:
+            eids = [e for (e,) in self.db().execute(
+                "SELECT event_id FROM records WHERE type='creative_change' AND t<? AND has_frame=1 "
+                "AND event_id NOT IN (SELECT event_id FROM pins) LIMIT 2000", (cut,))]
+            if not eids:
+                return n
+            for e in eids:
+                try:
+                    os.remove(os.path.join(self.images, f"{e}.frame.jpg"))
+                    n += 1
+                except FileNotFoundError:
+                    pass
+            with self.wlock:
+                db = self.db()
+                db.execute("BEGIN")
+                db.executemany("UPDATE records SET has_frame=0 WHERE event_id=?", [(e,) for e in eids])
+                db.execute("COMMIT")
+                self.version += 1
 
     # ---------------------------------------------------------------- housekeeping
     def housekeep(self, now=None):
@@ -304,6 +506,7 @@ class Store:
             done["heartbeats"] = db.execute("DELETE FROM heartbeats WHERE t<?", (now - HEARTBEAT_DAYS * 86400,)).rowcount
             if done["records"]:
                 self.version += 1
+        done["frames"] = self.remove_spent_frames(now)
         done["orphans"] = self.sweep_orphans(now)
         return done
 
@@ -339,12 +542,31 @@ class Store:
                 d = self.housekeep()
                 if any(d.values()):
                     self.log(f"housekeeping: removed {d['photos']} photo(s) older than {IMAGE_DAYS:g} day(s), "
+                             f"{d.get('frames', 0)} full frame(s) the best-photo runs are done with, "
                              f"{d['records']} record(s) older than {RECORD_DAYS:g}, {d['orphans']} stray file(s)")
             except Exception as e:                       # never stop the thread
                 self.log(f"housekeeping failed: {e}")
             time.sleep(every_s)
 
     # ---------------------------------------------------------------- upgrade
+    def tag_washed(self, days=14):
+        """Mark the recent photos that were rejected only for being blown out (once)."""
+        if self.db().execute("SELECT v FROM meta WHERE k='washed_v1'").fetchone():
+            return 0
+        rows = self.db().execute("SELECT event_id, json FROM records WHERE type='creative_change' AND usable=0 AND t>?",
+                                 (time.time() - days * 86400,)).fetchall()
+        ids = [e for e, j in rows if _usable(_dec(j).get("quality") or {}) == 2]
+        with self.wlock:
+            db = self.db()
+            db.execute("BEGIN")
+            db.executemany("UPDATE records SET usable=2 WHERE event_id=?", [(e,) for e in ids])
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('washed_v1', ?)", (str(len(ids)),))
+            db.execute("COMMIT")
+            self.version += 1
+        if ids:
+            self.log(f"store: {len(ids)} washed-out photo(s) from the last {days} days can now be used for matching")
+        return len(ids)
+
     def migrate(self):
         """Import records.jsonl / heartbeats.jsonl from before the database."""
         for name, table in (("records.jsonl", "records"), ("heartbeats.jsonl", "heartbeats")):
